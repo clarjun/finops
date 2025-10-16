@@ -44,18 +44,15 @@ export default function Forecast() {
   const { toast } = useToast();
   const [forecastDays, setForecastDays] = useState(30);
 
-  // Fetch forecast mutation (Advanced AI-powered forecasting)
+  // Fetch forecast mutation
   const forecastMutation = useMutation({
     mutationFn: async (days: number) => {
-      return apiRequest<ForecastResult>("POST", "/api/forecast", { 
-        forecastDays: days,
-        useAdvanced: true  // Using advanced ensemble ML with trend analysis
-      });
+      return apiRequest<ForecastResult>("POST", "/api/forecast", { forecastDays: days });
     },
     onSuccess: () => {
       toast({
-        title: "Advanced AI Forecast Generated",
-        description: "Ensemble ML with trend analysis and scenario planning completed",
+        title: "Forecast generated",
+        description: "Cost forecast has been successfully generated using ML algorithms",
       });
       queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
     },
@@ -64,26 +61,6 @@ export default function Forecast() {
         title: "Forecast failed",
         description: error.message || "Failed to generate cost forecast",
         variant: "destructive",
-      });
-    },
-  });
-
-  // AI Insights mutation
-  const aiInsightsMutation = useMutation({
-    mutationFn: async () => {
-      if (!forecastData?.summary) return null;
-      return apiRequest<{ success: boolean; insights: string }>("POST", "/api/forecast/ai-insights", {
-        forecastSummary: {
-          ...forecastData.summary,
-          dataPoints: forecastData.dataPoints,
-          forecastDays: forecastDays
-        }
-      });
-    },
-    onSuccess: () => {
-      toast({
-        title: "AI Insights Generated",
-        description: "OpenAI GPT-4 analysis complete",
       });
     },
   });
@@ -332,141 +309,29 @@ export default function Forecast() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {forecastData.recommendations && forecastData.recommendations.length > 0 ? (
-                forecastData.recommendations.map((rec: any, index: number) => (
-                  <Alert key={index} variant={getSeverityColor(rec.severity || rec.priority) as any}>
-                    <div className="flex items-start gap-3">
-                      {getSeverityIcon(rec.severity || rec.priority)}
-                      <div className="flex-1">
-                        <AlertTitle className="flex items-center gap-2">
-                          {(rec.type || 'RECOMMENDATION').replace('_', ' ').toUpperCase()}
-                          <Badge variant={getSeverityColor(rec.severity || rec.priority) as any}>
-                            {rec.severity || rec.priority}
-                          </Badge>
-                        </AlertTitle>
-                        <AlertDescription className="mt-2">
-                          {rec.message}
-                        </AlertDescription>
-                        {rec.recommended_budget && (
-                          <div className="mt-3 text-sm font-medium">
-                            Recommended Budget: ${rec.recommended_budget.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </div>
-                        )}
-                        {rec.action && (
-                          <div className="mt-2 text-sm text-muted-foreground">
-                            Action: {rec.action}
-                          </div>
-                        )}
+              {forecastData.recommendations.map((rec, index) => (
+                <Alert key={index} variant={getSeverityColor(rec.severity) as any}>
+                  <div className="flex items-start gap-3">
+                    {getSeverityIcon(rec.severity)}
+                    <div className="flex-1">
+                      <AlertTitle className="flex items-center gap-2">
+                        {rec.type.replace('_', ' ').toUpperCase()}
+                        <Badge variant={getSeverityColor(rec.severity) as any}>
+                          {rec.severity}
+                        </Badge>
+                      </AlertTitle>
+                      <AlertDescription className="mt-2">
+                        {rec.message}
+                      </AlertDescription>
+                      <div className="mt-3 text-sm font-medium">
+                        Recommended Budget: ${rec.recommended_budget.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </div>
                     </div>
-                  </Alert>
-                ))
-              ) : (
-                <p className="text-sm text-muted-foreground">No specific recommendations at this time.</p>
-              )}
+                  </div>
+                </Alert>
+              ))}
             </CardContent>
           </Card>
-
-          {/* AI Insights from Advanced Forecasting */}
-          {forecastData.aiInsights && forecastData.aiInsights.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>AI Pattern Analysis</CardTitle>
-                <CardDescription>
-                  Trend detection and spending pattern insights
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {forecastData.aiInsights.map((insight: any, index: number) => (
-                  <Alert key={index} variant={getSeverityColor(insight.severity) as any}>
-                    <div className="flex items-start gap-3">
-                      {getSeverityIcon(insight.severity)}
-                      <div className="flex-1">
-                        <AlertTitle className="flex items-center gap-2">
-                          {insight.type.replace('_', ' ').toUpperCase()}
-                          <Badge variant={getSeverityColor(insight.severity) as any}>
-                            {insight.severity}
-                          </Badge>
-                        </AlertTitle>
-                        <AlertDescription className="mt-2">
-                          {insight.message}
-                        </AlertDescription>
-                        {insight.recommendation && (
-                          <div className="mt-2 p-2 bg-muted rounded-md text-sm">
-                            💡 {insight.recommendation}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </Alert>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* OpenAI-Powered Expert Insights */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                Expert AI Analysis
-                <Badge variant="outline">OpenAI GPT-4</Badge>
-              </CardTitle>
-              <CardDescription>
-                Get detailed cost optimization recommendations from AI
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {!aiInsightsMutation.data && !aiInsightsMutation.isPending && (
-                <Button 
-                  onClick={() => aiInsightsMutation.mutate()}
-                  disabled={aiInsightsMutation.isPending}
-                  data-testid="button-get-ai-insights"
-                >
-                  {aiInsightsMutation.isPending ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Analyzing with GPT-4...
-                    </>
-                  ) : (
-                    'Get AI Recommendations'
-                  )}
-                </Button>
-              )}
-              
-              {aiInsightsMutation.data?.insights && (
-                <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                    {aiInsightsMutation.data.insights}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Trend Information */}
-          {forecastData.summary.trendDirection && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Trend Analysis</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Trend Direction</p>
-                    <p className="text-2xl font-bold capitalize">{forecastData.summary.trendDirection}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Trend Strength</p>
-                    <p className="text-2xl font-bold">{forecastData.summary.trendStrength}%</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Seasonality</p>
-                    <p className="text-2xl font-bold">{forecastData.summary.hasSeasonality ? 'Detected' : 'None'}</p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
         </>
       )}
 
