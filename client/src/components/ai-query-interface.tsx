@@ -33,14 +33,12 @@ export function AiQueryInterface({ onQuery }: AiQueryInterfaceProps) {
 
     try {
       const result = await onQuery(currentQuery);
-      console.log("AI Query Result:", result);
       const answerText = result?.answer || "No answer received from AI";
       setResponses((prev) => [
         { query: currentQuery, answer: answerText, success: result?.success ?? false },
         ...prev,
       ]);
     } catch (error) {
-      console.error("AI Query Error:", error);
       setResponses((prev) => [
         { query: currentQuery, answer: "An error occurred while processing your query.", success: false },
         ...prev,

@@ -13,15 +13,12 @@ export default function AiQuery() {
 
   const handleQuery = async (query: string): Promise<AiQueryResponse> => {
     try {
-      console.log("Sending AI query:", query);
       // Backend will use server-side cached data for security
       const response = await apiRequest<AiQueryResponse>("POST", "/api/analyze", {
         query,
       });
-      console.log("AI query response:", response);
       return response;
     } catch (error) {
-      console.error("AI query error:", error);
       toast({
         title: "Query failed",
         description: "Failed to process your query. Please try again.",
