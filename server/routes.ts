@@ -2,11 +2,13 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig } from "@shared/schema";
+import { eq, and, gte, lte } from "drizzle-orm";
+import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig, azureAccounts, costHistory, insertCostHistorySchema } from "@shared/schema";
 import { processAzureCostData } from "./utils/process-cost-data";
 import { runPythonScript } from "./utils/python-runner";
 import { openai } from "./openai-client";
 import { AzureCostManagementClient } from "./azure-client";
+import { db } from "./db";
 
 // Load sample Azure cost data for initial display
 let cachedCostData: any = null;
@@ -21,6 +23,54 @@ function loadSampleData() {
     cachedCostData = processAzureCostData(sampleData);
   }
   return cachedCostData;
+}
+
+// Save cost data to historical database for ML training
+async function saveCostDataToHistory(azureResponse: any, subscriptionId: string) {
+  try {
+    const rows = azureResponse.properties.rows;
+    
+    // Map Azure response rows to cost history records
+    // Row format: [PreTaxCost, UsageDate, SubscriptionName, ResourceGroup, ServiceName, Currency]
+    const costRecords = rows.map((row: any) => ({
+      date: new Date(String(row[1]).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')),
+      subscriptionId: subscriptionId, // Use actual subscription ID from config
+      subscriptionName: row[2] || 'unknown',
+      resourceGroup: row[3] || 'unknown',
+      serviceName: row[4] || 'unknown',
+      cost: String(row[0]),
+      currency: row[5] || 'USD',
+    }));
+
+    // Use upsert to avoid duplicates on repeated refreshes
+    // Delete existing records for the same date range and subscription before inserting
+    const dates = Array.from(new Set(costRecords.map((r: any) => r.date)));
+    if (dates.length > 0) {
+      const minDate = new Date(Math.min(...dates.map((d: Date) => d.getTime())));
+      const maxDate = new Date(Math.max(...dates.map((d: Date) => d.getTime())));
+      
+      await db
+        .delete(costHistory)
+        .where(
+          and(
+            eq(costHistory.subscriptionId, subscriptionId),
+            gte(costHistory.date, minDate.toISOString()),
+            lte(costHistory.date, maxDate.toISOString())
+          )
+        );
+    }
+
+    // Insert cost records in batches to avoid timeout
+    const batchSize = 100;
+    for (let i = 0; i < costRecords.length; i += batchSize) {
+      const batch = costRecords.slice(i, i + batchSize);
+      await db.insert(costHistory).values(batch);
+    }
+    
+    console.log(`Saved ${costRecords.length} cost records to database for subscription ${subscriptionId}`);
+  } catch (error) {
+    console.error('Error saving cost data to database:', error);
+  }
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -199,7 +249,7 @@ Please answer the user's question clearly and concisely based on this data.`;
   // Fetch fresh data from Azure API
   app.post("/api/azure/refresh", async (_req, res) => {
     try {
-      if (!azureClient) {
+      if (!azureClient || !azureConfig) {
         return res.status(400).json({ 
           error: "Azure is not configured. Please configure Azure credentials first.",
           success: false 
@@ -208,6 +258,9 @@ Please answer the user's question clearly and concisely based on this data.`;
       
       const azureData = await azureClient.queryCostData();
       cachedCostData = processAzureCostData(azureData);
+      
+      // Save to database for historical analysis and ML training
+      await saveCostDataToHistory(azureData, azureConfig.subscriptionId);
       
       res.json({
         success: true,
