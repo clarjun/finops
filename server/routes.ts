@@ -10,6 +10,13 @@ import { openai } from "./openai-client";
 import { AzureCostManagementClient } from "./azure-client";
 import { db } from "./db";
 import { storage } from "./storage";
+import { 
+  generateCostHistoryCSV, 
+  generateServiceBreakdownCSV, 
+  generateAnomaliesCSV, 
+  generateForecastCSV,
+  generateComprehensiveReportCSV 
+} from "./utils/csv-generator";
 
 // Load sample Azure cost data for initial display
 let cachedCostData: any = null;
@@ -514,6 +521,226 @@ When answering:
     } catch (error) {
       console.error("Error fetching forecast history:", error);
       res.status(500).json({ success: false, forecasts: [], error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // ==================== ALERT RULES MANAGEMENT ====================
+  
+  // Get all alert rules
+  app.get("/api/alerts/rules", async (_req, res) => {
+    try {
+      const rules = await storage.getAllAlertRules();
+      res.json({ success: true, rules });
+    } catch (error) {
+      console.error("Error fetching alert rules:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch alert rules" });
+    }
+  });
+  
+  // Create alert rule
+  app.post("/api/alerts/rules", async (req, res) => {
+    try {
+      const rule = await storage.createAlertRule(req.body);
+      res.json({ success: true, rule });
+    } catch (error) {
+      console.error("Error creating alert rule:", error);
+      res.status(400).json({ success: false, error: "Failed to create alert rule" });
+    }
+  });
+  
+  // Update alert rule
+  app.patch("/api/alerts/rules/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const rule = await storage.updateAlertRule(id, req.body);
+      if (!rule) {
+        return res.status(404).json({ success: false, error: "Alert rule not found" });
+      }
+      res.json({ success: true, rule });
+    } catch (error) {
+      console.error("Error updating alert rule:", error);
+      res.status(400).json({ success: false, error: "Failed to update alert rule" });
+    }
+  });
+  
+  // Delete alert rule
+  app.delete("/api/alerts/rules/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const success = await storage.deleteAlertRule(id);
+      if (!success) {
+        return res.status(404).json({ success: false, error: "Alert rule not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting alert rule:", error);
+      res.status(500).json({ success: false, error: "Failed to delete alert rule" });
+    }
+  });
+  
+  // ==================== REPORT SCHEDULES MANAGEMENT ====================
+  
+  // Get all report schedules
+  app.get("/api/reports/schedules", async (_req, res) => {
+    try {
+      const schedules = await storage.getAllReportSchedules();
+      res.json({ success: true, schedules });
+    } catch (error) {
+      console.error("Error fetching report schedules:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch report schedules" });
+    }
+  });
+  
+  // Create report schedule
+  app.post("/api/reports/schedules", async (req, res) => {
+    try {
+      const schedule = await storage.createReportSchedule(req.body);
+      res.json({ success: true, schedule });
+    } catch (error) {
+      console.error("Error creating report schedule:", error);
+      res.status(400).json({ success: false, error: "Failed to create report schedule" });
+    }
+  });
+  
+  // Update report schedule
+  app.patch("/api/reports/schedules/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const schedule = await storage.updateReportSchedule(id, req.body);
+      if (!schedule) {
+        return res.status(404).json({ success: false, error: "Report schedule not found" });
+      }
+      res.json({ success: true, schedule });
+    } catch (error) {
+      console.error("Error updating report schedule:", error);
+      res.status(400).json({ success: false, error: "Failed to update report schedule" });
+    }
+  });
+  
+  // Delete report schedule
+  app.delete("/api/reports/schedules/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const success = await storage.deleteReportSchedule(id);
+      if (!success) {
+        return res.status(404).json({ success: false, error: "Report schedule not found" });
+      }
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting report schedule:", error);
+      res.status(500).json({ success: false, error: "Failed to delete report schedule" });
+    }
+  });
+  
+  // ==================== CSV EXPORT ENDPOINTS ====================
+  
+  // Export cost history as CSV
+  app.get("/api/export/cost-history", async (_req, res) => {
+    try {
+      const costData = cachedCostData || loadSampleData();
+      const csv = generateCostHistoryCSV(costData);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="cost-history-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error generating cost history CSV:", error);
+      res.status(500).json({ error: "Failed to generate CSV export" });
+    }
+  });
+  
+  // Export service breakdown as CSV
+  app.get("/api/export/service-breakdown", async (_req, res) => {
+    try {
+      const costData = cachedCostData || loadSampleData();
+      const csv = generateServiceBreakdownCSV(costData);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="service-breakdown-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error generating service breakdown CSV:", error);
+      res.status(500).json({ error: "Failed to generate CSV export" });
+    }
+  });
+  
+  // Export anomalies as CSV
+  app.get("/api/export/anomalies", async (_req, res) => {
+    try {
+      const costData = cachedCostData || loadSampleData();
+      
+      // Run anomaly detection
+      const anomalyResult = await runPythonScript("anomaly_detection.py", {
+        costData,
+      });
+      
+      if (!anomalyResult.success || !anomalyResult.anomalies) {
+        return res.status(400).json({ error: "Failed to detect anomalies" });
+      }
+      
+      const csv = generateAnomaliesCSV(anomalyResult.anomalies);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="anomalies-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error generating anomalies CSV:", error);
+      res.status(500).json({ error: "Failed to generate CSV export" });
+    }
+  });
+  
+  // Export forecast as CSV
+  app.get("/api/export/forecast", async (req, res) => {
+    try {
+      const { forecastDays = 30 } = req.query;
+      const costData = cachedCostData || loadSampleData();
+      
+      // Generate forecast
+      const forecastResult = await runPythonScript("cost_forecasting.py", {
+        forecastDays: Number(forecastDays),
+        costData,
+      });
+      
+      if (!forecastResult.success || !forecastResult.forecasts) {
+        return res.status(400).json({ error: "Failed to generate forecast" });
+      }
+      
+      const csv = generateForecastCSV(forecastResult.forecasts);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="forecast-${forecastDays}days-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error generating forecast CSV:", error);
+      res.status(500).json({ error: "Failed to generate CSV export" });
+    }
+  });
+  
+  // Export comprehensive report as CSV
+  app.get("/api/export/comprehensive-report", async (req, res) => {
+    try {
+      const { forecastDays = 30 } = req.query;
+      const costData = cachedCostData || loadSampleData();
+      
+      // Get anomalies
+      const anomalyResult = await runPythonScript("anomaly_detection.py", { costData });
+      const anomalies = anomalyResult.success ? anomalyResult.anomalies : [];
+      
+      // Get forecast
+      const forecastResult = await runPythonScript("cost_forecasting.py", {
+        forecastDays: Number(forecastDays),
+        costData,
+      });
+      const forecasts = forecastResult.success ? forecastResult.forecasts : [];
+      
+      const csv = generateComprehensiveReportCSV(costData, anomalies, forecasts);
+      
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="comprehensive-cost-report-${new Date().toISOString().split('T')[0]}.csv"`);
+      res.send(csv);
+    } catch (error) {
+      console.error("Error generating comprehensive report CSV:", error);
+      res.status(500).json({ error: "Failed to generate CSV export" });
     }
   });
 
