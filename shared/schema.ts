@@ -91,3 +91,33 @@ export const costDataRequestSchema = z.object({
 });
 
 export type CostDataRequest = z.infer<typeof costDataRequestSchema>;
+
+// Azure Configuration for API Integration
+export const azureConfigSchema = z.object({
+  tenantId: z.string().min(1, "Tenant ID is required"),
+  clientId: z.string().min(1, "Client ID is required"),
+  clientSecret: z.string().min(1, "Client Secret is required"),
+  subscriptionId: z.string().min(1, "Subscription ID is required"),
+  scope: z.enum(['subscription', 'resourceGroup', 'billingAccount']).default('subscription'),
+  resourceGroupName: z.string().optional(),
+  billingAccountId: z.string().optional(),
+  refreshInterval: z.number().min(3600).default(86400), // Default: daily (in seconds)
+});
+
+export type AzureConfig = z.infer<typeof azureConfigSchema>;
+
+// Azure Query Request Body
+export interface AzureQueryBody {
+  type: 'Usage' | 'ActualCost';
+  timeframe: 'MonthToDate' | 'WeekToDate' | 'Custom';
+  timePeriod?: {
+    from: string;
+    to: string;
+  };
+  dataset: {
+    granularity: 'Daily' | 'Monthly';
+    aggregation?: Record<string, { name: string; function: string }>;
+    grouping?: Array<{ type: string; name: string }>;
+    filter?: any;
+  };
+}

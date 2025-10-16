@@ -2,13 +2,17 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { azureCostResponseSchema, aiQueryRequestSchema } from "@shared/schema";
+import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig } from "@shared/schema";
 import { processAzureCostData } from "./utils/process-cost-data";
 import { runPythonScript } from "./utils/python-runner";
 import { openai } from "./openai-client";
+import { AzureCostManagementClient } from "./azure-client";
 
 // Load sample Azure cost data for initial display
 let cachedCostData: any = null;
+let azureClient: AzureCostManagementClient | null = null;
+let azureConfig: AzureConfig | null = null;
+let autoRefreshInterval: NodeJS.Timeout | null = null;
 
 function loadSampleData() {
   if (!cachedCostData) {
@@ -71,7 +75,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       
       // Get cost data from server cache instead of trusting client payload
-      const costData = loadSampleData();
+      const costData = cachedCostData || loadSampleData();
 
       // Prepare context for AI
       const context = `You are an AI assistant analyzing Azure cloud spending data. 
@@ -113,6 +117,126 @@ Please answer the user's question clearly and concisely based on this data.`;
       res.status(500).json({
         answer: "Sorry, I encountered an error while analyzing your query.",
         success: false,
+      });
+    }
+  });
+
+  // Configure Azure Cost Management API integration
+  app.post("/api/azure/config", async (req, res) => {
+    try {
+      const validated = azureConfigSchema.parse(req.body);
+      
+      // Create Azure client with new config
+      azureClient = new AzureCostManagementClient(validated);
+      
+      // Test the connection
+      const isConnected = await azureClient.testConnection();
+      
+      if (!isConnected) {
+        return res.status(401).json({ 
+          error: "Failed to authenticate with Azure. Please check your credentials.",
+          success: false 
+        });
+      }
+      
+      azureConfig = validated;
+      
+      // Setup auto-refresh if configured
+      if (autoRefreshInterval) {
+        clearInterval(autoRefreshInterval);
+      }
+      
+      if (validated.refreshInterval) {
+        autoRefreshInterval = setInterval(async () => {
+          try {
+            console.log('Auto-refreshing Azure cost data...');
+            if (azureClient) {
+              const azureData = await azureClient.queryCostData();
+              cachedCostData = processAzureCostData(azureData);
+            }
+          } catch (error) {
+            console.error('Auto-refresh failed:', error);
+          }
+        }, validated.refreshInterval * 1000);
+      }
+      
+      res.json({ 
+        success: true,
+        message: "Azure configuration saved successfully",
+        config: {
+          subscriptionId: validated.subscriptionId,
+          scope: validated.scope,
+          refreshInterval: validated.refreshInterval,
+        }
+      });
+    } catch (error) {
+      console.error("Azure config error:", error);
+      res.status(400).json({ 
+        error: error instanceof Error ? error.message : "Invalid configuration",
+        success: false 
+      });
+    }
+  });
+
+  // Get current Azure configuration (without sensitive data)
+  app.get("/api/azure/config", async (_req, res) => {
+    if (!azureConfig) {
+      return res.json({ configured: false });
+    }
+    
+    // NEVER return sensitive credentials to the client
+    res.json({
+      configured: true,
+      subscriptionId: azureConfig.subscriptionId,
+      scope: azureConfig.scope,
+      resourceGroupName: azureConfig.resourceGroupName,
+      billingAccountId: azureConfig.billingAccountId,
+      refreshInterval: azureConfig.refreshInterval,
+      // tenantId, clientId, and clientSecret are NEVER sent to client
+    });
+  });
+
+  // Fetch fresh data from Azure API
+  app.post("/api/azure/refresh", async (_req, res) => {
+    try {
+      if (!azureClient) {
+        return res.status(400).json({ 
+          error: "Azure is not configured. Please configure Azure credentials first.",
+          success: false 
+        });
+      }
+      
+      const azureData = await azureClient.queryCostData();
+      cachedCostData = processAzureCostData(azureData);
+      
+      res.json({
+        success: true,
+        data: cachedCostData,
+      });
+    } catch (error) {
+      console.error("Azure refresh error:", error);
+      res.status(500).json({ 
+        error: error instanceof Error ? error.message : "Failed to fetch data from Azure",
+        success: false 
+      });
+    }
+  });
+
+  // Test Azure connection
+  app.post("/api/azure/test", async (req, res) => {
+    try {
+      const validated = azureConfigSchema.parse(req.body);
+      const testClient = new AzureCostManagementClient(validated);
+      const isConnected = await testClient.testConnection();
+      
+      res.json({ 
+        success: isConnected,
+        message: isConnected ? "Connection successful" : "Connection failed"
+      });
+    } catch (error) {
+      res.status(400).json({ 
+        success: false,
+        error: error instanceof Error ? error.message : "Connection test failed"
       });
     }
   });
