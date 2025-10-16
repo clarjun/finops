@@ -49,6 +49,11 @@ export interface ProcessedCostData {
     cost: number;
     percentage: number;
   }>;
+  subscriptionBreakdown: Array<{
+    name: string;
+    cost: number;
+    percentage: number;
+  }>;
   subscriptions: string[];
   services: string[];
   peakDay: {

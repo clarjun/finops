@@ -6,6 +6,7 @@ export function processAzureCostData(azureResponse: AzureCostResponse): Processe
   // Aggregate data
   let totalCost = 0;
   const serviceMap = new Map<string, number>();
+  const subscriptionMap = new Map<string, number>();
   const subscriptionSet = new Set<string>();
   const dailyMap = new Map<string, { cost: number; services: Map<string, number> }>();
 
@@ -16,6 +17,9 @@ export function processAzureCostData(azureResponse: AzureCostResponse): Processe
     
     // Track services
     serviceMap.set(serviceName, (serviceMap.get(serviceName) || 0) + preTaxCost);
+    
+    // Track subscriptions
+    subscriptionMap.set(subscriptionName, (subscriptionMap.get(subscriptionName) || 0) + preTaxCost);
     subscriptionSet.add(subscriptionName);
     
     // Format date from YYYYMMDD to YYYY-MM-DD
@@ -61,6 +65,15 @@ export function processAzureCostData(azureResponse: AzureCostResponse): Processe
   // Calculate average daily cost
   const avgDailyCost = dailyTrends.length > 0 ? totalCost / dailyTrends.length : 0;
 
+  // Calculate subscription breakdown with percentages
+  const subscriptionBreakdown = Array.from(subscriptionMap.entries())
+    .map(([name, cost]) => ({
+      name,
+      cost,
+      percentage: (cost / totalCost) * 100,
+    }))
+    .sort((a, b) => b.cost - a.cost);
+
   return {
     totalCost,
     avgDailyCost,
@@ -68,6 +81,7 @@ export function processAzureCostData(azureResponse: AzureCostResponse): Processe
     serviceCount: serviceMap.size,
     dailyTrends,
     serviceBreakdown,
+    subscriptionBreakdown,
     subscriptions: Array.from(subscriptionSet),
     services: Array.from(serviceMap.keys()),
     peakDay,
