@@ -177,7 +177,7 @@ export const alertRules = pgTable("alert_rules", {
   serviceName: varchar("service_name", { length: 255 }),
   thresholdAmount: numeric("threshold_amount", { precision: 10, scale: 2 }).notNull(),
   thresholdType: varchar("threshold_type", { length: 50 }).notNull(), // 'daily', 'weekly', 'monthly'
-  comparisonOperator: varchar("comparison_operator", { length: 10 }).notNull().default('greater_than'),
+  comparisonOperator: varchar("comparison_operator", { length: 20 }).notNull().default('gt'),
   emailRecipients: text("email_recipients").notNull(), // Comma-separated emails
   isEnabled: integer("is_enabled").notNull().default(1),
   createdAt: timestamp("created_at").notNull().defaultNow(),

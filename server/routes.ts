@@ -540,7 +540,19 @@ When answering:
   // Create alert rule
   app.post("/api/alerts/rules", async (req, res) => {
     try {
-      const rule = await storage.createAlertRule(req.body);
+      // Map API fields to database schema
+      const ruleData: schema.InsertAlertRule = {
+        ruleName: req.body.name || req.body.ruleName,
+        subscriptionId: req.body.subscriptionId,
+        serviceName: req.body.serviceName,
+        thresholdAmount: String(req.body.condition?.value || req.body.thresholdAmount || 0),
+        thresholdType: req.body.type === 'threshold' ? 'daily' : (req.body.thresholdType || 'daily'),
+        comparisonOperator: req.body.condition?.operator === '>' ? 'gt' : (req.body.comparisonOperator || 'gt'),
+        emailRecipients: Array.isArray(req.body.emails) ? req.body.emails.join(',') : (req.body.emailRecipients || ''),
+        isEnabled: req.body.enabled !== undefined ? (req.body.enabled ? 1 : 0) : 1,
+      };
+      
+      const rule = await storage.createAlertRule(ruleData);
       res.json({ success: true, rule });
     } catch (error) {
       console.error("Error creating alert rule:", error);
@@ -594,7 +606,19 @@ When answering:
   // Create report schedule
   app.post("/api/reports/schedules", async (req, res) => {
     try {
-      const schedule = await storage.createReportSchedule(req.body);
+      // Map API fields to database schema
+      const scheduleData: schema.InsertReportSchedule = {
+        scheduleName: req.body.name || req.body.scheduleName,
+        reportType: req.body.reportType || 'cost_summary',
+        frequency: req.body.frequency || 'weekly',
+        format: req.body.format || 'csv',
+        emailRecipients: Array.isArray(req.body.emails) ? req.body.emails.join(',') : (req.body.emailRecipients || ''),
+        subscriptionIds: req.body.subscriptionIds,
+        nextRunAt: req.body.nextRun ? new Date(req.body.nextRun) : (req.body.nextRunAt || new Date()),
+        isEnabled: req.body.enabled !== undefined ? (req.body.enabled ? 1 : 0) : 1,
+      };
+      
+      const schedule = await storage.createReportSchedule(scheduleData);
       res.json({ success: true, schedule });
     } catch (error) {
       console.error("Error creating report schedule:", error);
