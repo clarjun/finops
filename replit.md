@@ -6,6 +6,8 @@ This AI-powered Azure cost analysis dashboard provides interactive visualization
 
 Key capabilities include:
 -   **Interactive Dashboard**: Real-time cost visualizations with service breakdowns, daily trends, and cost distribution analysis.
+-   **Subscription Analysis**: Dedicated chart card showing cost breakdown by Azure subscription with selectable chart types (Line, Bar, Area, Pie).
+-   **Light/Dark Theme**: Complete theme switching with persistent user preference stored in localStorage.
 -   **AI Query Interface**: Natural language processing for cost-related questions using OpenAI integration.
 -   **Anomaly Detection**: Machine learning-based detection of spending anomalies using Python's scikit-learn (Isolation Forest algorithm).
 -   **ML Cost Forecasting**: Ridge Regression model for 30/60/90-day predictions with confidence intervals.
@@ -24,10 +26,11 @@ Preferred communication style: Simple, everyday language.
 -   **Routing**: Wouter.
 -   **State Management**: TanStack Query (React Query) for server state and caching.
 -   **UI Components**: Custom component library built on Radix UI primitives with Tailwind CSS.
--   **Design System**: "New York" style variant from shadcn/ui, with a dark mode primary theme.
--   **Visualization**: Recharts library for interactive charts.
--   **Styling**: Tailwind CSS with a custom color system (deep navy-charcoal backgrounds, vibrant cyan-blue accents).
--   **Key Design Decisions**: Dark-first design, component composition with Radix UI for accessibility, path aliases for clean imports, and mobile-responsive layout.
+-   **Design System**: "New York" style variant from shadcn/ui, with light and dark theme support.
+-   **Theme Management**: React Context-based ThemeProvider with localStorage persistence and toggle control in header.
+-   **Visualization**: Recharts library for interactive charts with multiple chart type options (Line, Bar, Area, Pie).
+-   **Styling**: Tailwind CSS with a custom color system supporting both light and dark modes (deep navy-charcoal backgrounds in dark, light backgrounds in light mode, vibrant cyan-blue accents).
+-   **Key Design Decisions**: Dual theme support (light/dark), component composition with Radix UI for accessibility, path aliases for clean imports, mobile-responsive layout, and dynamic chart type selection.
 
 ### Backend Architecture
 -   **Runtime**: Node.js with Express.js.
