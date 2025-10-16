@@ -4,6 +4,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { eq, and, gte, lte } from "drizzle-orm";
 import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig, azureAccounts, costHistory, insertCostHistorySchema, forecastData } from "@shared/schema";
+import * as schema from "@shared/schema";
 import { processAzureCostData } from "./utils/process-cost-data";
 import { runPythonScript } from "./utils/python-runner";
 import { openai } from "./openai-client";
