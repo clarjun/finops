@@ -9,11 +9,12 @@ import { runPythonScript } from "./utils/python-runner";
 import { openai } from "./openai-client";
 import { AzureCostManagementClient } from "./azure-client";
 import { db } from "./db";
+import { storage } from "./storage";
 
 // Load sample Azure cost data for initial display
 let cachedCostData: any = null;
 let azureClient: AzureCostManagementClient | null = null;
-let azureConfig: AzureConfig | null = null;
+let currentAzureAccountId: number | null = null;
 let autoRefreshInterval: NodeJS.Timeout | null = null;
 
 function loadSampleData() {
@@ -46,16 +47,17 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
     // Delete existing records for the same date range and subscription before inserting
     const dates = Array.from(new Set(costRecords.map((r: any) => r.date)));
     if (dates.length > 0) {
-      const minDate = new Date(Math.min(...dates.map((d: Date) => d.getTime())));
-      const maxDate = new Date(Math.max(...dates.map((d: Date) => d.getTime())));
+      const dateTimes = dates.map((d: unknown) => (d as Date).getTime());
+      const minDate = new Date(Math.min(...dateTimes));
+      const maxDate = new Date(Math.max(...dateTimes));
       
       await db
         .delete(costHistory)
         .where(
           and(
             eq(costHistory.subscriptionId, subscriptionId),
-            gte(costHistory.date, minDate.toISOString()),
-            lte(costHistory.date, maxDate.toISOString())
+            gte(costHistory.date, minDate),
+            lte(costHistory.date, maxDate)
           )
         );
     }
@@ -277,7 +279,21 @@ When answering:
         });
       }
       
-      azureConfig = validated;
+      // Save to database with encrypted credentials
+      const azureAccount = await storage.createAzureAccount({
+        accountName: `Azure ${validated.subscriptionId}`,
+        tenantId: validated.tenantId,
+        clientId: validated.clientId,
+        clientSecret: validated.clientSecret,
+        subscriptionId: validated.subscriptionId,
+        scope: validated.scope,
+        resourceGroupName: validated.resourceGroupName,
+        billingAccountId: validated.billingAccountId,
+        refreshInterval: validated.refreshInterval,
+        isActive: 1,
+      });
+      
+      currentAzureAccountId = azureAccount.id;
       
       // Setup auto-refresh if configured
       if (autoRefreshInterval) {
@@ -291,6 +307,7 @@ When answering:
             if (azureClient) {
               const azureData = await azureClient.queryCostData();
               cachedCostData = processAzureCostData(azureData);
+              await saveCostDataToHistory(azureData, validated.subscriptionId);
             }
           } catch (error) {
             console.error('Auto-refresh failed:', error);
@@ -300,7 +317,8 @@ When answering:
       
       res.json({ 
         success: true,
-        message: "Azure configuration saved successfully",
+        message: "Azure configuration saved successfully and persisted to database",
+        accountId: azureAccount.id,
         config: {
           subscriptionId: validated.subscriptionId,
           scope: validated.scope,
@@ -318,29 +336,53 @@ When answering:
 
   // Get current Azure configuration (without sensitive data)
   app.get("/api/azure/config", async (_req, res) => {
-    if (!azureConfig) {
-      return res.json({ configured: false });
+    try {
+      // Load active Azure accounts from database
+      const accounts = await storage.getActiveAzureAccounts();
+      
+      if (accounts.length === 0) {
+        return res.json({ configured: false });
+      }
+      
+      // Return the first active account (or current if set)
+      const account = currentAzureAccountId 
+        ? accounts.find(a => a.id === currentAzureAccountId) || accounts[0]
+        : accounts[0];
+      
+      // NEVER return sensitive credentials to the client
+      res.json({
+        configured: true,
+        accountId: account.id,
+        accountName: account.accountName,
+        subscriptionId: account.subscriptionId,
+        scope: account.scope,
+        resourceGroupName: account.resourceGroupName,
+        billingAccountId: account.billingAccountId,
+        refreshInterval: account.refreshInterval,
+        // tenantId, clientId, and clientSecret are NEVER sent to client
+      });
+    } catch (error) {
+      console.error("Error loading Azure config:", error);
+      res.status(500).json({ configured: false, error: "Failed to load configuration" });
     }
-    
-    // NEVER return sensitive credentials to the client
-    res.json({
-      configured: true,
-      subscriptionId: azureConfig.subscriptionId,
-      scope: azureConfig.scope,
-      resourceGroupName: azureConfig.resourceGroupName,
-      billingAccountId: azureConfig.billingAccountId,
-      refreshInterval: azureConfig.refreshInterval,
-      // tenantId, clientId, and clientSecret are NEVER sent to client
-    });
   });
 
   // Fetch fresh data from Azure API
   app.post("/api/azure/refresh", async (_req, res) => {
     try {
-      if (!azureClient || !azureConfig) {
+      if (!azureClient || !currentAzureAccountId) {
         return res.status(400).json({ 
           error: "Azure is not configured. Please configure Azure credentials first.",
           success: false 
+        });
+      }
+      
+      // Get account details from database for subscription ID
+      const account = await storage.getAzureAccount(currentAzureAccountId);
+      if (!account) {
+        return res.status(400).json({
+          error: "Azure account not found",
+          success: false
         });
       }
       
@@ -348,7 +390,7 @@ When answering:
       cachedCostData = processAzureCostData(azureData);
       
       // Save to database for historical analysis and ML training
-      await saveCostDataToHistory(azureData, azureConfig.subscriptionId);
+      await saveCostDataToHistory(azureData, account.subscriptionId);
       
       res.json({
         success: true,
@@ -399,11 +441,11 @@ When answering:
         return res.status(400).json(forecastResult);
       }
       
-      // Save forecast to database if successful and we have Azure config
+      // Save forecast to database if successful and we have Azure account
       if (forecastResult.forecasts && 
           Array.isArray(forecastResult.forecasts) && 
           forecastResult.forecasts.length > 0 && 
-          azureConfig?.subscriptionId) {
+          currentAzureAccountId) {
         try {
           // Validate forecast data before persisting
           const validForecasts = forecastResult.forecasts.filter((f: any) => 
@@ -417,17 +459,21 @@ When answering:
           );
           
           if (validForecasts.length > 0) {
-            const forecastRecords = validForecasts.map((f: any) => ({
-              subscriptionId: azureConfig.subscriptionId,
-              serviceName: null,
-              forecastDate: new Date(f.date),
-              predictedCost: String(f.predictedCost),
-              confidenceInterval: f.confidenceInterval,
-              modelVersion: 'ridge_v1',
-            }));
-            
-            // Save to database
-            await db.insert(forecastData).values(forecastRecords);
+            // Get current Azure account for subscription ID
+            const account = await storage.getAzureAccount(currentAzureAccountId);
+            if (account) {
+              const forecastRecords = validForecasts.map((f: any) => ({
+                subscriptionId: account.subscriptionId,
+                serviceName: null,
+                forecastDate: new Date(f.date),
+                predictedCost: String(f.predictedCost),
+                confidenceInterval: f.confidenceInterval,
+                modelVersion: 'ridge_v1',
+              }));
+              
+              // Save to database
+              await db.insert(forecastData).values(forecastRecords);
+            }
           }
         } catch (dbError) {
           console.error('Error saving forecast to database:', dbError);
@@ -470,6 +516,56 @@ When answering:
       res.status(500).json({ success: false, forecasts: [], error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
+
+  // Initialize Azure client from database on startup
+  async function initializeAzureClient() {
+    try {
+      const accounts = await storage.getActiveAzureAccounts();
+      
+      if (accounts.length > 0) {
+        const account = accounts[0]; // Use first active account
+        currentAzureAccountId = account.id;
+        
+        // Create Azure client with decrypted credentials
+        azureClient = new AzureCostManagementClient({
+          tenantId: account.tenantId,
+          clientId: account.clientId,
+          clientSecret: account.clientSecret,
+          subscriptionId: account.subscriptionId,
+          scope: account.scope as any,
+          resourceGroupName: account.resourceGroupName || undefined,
+          billingAccountId: account.billingAccountId || undefined,
+          refreshInterval: account.refreshInterval,
+        });
+        
+        // Setup auto-refresh if configured
+        if (account.refreshInterval > 0) {
+          autoRefreshInterval = setInterval(async () => {
+            try {
+              console.log('Auto-refreshing Azure cost data...');
+              if (azureClient) {
+                const azureData = await azureClient.queryCostData();
+                cachedCostData = processAzureCostData(azureData);
+                await saveCostDataToHistory(azureData, account.subscriptionId);
+              }
+            } catch (error) {
+              console.error('Auto-refresh failed:', error);
+            }
+          }, account.refreshInterval * 1000);
+        }
+        
+        console.log(`Loaded Azure account from database: ${account.accountName}`);
+      } else {
+        console.log('No Azure accounts found in database. Using sample data.');
+      }
+    } catch (error) {
+      console.error('Error initializing Azure client from database:', error);
+      console.log('Falling back to sample data.');
+    }
+  }
+  
+  // Initialize on startup
+  initializeAzureClient();
 
   const httpServer = createServer(app);
 
