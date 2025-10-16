@@ -297,11 +297,14 @@ Please answer the user's question clearly and concisely based on this data.`;
   // ML-based cost forecasting
   app.post("/api/forecast", async (req, res) => {
     try {
-      const { forecastDays = 30 } = req.body;
+      const { forecastDays = 30, useAdvanced = true } = req.body;
       const costData = cachedCostData || loadSampleData();
       
+      // Use advanced forecasting with trend analysis and scenario planning
+      const scriptName = useAdvanced ? "advanced_forecasting.py" : "cost_forecasting.py";
+      
       // Run Python forecasting script
-      const forecastResult = await runPythonScript("cost_forecasting.py", {
+      const forecastResult = await runPythonScript(scriptName, {
         forecastDays,
         costData,
       });
@@ -380,6 +383,69 @@ Please answer the user's question clearly and concisely based on this data.`;
     } catch (error) {
       console.error("Error fetching forecast history:", error);
       res.status(500).json({ success: false, forecasts: [], error: error instanceof Error ? error.message : 'Unknown error' });
+    }
+  });
+
+  // AI-Enhanced Forecast Insights using OpenAI
+  app.post("/api/forecast/ai-insights", async (req, res) => {
+    try {
+      const { forecastSummary, historicalData } = req.body;
+      
+      if (!forecastSummary) {
+        return res.status(400).json({ success: false, error: 'Forecast summary required' });
+      }
+
+      // Prepare context for OpenAI
+      const context = `
+You are an Azure cost optimization expert. Analyze this cost forecast and provide actionable insights.
+
+Historical Data:
+- Average Daily Cost: $${forecastSummary.historicalAverage}
+- Data Points: ${forecastSummary.dataPoints || 'N/A'} days
+- Trend: ${forecastSummary.trendDirection || 'Unknown'} (${forecastSummary.trendStrength || 0}% confidence)
+
+Forecast Results:
+- Predicted Average: $${forecastSummary.forecastAverage}
+- Total Forecasted Cost: $${forecastSummary.totalForecastedCost}
+- Change from Historical: ${forecastSummary.changePercentage}%
+- Forecast Period: ${forecastSummary.forecastDays || 30} days
+
+Please provide:
+1. Cost Optimization Recommendations (specific Azure services)
+2. Risk Assessment (budget overrun risks, unexpected spikes)
+3. Strategic Actions (immediate, short-term, long-term)
+4. Budget Recommendations (specific amounts)
+
+Format your response as clear, actionable bullet points.
+`;
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { 
+            role: "system", 
+            content: "You are an expert Azure cloud cost analyst. Provide specific, actionable recommendations for cost optimization." 
+          },
+          { role: "user", content: context }
+        ],
+        temperature: 0.7,
+        max_tokens: 1000,
+      });
+
+      const aiInsights = completion.choices[0]?.message?.content || "Unable to generate AI insights.";
+
+      res.json({
+        success: true,
+        insights: aiInsights,
+        provider: 'OpenAI GPT-4'
+      });
+
+    } catch (error) {
+      console.error("AI insights error:", error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to generate AI insights'
+      });
     }
   });
 
