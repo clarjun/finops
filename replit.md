@@ -7,7 +7,8 @@ This AI-powered Azure cost analysis dashboard provides interactive visualization
 Key capabilities include:
 -   **Interactive Dashboard**: Real-time cost visualizations with service breakdowns, daily trends, and cost distribution analysis.
 -   **Subscription Analysis**: Dedicated chart card showing cost breakdown by Azure subscription with selectable chart types (Line, Bar, Area, Pie).
--   **Light/Dark Theme**: Complete theme switching with persistent user preference stored in localStorage.
+-   **Daily Cost Trend Analysis**: Chart with selectable visualization types (Line, Bar, Area) and service filtering.
+-   **Light/Dark Theme**: Complete theme switching with persistent user preference stored in localStorage. Summary cards feature attractive gradient backgrounds (blue, green, purple, orange) in light mode and standard backgrounds in dark mode.
 -   **AI Query Interface**: Natural language processing for cost-related questions using OpenAI integration.
 -   **Anomaly Detection**: Machine learning-based detection of spending anomalies using Python's scikit-learn (Isolation Forest algorithm).
 -   **ML Cost Forecasting**: Ridge Regression model for 30/60/90-day predictions with confidence intervals.
@@ -28,9 +29,9 @@ Preferred communication style: Simple, everyday language.
 -   **UI Components**: Custom component library built on Radix UI primitives with Tailwind CSS.
 -   **Design System**: "New York" style variant from shadcn/ui, with light and dark theme support.
 -   **Theme Management**: React Context-based ThemeProvider with localStorage persistence and toggle control in header.
--   **Visualization**: Recharts library for interactive charts with multiple chart type options (Line, Bar, Area, Pie).
--   **Styling**: Tailwind CSS with a custom color system supporting both light and dark modes (deep navy-charcoal backgrounds in dark, light backgrounds in light mode, vibrant cyan-blue accents).
--   **Key Design Decisions**: Dual theme support (light/dark), component composition with Radix UI for accessibility, path aliases for clean imports, mobile-responsive layout, and dynamic chart type selection.
+-   **Visualization**: Recharts library for interactive charts with multiple chart type options (Line, Bar, Area, Pie). All major charts feature dynamic type selection via dropdown controls.
+-   **Styling**: Tailwind CSS with a custom color system supporting both light and dark modes. Light mode features colorful gradient summary cards (blue, green, purple, orange), while dark mode uses deep navy-charcoal backgrounds with vibrant cyan-blue accents.
+-   **Key Design Decisions**: Dual theme support (light/dark) with theme-specific styling, component composition with Radix UI for accessibility, path aliases for clean imports, mobile-responsive layout, and dynamic chart type selection across all visualizations.
 
 ### Backend Architecture
 -   **Runtime**: Node.js with Express.js.
