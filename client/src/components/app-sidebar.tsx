@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, Settings } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, Settings } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -21,6 +21,11 @@ const menuItems = [
     title: "AI Query",
     url: "/ai-query",
     icon: MessageSquare,
+  },
+  {
+    title: "Forecast",
+    url: "/forecast",
+    icon: TrendingUp,
   },
   {
     title: "Settings",

@@ -115,20 +115,27 @@ Preferred communication style: Simple, everyday language.
    - Settings page for credential management
    - **Security**: Credentials never exposed to client
 
+4. **ML Cost Forecasting** - Production ready (October 2025):
+   - Ridge Regression model with time series features (lag values, rolling statistics)
+   - 30/60/90-day forecast predictions with 95% confidence intervals
+   - Interactive forecast visualization with confidence bounds
+   - Budget recommendations based on forecast vs historical analysis
+   - Model accuracy metrics (MAPE) with validation
+   - Comprehensive error handling for edge cases (zero costs, insufficient data)
+   - Database persistence of forecast results
+   - **Security**: Input validation, finite value checks, graceful failure handling
+
 ### 🚧 In Progress Features
-4. **Database Persistence** - Partially implemented:
+5. **Database Persistence** - Partially implemented:
    - ✅ Database schema designed (6 tables)
    - ✅ PostgreSQL connection established
    - ✅ Cost history table created
+   - ✅ Forecast data persistence implemented
    - ⚠️ Deduplication logic needs refinement
    - ⚠️ Credential encryption required for production
    - ⚠️ Migration from in-memory to database storage needed
 
 ### 📋 Planned Features (Next Phase)
-5. **ML Forecasting Models** - To be implemented:
-   - Predictive spending forecasting using time series analysis
-   - Budget recommendations based on historical patterns
-   - Confidence intervals for predictions
 
 6. **Cost Optimization** - To be implemented:
    - Reserved instance recommendations
@@ -156,8 +163,30 @@ Preferred communication style: Simple, everyday language.
 
 ## Recent Changes (October 2025)
 
+### ML Cost Forecasting Implementation (Latest - October 2025)
+1. **Production-Ready ML Forecasting Feature**
+   - **Implementation**: Ridge Regression model with time series analysis for 30/60/90-day cost predictions
+   - **Features**: 
+     - Interactive forecast visualization with 95% confidence intervals
+     - Budget recommendations based on forecast vs historical analysis
+     - Model accuracy metrics (MAPE) with validation on holdout data
+     - Database persistence of forecast results in `forecast_data` table
+   - **Python ML Model** (server/python/cost_forecasting.py):
+     - Lag features (1, 2, 3, 7, 14 days) and rolling statistics for time series prediction
+     - Comprehensive error handling: zero-cost guards, MAPE validation, finite value checks
+     - Input validation: clamps forecast days (7-180), guards near-zero historical costs
+   - **Backend API** (POST /api/forecast, GET /api/forecast/history):
+     - Validates forecast data before DB persistence (finite values only)
+     - Returns 400 for failed forecasts with descriptive errors
+     - Filters invalid forecasts before database insertion
+   - **Frontend** (/forecast page):
+     - Summary cards: Historical Avg, Forecast Avg, Change %, Model Accuracy
+     - Area chart with confidence bounds visualization
+     - Error handling with descriptive alerts for edge cases
+     - Guards against undefined/null values in all displays
+
 ### Critical Bug Fixes
-1. **AI Query Response Display Fix** (Latest)
+1. **AI Query Response Display Fix**
    - **Issue**: AI query responses showed "No answer received from AI" despite successful backend processing
    - **Root Cause**: `apiRequest` function in `client/src/lib/queryClient.ts` was returning raw `Response` objects instead of parsed JSON
    - **Solution**: Updated `apiRequest` to parse JSON responses and added generic type parameter for type safety

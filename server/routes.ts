@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { eq, and, gte, lte } from "drizzle-orm";
-import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig, azureAccounts, costHistory, insertCostHistorySchema } from "@shared/schema";
+import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig, azureAccounts, costHistory, insertCostHistorySchema, forecastData } from "@shared/schema";
 import { processAzureCostData } from "./utils/process-cost-data";
 import { runPythonScript } from "./utils/python-runner";
 import { openai } from "./openai-client";
@@ -291,6 +291,95 @@ Please answer the user's question clearly and concisely based on this data.`;
         success: false,
         error: error instanceof Error ? error.message : "Connection test failed"
       });
+    }
+  });
+
+  // ML-based cost forecasting
+  app.post("/api/forecast", async (req, res) => {
+    try {
+      const { forecastDays = 30 } = req.body;
+      const costData = cachedCostData || loadSampleData();
+      
+      // Run Python forecasting script
+      const forecastResult = await runPythonScript("cost_forecasting.py", {
+        forecastDays,
+        costData,
+      });
+      
+      // If Python script failed, return error
+      if (!forecastResult.success) {
+        return res.status(400).json(forecastResult);
+      }
+      
+      // Save forecast to database if successful and we have Azure config
+      if (forecastResult.forecasts && 
+          Array.isArray(forecastResult.forecasts) && 
+          forecastResult.forecasts.length > 0 && 
+          azureConfig?.subscriptionId) {
+        try {
+          // Validate forecast data before persisting
+          const validForecasts = forecastResult.forecasts.filter((f: any) => 
+            f.date && 
+            typeof f.predictedCost === 'number' && 
+            Number.isFinite(f.predictedCost) &&
+            f.confidenceInterval?.lower !== undefined && 
+            f.confidenceInterval?.upper !== undefined &&
+            Number.isFinite(f.confidenceInterval.lower) &&
+            Number.isFinite(f.confidenceInterval.upper)
+          );
+          
+          if (validForecasts.length > 0) {
+            const forecastRecords = validForecasts.map((f: any) => ({
+              subscriptionId: azureConfig.subscriptionId,
+              serviceName: null,
+              forecastDate: new Date(f.date),
+              predictedCost: String(f.predictedCost),
+              confidenceInterval: f.confidenceInterval,
+              modelVersion: 'ridge_v1',
+            }));
+            
+            // Save to database
+            await db.insert(forecastData).values(forecastRecords);
+          }
+        } catch (dbError) {
+          console.error('Error saving forecast to database:', dbError);
+          // Continue even if database save fails
+        }
+      }
+      
+      res.json(forecastResult);
+    } catch (error) {
+      console.error("Forecasting error:", error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to generate forecast",
+        forecasts: [],
+        recommendations: [],
+      });
+    }
+  });
+
+  // Get historical forecasts from database
+  app.get("/api/forecast/history", async (req, res) => {
+    try {
+      const { subscriptionId } = req.query;
+      
+      // Build query with proper where clause handling
+      const query = db
+        .select()
+        .from(forecastData)
+        .orderBy(forecastData.createdAt)
+        .limit(100);
+      
+      // Only add where clause if subscriptionId is provided
+      const forecasts = subscriptionId 
+        ? await query.where(eq(forecastData.subscriptionId, String(subscriptionId)))
+        : await query;
+      
+      res.json({ success: true, forecasts });
+    } catch (error) {
+      console.error("Error fetching forecast history:", error);
+      res.status(500).json({ success: false, forecasts: [], error: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
 
