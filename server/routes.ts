@@ -127,24 +127,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get cost data from server cache instead of trusting client payload
       const costData = cachedCostData || loadSampleData();
 
-      // Prepare context for AI
-      const context = `You are an AI assistant analyzing Azure cloud spending data. 
-      
-Here is the cost data summary:
+      // Get anomaly data for comprehensive analysis
+      let anomalyData: any = null;
+      try {
+        anomalyData = await runPythonScript("anomaly_detection.py", costData);
+      } catch {
+        // Continue without anomaly data if detection fails
+      }
+
+      // Prepare comprehensive context for AI
+      const context = `You are an AI assistant analyzing Azure cloud spending data. Answer questions clearly and concisely based on the data provided.
+
+COST SUMMARY:
 - Total Cost: $${costData.totalCost.toFixed(2)}
 - Average Daily Cost: $${costData.avgDailyCost.toFixed(2)}
 - Top Service: ${costData.topService.name} ($${costData.topService.cost.toFixed(2)})
 - Number of Services: ${costData.serviceCount}
 - Peak Day: ${costData.peakDay.date} ($${costData.peakDay.cost.toFixed(2)})
 
-Top 10 Services by Cost:
+TOP 10 SERVICES BY COST:
 ${costData.serviceBreakdown.slice(0, 10).map((s: any, i: number) => 
   `${i + 1}. ${s.name}: $${s.cost.toFixed(2)} (${s.percentage.toFixed(1)}%)`
 ).join('\n')}
 
-Subscriptions: ${costData.subscriptions.join(', ')}
+DAILY COST TRENDS (Last 30 days):
+${costData.dailyTrends.map((d: any) => 
+  `${d.date}: $${d.cost.toFixed(2)}`
+).join('\n')}
 
-Please answer the user's question clearly and concisely based on this data.`;
+${anomalyData?.anomalies?.length > 0 ? `DETECTED SPENDING ANOMALIES:
+${anomalyData.anomalies.map((a: any) => 
+  `- ${a.date}: $${a.cost.toFixed(2)} (${a.type}, ${a.severity} severity) - ${a.description}`
+).join('\n')}
+
+INSIGHTS:
+${anomalyData.insights.join('\n')}` : ''}
+
+SUBSCRIPTIONS: ${costData.subscriptions.join(', ')}
+
+When answering:
+- For "which services" questions: list the top services from the service breakdown
+- For "trend" questions: analyze the daily trends data
+- For "anomaly" or "unusual" questions: reference the detected anomalies
+- Provide specific numbers and percentages from the data
+- Be concise and actionable`;
+
+      // Log context length for debugging
+      console.log(`AI Query context length: ${context.length} characters`);
+      console.log(`User query: "${query}"`);
+      console.log(`Anomaly data available:`, anomalyData?.anomalies?.length || 0, 'anomalies');
+      
+      // Log first 500 chars of context for debugging
+      if (query.toLowerCase().includes('anomal')) {
+        console.log('Context preview for anomaly query:',context.substring(0, 500));
+      }
 
       // the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
       const completion = await openai.chat.completions.create({
@@ -156,7 +192,59 @@ Please answer the user's question clearly and concisely based on this data.`;
         max_completion_tokens: 500,
       });
 
-      const answer = completion.choices[0]?.message?.content || "I couldn't generate an answer.";
+      console.log(`OpenAI completion choices:`, completion.choices?.length || 0);
+      console.log(`OpenAI response content:`, completion.choices[0]?.message?.content?.substring(0, 100) || "NONE");
+      
+      if (!completion.choices[0]?.message?.content) {
+        console.log('OpenAI response was empty - full completion:', JSON.stringify(completion, null, 2));
+      }
+
+      let answer = completion.choices[0]?.message?.content;
+      
+      // If OpenAI failed to generate an answer, provide data-driven fallback
+      if (!answer || answer.trim().length === 0) {
+        console.log('OpenAI returned empty response, using data-driven fallback');
+        console.log('Query lower:', query.toLowerCase());
+        
+        // Generate fallback answer based on query type
+        if (query.toLowerCase().includes('anomal')) {
+          console.log('Taking anomaly fallback branch');
+          if (anomalyData?.anomalies?.length > 0) {
+            answer = `I detected ${anomalyData.anomalies.length} spending anomalies:\n\n` +
+              anomalyData.anomalies.slice(0, 5).map((a: any) => 
+                `• ${a.date}: $${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)`
+              ).join('\n') +
+              (anomalyData.insights?.length > 0 ? `\n\nKey insights:\n${anomalyData.insights.slice(0, 3).map((i: any) => `• ${i}`).join('\n')}` : '');
+          } else {
+            answer = 'No significant spending anomalies were detected in your cost data.';
+          }
+        } else if (query.toLowerCase().includes('trend')) {
+          console.log('Taking trend fallback branch');
+          const recentTrends = costData.dailyTrends.slice(-7);
+          const avgRecent = recentTrends.reduce((sum: number, d: any) => sum + d.cost, 0) / recentTrends.length;
+          const earlierAvg = costData.dailyTrends.slice(0, 7).reduce((sum: number, d: any) => sum + d.cost, 0) / 7;
+          const change = ((avgRecent - earlierAvg) / earlierAvg) * 100;
+          answer = `Recent 7-day average: $${avgRecent.toFixed(2)}\n` +
+            `Compared to earlier period: ${change > 0 ? '+' : ''}${change.toFixed(1)}%\n` +
+            `Peak day this period: ${costData.peakDay.date} ($${costData.peakDay.cost.toFixed(2)})`;
+        } else if (query.toLowerCase().includes('service') || query.toLowerCase().includes('cost')) {
+          console.log('Taking service/cost fallback branch');
+          // Fallback for service/cost queries
+          answer = `Top services by cost:\n` +
+            costData.serviceBreakdown.slice(0, 8).map((s: any) => 
+              `- ${s.name}: $${s.cost.toFixed(2)} (${s.percentage.toFixed(1)}%)`
+            ).join('\n') +
+            `\n\nNote: ${costData.topService.name} accounts for ${costData.topService.percentage?.toFixed(1)}% of your total spending.`;
+        } else if (query.toLowerCase().includes('top') || query.toLowerCase().includes('driver')) {
+          console.log('Taking top driver fallback branch');
+          // Fallback for top cost driver queries
+          answer = `Your top cost driver is ${costData.topService.name} at $${costData.topService.cost.toFixed(2)}, ` +
+            `which represents ${costData.topService.percentage?.toFixed(1)}% of your total Azure spending.`;
+        } else {
+          console.log('No matching fallback branch - using generic message');
+          answer = "I couldn't generate an answer.";
+        }
+      }
 
       res.json({
         answer,
