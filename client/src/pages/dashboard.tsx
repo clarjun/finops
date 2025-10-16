@@ -14,6 +14,7 @@ import { queryClient } from "@/lib/queryClient";
 import { CostSummaryCard } from "@/components/cost-summary-card";
 import { DailyTrendChart } from "@/components/daily-trend-chart";
 import { ServiceBreakdownChart } from "@/components/service-breakdown-chart";
+import { SubscriptionChart } from "@/components/subscription-chart";
 import { CostDistributionTable } from "@/components/cost-distribution-table";
 import { InsightsPanel } from "@/components/insights-panel";
 import { useToast } from "@/hooks/use-toast";
@@ -154,11 +155,9 @@ export default function Dashboard() {
               limit={10}
               title="Top 10 Services"
             />
-            <ServiceBreakdownChart
-              data={costData?.serviceBreakdown || []}
+            <SubscriptionChart
+              data={costData?.subscriptionBreakdown || []}
               loading={costLoading}
-              limit={8}
-              title="Top 8 Cost Drivers"
             />
           </div>
 
