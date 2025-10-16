@@ -117,24 +117,28 @@ export default function Dashboard() {
           value={costData ? `$${costData.totalCost.toFixed(2)}` : "$0.00"}
           icon={DollarSign}
           loading={costLoading}
+          variant="blue"
         />
         <CostSummaryCard
           title="Avg Daily Cost"
           value={costData ? `$${costData.avgDailyCost.toFixed(2)}` : "$0.00"}
           icon={TrendingUp}
           loading={costLoading}
+          variant="green"
         />
         <CostSummaryCard
           title="Top Service"
           value={costData ? costData.topService.name : "N/A"}
           icon={Server}
           loading={costLoading}
+          variant="purple"
         />
         <CostSummaryCard
           title="Service Count"
           value={costData ? costData.serviceCount.toString() : "0"}
           icon={Calendar}
           loading={costLoading}
+          variant="orange"
         />
       </div>
 
