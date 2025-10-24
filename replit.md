@@ -4,7 +4,7 @@
 
 This AI-powered multi-cloud FinOps dashboard provides comprehensive cost optimization across Azure, AWS, and GCP. It delivers interactive visualizations, natural language querying, ML-based anomaly detection, and automated cost optimization recommendations. The project enables businesses to track spending, optimize resources, and make data-driven financial decisions across all major cloud providers.
 
-**Implementation Status:** All core features fully implemented and tested (October 24, 2025). Multi-cloud tabbed interface with per-provider forecast caching operational. AWS Cost Explorer API integration complete with real-time data fetching. Database schema synchronized for multi-cloud support. All AI features (anomaly detection, forecasting, natural language queries) operational.
+**Implementation Status:** All core features fully implemented and tested (October 24, 2025). Multi-cloud tabbed interface with per-provider forecast caching operational. AWS Cost Explorer API integration complete with real-time data fetching. Database schema synchronized for multi-cloud support. All AI features (anomaly detection, forecasting, natural language queries) operational with smart provider detection and robust fallback logic.
 
 Key capabilities include:
 
@@ -20,6 +20,10 @@ Key capabilities include:
 -   **Predictive Forecasting**: Multi-cloud cost predictions using time-series ML models (30/60/90-day forecasts with confidence intervals)
 -   **Anomaly Detection**: Automatic detection of cost spikes and unusual spending patterns using Isolation Forest
 -   **Natural Language Queries**: Ask questions like "What will next month's AWS cost be?" using OpenAI GPT-5
+    -   **Smart Provider Detection**: Automatically identifies which cloud provider(s) the user is asking about (AWS, GCP, Azure, or multi-cloud)
+    -   **Dynamic Context**: AI prompt adapts based on detected provider for accurate analysis
+    -   **Robust Fallbacks**: When OpenAI fails, provides data-driven responses with cost summaries, service breakdowns, and trend analysis
+    -   **Comprehensive Coverage**: Handles all comparison phrasings (compare, between, vs, versus) with proper multi-cloud aggregation
 -   **Automated Rightsizing**: ML-based recommendations to downsize underutilized resources (EC2, Compute Engine, Azure VMs)
 -   **Root Cause Analysis**: AI-generated explanations for cost anomalies with deployment correlation
 
