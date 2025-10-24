@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Settings } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Bell, Settings } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -31,6 +31,11 @@ const menuItems = [
     title: "Budgets",
     url: "/budgets",
     icon: DollarSign,
+  },
+  {
+    title: "Alerts",
+    url: "/alerts",
+    icon: Bell,
   },
   {
     title: "Settings",

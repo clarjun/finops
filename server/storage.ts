@@ -99,6 +99,44 @@ export class DbStorage {
       .orderBy(desc(schema.costHistory.date));
   }
   
+  async queryCostHistory(filters: {
+    provider?: string;
+    accountId?: string;
+    serviceName?: string;
+    startDate?: Date;
+    endDate?: Date;
+  }): Promise<schema.CostHistory[]> {
+    const conditions = [];
+    
+    if (filters.provider) {
+      conditions.push(eq(schema.costHistory.provider, filters.provider));
+    }
+    if (filters.accountId) {
+      conditions.push(eq(schema.costHistory.accountId, filters.accountId));
+    }
+    if (filters.serviceName) {
+      conditions.push(eq(schema.costHistory.serviceName, filters.serviceName));
+    }
+    if (filters.startDate) {
+      conditions.push(gte(schema.costHistory.date, filters.startDate));
+    }
+    if (filters.endDate) {
+      conditions.push(lte(schema.costHistory.date, filters.endDate));
+    }
+    
+    if (conditions.length === 0) {
+      // No filters - return all
+      return await db.select()
+        .from(schema.costHistory)
+        .orderBy(desc(schema.costHistory.date));
+    }
+    
+    return await db.select()
+      .from(schema.costHistory)
+      .where(and(...conditions))
+      .orderBy(desc(schema.costHistory.date));
+  }
+  
   async getLatestCostData(accountId: string, days: number = 30, provider?: schema.CloudProvider): Promise<schema.CostHistory[]> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);

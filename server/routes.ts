@@ -22,6 +22,7 @@ import {
   generateMultiCloudSampleData, 
   getSampleDataByProvider 
 } from "./utils/sample-data-generator";
+import { checkBudgetAlerts } from "./utils/budget-alert-checker";
 import type { CloudProvider } from "@shared/schema";
 
 // Multi-cloud sample data cache
@@ -999,6 +1000,25 @@ When answering:
     } catch (error) {
       console.error("Error deleting budget:", error);
       res.status(500).json({ success: false, error: "Failed to delete budget" });
+    }
+  });
+  
+  // Check budget alerts (manual trigger)
+  app.post("/api/budgets/check-alerts", async (_req, res) => {
+    try {
+      const results = await checkBudgetAlerts();
+      res.json({ 
+        success: true, 
+        ...results,
+        message: `Checked ${results.checked} budgets, sent ${results.alerted} alerts`
+      });
+    } catch (error) {
+      console.error("Error checking budget alerts:", error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to check budget alerts",
+        details: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
   });
   

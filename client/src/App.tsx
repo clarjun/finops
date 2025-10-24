@@ -11,6 +11,7 @@ import Dashboard from "@/pages/dashboard";
 import AiQuery from "@/pages/ai-query";
 import Forecast from "@/pages/forecast";
 import Budgets from "@/pages/budgets";
+import Alerts from "@/pages/alerts";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -21,6 +22,7 @@ function Router() {
       <Route path="/ai-query" component={AiQuery} />
       <Route path="/forecast" component={Forecast} />
       <Route path="/budgets" component={Budgets} />
+      <Route path="/alerts" component={Alerts} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>
