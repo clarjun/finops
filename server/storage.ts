@@ -76,12 +76,16 @@ export class DbStorage {
   }
   
   async getCostHistory(
-    subscriptionId: string,
+    accountId: string,
     startDate?: Date,
-    endDate?: Date
+    endDate?: Date,
+    provider?: schema.CloudProvider
   ): Promise<schema.CostHistory[]> {
-    const conditions = [eq(schema.costHistory.subscriptionId, subscriptionId)];
+    const conditions = [eq(schema.costHistory.accountId, accountId)];
     
+    if (provider) {
+      conditions.push(eq(schema.costHistory.provider, provider));
+    }
     if (startDate) {
       conditions.push(gte(schema.costHistory.date, startDate));
     }
@@ -95,11 +99,11 @@ export class DbStorage {
       .orderBy(desc(schema.costHistory.date));
   }
   
-  async getLatestCostData(subscriptionId: string, days: number = 30): Promise<schema.CostHistory[]> {
+  async getLatestCostData(accountId: string, days: number = 30, provider?: schema.CloudProvider): Promise<schema.CostHistory[]> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
     
-    return this.getCostHistory(subscriptionId, startDate);
+    return this.getCostHistory(accountId, startDate, undefined, provider);
   }
   
   // ==================== ALERT RULES ====================
@@ -125,7 +129,7 @@ export class DbStorage {
   async getEnabledAlertRules(): Promise<schema.AlertRule[]> {
     return await db.select()
       .from(schema.alertRules)
-      .where(eq(schema.alertRules.isEnabled, 1));
+      .where(eq(schema.alertRules.isEnabled, true));
   }
   
   async updateAlertRule(id: number, updates: Partial<schema.InsertAlertRule>): Promise<schema.AlertRule | undefined> {
@@ -207,10 +211,16 @@ export class DbStorage {
       .onConflictDoNothing();
   }
   
-  async getLatestForecasts(subscriptionId: string, limit: number = 90): Promise<schema.ForecastData[]> {
+  async getLatestForecasts(accountId: string, limit: number = 90, provider?: schema.CloudProvider): Promise<schema.ForecastData[]> {
+    const conditions = [eq(schema.forecastData.accountId, accountId)];
+    
+    if (provider) {
+      conditions.push(eq(schema.forecastData.provider, provider));
+    }
+    
     return await db.select()
       .from(schema.forecastData)
-      .where(eq(schema.forecastData.subscriptionId, subscriptionId))
+      .where(and(...conditions))
       .orderBy(desc(schema.forecastData.forecastDate))
       .limit(limit);
   }
@@ -227,11 +237,14 @@ export class DbStorage {
     return created;
   }
   
-  async getActiveRecommendations(subscriptionId?: string): Promise<schema.OptimizationRecommendation[]> {
+  async getActiveRecommendations(accountId?: string, provider?: schema.CloudProvider): Promise<schema.OptimizationRecommendation[]> {
     const conditions = [eq(schema.optimizationRecommendations.status, 'active')];
     
-    if (subscriptionId) {
-      conditions.push(eq(schema.optimizationRecommendations.subscriptionId, subscriptionId));
+    if (accountId) {
+      conditions.push(eq(schema.optimizationRecommendations.accountId, accountId));
+    }
+    if (provider) {
+      conditions.push(eq(schema.optimizationRecommendations.provider, provider));
     }
     
     return await db.select()
@@ -247,6 +260,269 @@ export class DbStorage {
     const [updated] = await db.update(schema.optimizationRecommendations)
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(schema.optimizationRecommendations.id, id))
+      .returning();
+    
+    return updated;
+  }
+  
+  // ==================== MULTI-CLOUD ACCOUNTS ====================
+  
+  async createCloudAccount(account: schema.InsertCloudAccount): Promise<schema.CloudAccount> {
+    // Encrypt credentials before storage
+    const encryptedCredentials = encrypt(JSON.stringify(account.credentials));
+    
+    const [created] = await db.insert(schema.cloudAccounts)
+      .values({ ...account, credentials: encryptedCredentials as any })
+      .returning();
+    
+    return created;
+  }
+  
+  async getCloudAccount(id: number): Promise<schema.CloudAccount | undefined> {
+    const account = await db.query.cloudAccounts.findFirst({
+      where: eq(schema.cloudAccounts.id, id),
+    });
+    
+    if (!account) return undefined;
+    
+    // Decrypt credentials
+    const decryptedCredentials = decrypt(account.credentials as string);
+    return { ...account, credentials: JSON.parse(decryptedCredentials) };
+  }
+  
+  async getAllCloudAccounts(provider?: schema.CloudProvider): Promise<schema.CloudAccount[]> {
+    const query = db.select().from(schema.cloudAccounts);
+    
+    const accounts = provider
+      ? await query.where(eq(schema.cloudAccounts.provider, provider))
+      : await query;
+    
+    // Decrypt credentials
+    return accounts.map(account => ({
+      ...account,
+      credentials: JSON.parse(decrypt(account.credentials as string))
+    }));
+  }
+  
+  async getActiveCloudAccounts(provider?: schema.CloudProvider): Promise<schema.CloudAccount[]> {
+    const conditions = [eq(schema.cloudAccounts.isActive, true)];
+    
+    if (provider) {
+      conditions.push(eq(schema.cloudAccounts.provider, provider));
+    }
+    
+    const accounts = await db.select()
+      .from(schema.cloudAccounts)
+      .where(and(...conditions));
+    
+    // Decrypt credentials
+    return accounts.map(account => ({
+      ...account,
+      credentials: JSON.parse(decrypt(account.credentials as string))
+    }));
+  }
+  
+  async updateCloudAccount(id: number, updates: Partial<schema.InsertCloudAccount>): Promise<schema.CloudAccount | undefined> {
+    // Encrypt credentials if provided
+    const processedUpdates = updates.credentials
+      ? { ...updates, credentials: encrypt(JSON.stringify(updates.credentials)) as any }
+      : updates;
+    
+    const [updated] = await db.update(schema.cloudAccounts)
+      .set({ ...processedUpdates, updatedAt: new Date() })
+      .where(eq(schema.cloudAccounts.id, id))
+      .returning();
+    
+    if (!updated) return undefined;
+    
+    // Decrypt credentials
+    return {
+      ...updated,
+      credentials: JSON.parse(decrypt(updated.credentials as string))
+    };
+  }
+  
+  async deleteCloudAccount(id: number): Promise<boolean> {
+    const result = await db.delete(schema.cloudAccounts)
+      .where(eq(schema.cloudAccounts.id, id));
+    
+    return result.rowCount ? result.rowCount > 0 : false;
+  }
+  
+  // ==================== BUDGETS ====================
+  
+  async createBudget(budget: schema.InsertBudget): Promise<schema.Budget> {
+    const [created] = await db.insert(schema.budgets)
+      .values(budget)
+      .returning();
+    
+    return created;
+  }
+  
+  async getBudget(id: number): Promise<schema.Budget | undefined> {
+    return await db.query.budgets.findFirst({
+      where: eq(schema.budgets.id, id),
+    });
+  }
+  
+  async getAllBudgets(provider?: schema.CloudProvider): Promise<schema.Budget[]> {
+    if (!provider) {
+      return await db.select().from(schema.budgets);
+    }
+    
+    return await db.select()
+      .from(schema.budgets)
+      .where(eq(schema.budgets.provider, provider));
+  }
+  
+  async getActiveBudgets(provider?: schema.CloudProvider): Promise<schema.Budget[]> {
+    const conditions = [eq(schema.budgets.isActive, true)];
+    
+    if (provider) {
+      conditions.push(eq(schema.budgets.provider, provider));
+    }
+    
+    return await db.select()
+      .from(schema.budgets)
+      .where(and(...conditions));
+  }
+  
+  async updateBudget(id: number, updates: Partial<schema.InsertBudget>): Promise<schema.Budget | undefined> {
+    const [updated] = await db.update(schema.budgets)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(schema.budgets.id, id))
+      .returning();
+    
+    return updated;
+  }
+  
+  async deleteBudget(id: number): Promise<boolean> {
+    const result = await db.delete(schema.budgets)
+      .where(eq(schema.budgets.id, id));
+    
+    return result.rowCount ? result.rowCount > 0 : false;
+  }
+  
+  // ==================== RESOURCE INVENTORY ====================
+  
+  async createResourceInventory(resource: schema.InsertResourceInventory): Promise<schema.ResourceInventory> {
+    const [created] = await db.insert(schema.resourceInventory)
+      .values(resource)
+      .returning();
+    
+    return created;
+  }
+  
+  async getResourceInventory(provider?: schema.CloudProvider, state?: string): Promise<schema.ResourceInventory[]> {
+    const conditions = [];
+    
+    if (provider) {
+      conditions.push(eq(schema.resourceInventory.provider, provider));
+    }
+    if (state) {
+      conditions.push(eq(schema.resourceInventory.state, state));
+    }
+    
+    return await db.select()
+      .from(schema.resourceInventory)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(schema.resourceInventory.lastSeenAt));
+  }
+  
+  async getIdleResources(provider?: schema.CloudProvider): Promise<schema.ResourceInventory[]> {
+    const conditions = [eq(schema.resourceInventory.state, 'idle')];
+    
+    if (provider) {
+      conditions.push(eq(schema.resourceInventory.provider, provider));
+    }
+    
+    return await db.select()
+      .from(schema.resourceInventory)
+      .where(and(...conditions));
+  }
+  
+  // ==================== TAG ANALYSIS ====================
+  
+  async createTagAnalysis(analysis: schema.InsertTagAnalysis): Promise<schema.TagAnalysis> {
+    const [created] = await db.insert(schema.tagAnalysis)
+      .values(analysis)
+      .returning();
+    
+    return created;
+  }
+  
+  async getTagAnalysis(provider?: schema.CloudProvider, period?: string): Promise<schema.TagAnalysis[]> {
+    const conditions = [];
+    
+    if (provider) {
+      conditions.push(eq(schema.tagAnalysis.provider, provider));
+    }
+    if (period) {
+      conditions.push(eq(schema.tagAnalysis.period, period));
+    }
+    
+    return await db.select()
+      .from(schema.tagAnalysis)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(schema.tagAnalysis.periodDate));
+  }
+  
+  // ==================== SAVINGS PLANS ====================
+  
+  async createSavingsPlan(plan: schema.InsertSavingsPlan): Promise<schema.SavingsPlan> {
+    const [created] = await db.insert(schema.savingsPlans)
+      .values(plan)
+      .returning();
+    
+    return created;
+  }
+  
+  async getSavingsPlans(provider?: schema.CloudProvider, status?: string): Promise<schema.SavingsPlan[]> {
+    const conditions = [];
+    
+    if (provider) {
+      conditions.push(eq(schema.savingsPlans.provider, provider));
+    }
+    if (status) {
+      conditions.push(eq(schema.savingsPlans.status, status));
+    }
+    
+    return await db.select()
+      .from(schema.savingsPlans)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(schema.savingsPlans.createdAt));
+  }
+  
+  // ==================== ANOMALY EVENTS ====================
+  
+  async createAnomalyEvent(anomaly: schema.InsertAnomalyEvent): Promise<schema.AnomalyEvent> {
+    const [created] = await db.insert(schema.anomalyEvents)
+      .values(anomaly)
+      .returning();
+    
+    return created;
+  }
+  
+  async getAnomalyEvents(provider?: schema.CloudProvider, status?: string): Promise<schema.AnomalyEvent[]> {
+    const conditions = [];
+    
+    if (provider) {
+      conditions.push(eq(schema.anomalyEvents.provider, provider));
+    }
+    if (status) {
+      conditions.push(eq(schema.anomalyEvents.status, status));
+    }
+    
+    return await db.select()
+      .from(schema.anomalyEvents)
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(desc(schema.anomalyEvents.detectedAt));
+  }
+  
+  async updateAnomalyEvent(id: number, updates: Partial<schema.InsertAnomalyEvent>): Promise<schema.AnomalyEvent | undefined> {
+    const [updated] = await db.update(schema.anomalyEvents)
+      .set(updates)
+      .where(eq(schema.anomalyEvents.id, id))
       .returning();
     
     return updated;

@@ -39,16 +39,20 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
   try {
     const rows = azureResponse.properties.rows;
     
-    // Map Azure response rows to cost history records
+    // Map Azure response rows to cost history records (multi-cloud format)
     // Row format: [PreTaxCost, UsageDate, SubscriptionName, ResourceGroup, ServiceName, Currency]
     const costRecords = rows.map((row: any) => ({
+      provider: 'azure' as const,
       date: new Date(String(row[1]).replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3')),
-      subscriptionId: subscriptionId, // Use actual subscription ID from config
-      subscriptionName: row[2] || 'unknown',
+      accountId: subscriptionId, // Azure subscription ID
+      accountName: row[2] || 'unknown',
       resourceGroup: row[3] || 'unknown',
       serviceName: row[4] || 'unknown',
+      region: undefined,
       cost: String(row[0]),
       currency: row[5] || 'USD',
+      tags: null,
+      metadata: null,
     }));
 
     // Use upsert to avoid duplicates on repeated refreshes
@@ -63,7 +67,8 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
         .delete(costHistory)
         .where(
           and(
-            eq(costHistory.subscriptionId, subscriptionId),
+            eq(costHistory.accountId, subscriptionId),
+            eq(costHistory.provider, 'azure'),
             gte(costHistory.date, minDate),
             lte(costHistory.date, maxDate)
           )
@@ -471,12 +476,14 @@ When answering:
             const account = await storage.getAzureAccount(currentAzureAccountId);
             if (account) {
               const forecastRecords = validForecasts.map((f: any) => ({
-                subscriptionId: account.subscriptionId,
+                provider: 'azure' as const,
+                accountId: account.subscriptionId,
                 serviceName: null,
                 forecastDate: new Date(f.date),
                 predictedCost: String(f.predictedCost),
                 confidenceInterval: f.confidenceInterval,
                 modelVersion: 'ridge_v1',
+                modelType: 'ridge',
               }));
               
               // Save to database
@@ -515,7 +522,10 @@ When answering:
       
       // Only add where clause if subscriptionId is provided
       const forecasts = subscriptionId 
-        ? await query.where(eq(forecastData.subscriptionId, String(subscriptionId)))
+        ? await query.where(and(
+            eq(forecastData.accountId, String(subscriptionId)),
+            eq(forecastData.provider, 'azure')
+          ))
         : await query;
       
       res.json({ success: true, forecasts });
@@ -541,16 +551,17 @@ When answering:
   // Create alert rule
   app.post("/api/alerts/rules", async (req, res) => {
     try {
-      // Map API fields to database schema
+      // Map API fields to database schema (multi-cloud compatible)
       const ruleData: schema.InsertAlertRule = {
         ruleName: req.body.name || req.body.ruleName,
-        subscriptionId: req.body.subscriptionId,
+        provider: req.body.provider,
+        accountId: req.body.accountId || req.body.subscriptionId, // Support legacy subscriptionId field
         serviceName: req.body.serviceName,
         thresholdAmount: String(req.body.condition?.value || req.body.thresholdAmount || 0),
         thresholdType: req.body.type === 'threshold' ? 'daily' : (req.body.thresholdType || 'daily'),
         comparisonOperator: req.body.condition?.operator === '>' ? 'gt' : (req.body.comparisonOperator || 'gt'),
         emailRecipients: Array.isArray(req.body.emails) ? req.body.emails.join(',') : (req.body.emailRecipients || ''),
-        isEnabled: req.body.enabled !== undefined ? (req.body.enabled ? 1 : 0) : 1,
+        isEnabled: req.body.enabled !== undefined ? req.body.enabled : true,
       };
       
       const rule = await storage.createAlertRule(ruleData);
@@ -766,6 +777,419 @@ When answering:
     } catch (error) {
       console.error("Error generating comprehensive report CSV:", error);
       res.status(500).json({ error: "Failed to generate CSV export" });
+    }
+  });
+
+  // ==================== MULTI-CLOUD ENDPOINTS ====================
+  
+  // Get all cloud accounts
+  app.get("/api/cloud-accounts", async (req, res) => {
+    try {
+      const { provider } = req.query;
+      const accounts = await storage.getAllCloudAccounts(provider as schema.CloudProvider);
+      
+      // Never return sensitive credentials to client
+      const safeAccounts = accounts.map(acc => ({
+        id: acc.id,
+        provider: acc.provider,
+        accountName: acc.accountName,
+        accountId: acc.accountId,
+        isActive: acc.isActive,
+        lastSyncAt: acc.lastSyncAt,
+        createdAt: acc.createdAt,
+        // credentials are intentionally omitted
+      }));
+      
+      res.json({ success: true, accounts: safeAccounts });
+    } catch (error) {
+      console.error("Error fetching cloud accounts:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch cloud accounts" });
+    }
+  });
+  
+  // Create cloud account
+  app.post("/api/cloud-accounts", async (req, res) => {
+    try {
+      const accountData: schema.InsertCloudAccount = {
+        provider: req.body.provider,
+        accountName: req.body.accountName,
+        accountId: req.body.accountId,
+        credentials: req.body.credentials,
+        refreshInterval: req.body.refreshInterval || 86400,
+        isActive: req.body.isActive !== undefined ? req.body.isActive : true,
+      };
+      
+      const account = await storage.createCloudAccount(accountData);
+      
+      res.json({
+        success: true,
+        account: {
+          id: account.id,
+          provider: account.provider,
+          accountName: account.accountName,
+          accountId: account.accountId,
+          isActive: account.isActive,
+        }
+      });
+    } catch (error) {
+      console.error("Error creating cloud account:", error);
+      res.status(400).json({ success: false, error: "Failed to create cloud account" });
+    }
+  });
+  
+  // Update cloud account
+  app.patch("/api/cloud-accounts/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const account = await storage.updateCloudAccount(id, req.body);
+      
+      if (!account) {
+        return res.status(404).json({ success: false, error: "Cloud account not found" });
+      }
+      
+      res.json({
+        success: true,
+        account: {
+          id: account.id,
+          provider: account.provider,
+          accountName: account.accountName,
+          accountId: account.accountId,
+          isActive: account.isActive,
+        }
+      });
+    } catch (error) {
+      console.error("Error updating cloud account:", error);
+      res.status(400).json({ success: false, error: "Failed to update cloud account" });
+    }
+  });
+  
+  // Delete cloud account
+  app.delete("/api/cloud-accounts/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const success = await storage.deleteCloudAccount(id);
+      
+      if (!success) {
+        return res.status(404).json({ success: false, error: "Cloud account not found" });
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting cloud account:", error);
+      res.status(500).json({ success: false, error: "Failed to delete cloud account" });
+    }
+  });
+  
+  // ==================== BUDGET MANAGEMENT ====================
+  
+  // Get all budgets
+  app.get("/api/budgets", async (req, res) => {
+    try {
+      const { provider } = req.query;
+      const budgets = await storage.getAllBudgets(provider as schema.CloudProvider);
+      res.json({ success: true, budgets });
+    } catch (error) {
+      console.error("Error fetching budgets:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch budgets" });
+    }
+  });
+  
+  // Create budget
+  app.post("/api/budgets", async (req, res) => {
+    try {
+      const budgetData: schema.InsertBudget = {
+        budgetName: req.body.budgetName || req.body.name,
+        provider: req.body.provider,
+        accountId: req.body.accountId,
+        serviceName: req.body.serviceName,
+        amount: String(req.body.amount),
+        period: req.body.period || 'monthly',
+        startDate: new Date(req.body.startDate || Date.now()),
+        endDate: req.body.endDate ? new Date(req.body.endDate) : undefined,
+        alertThresholds: req.body.alertThresholds || { 50: true, 75: true, 90: true, 100: true },
+        isActive: req.body.isActive !== undefined ? req.body.isActive : true,
+      };
+      
+      const budget = await storage.createBudget(budgetData);
+      res.json({ success: true, budget });
+    } catch (error) {
+      console.error("Error creating budget:", error);
+      res.status(400).json({ success: false, error: "Failed to create budget" });
+    }
+  });
+  
+  // Update budget
+  app.patch("/api/budgets/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const budget = await storage.updateBudget(id, req.body);
+      
+      if (!budget) {
+        return res.status(404).json({ success: false, error: "Budget not found" });
+      }
+      
+      res.json({ success: true, budget });
+    } catch (error) {
+      console.error("Error updating budget:", error);
+      res.status(400).json({ success: false, error: "Failed to update budget" });
+    }
+  });
+  
+  // Delete budget
+  app.delete("/api/budgets/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const success = await storage.deleteBudget(id);
+      
+      if (!success) {
+        return res.status(404).json({ success: false, error: "Budget not found" });
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting budget:", error);
+      res.status(500).json({ success: false, error: "Failed to delete budget" });
+    }
+  });
+  
+  // ==================== MULTI-CLOUD COST DATA ====================
+  
+  // Get multi-cloud cost data with sample data for AWS/GCP
+  app.get("/api/multi-cloud/costs", async (req, res) => {
+    try {
+      const { provider, startDate, endDate } = req.query;
+      
+      // Import multi-cloud utilities
+      const { fetchAwsCosts } = await import('./utils/aws-cost-client');
+      const { fetchGcpCosts } = await import('./utils/gcp-cost-client');
+      const { 
+        processMultiCloudCosts, 
+        normalizeAwsCosts, 
+        normalizeGcpCosts,
+        normalizeAzureCosts 
+      } = await import('./utils/multi-cloud-processor');
+      
+      const allCostData = [];
+      
+      // Generate sample AWS data
+      if (!provider || provider === 'aws') {
+        try {
+          const awsData = await fetchAwsCosts({
+            accessKeyId: 'mock',
+            secretAccessKey: 'mock',
+            region: 'us-east-1',
+            startDate: startDate as string || '2025-01-01',
+            endDate: endDate as string || '2025-01-31',
+          });
+          allCostData.push(...normalizeAwsCosts(awsData));
+        } catch (error) {
+          console.warn('AWS cost fetch failed, using sample data');
+        }
+      }
+      
+      // Generate sample GCP data
+      if (!provider || provider === 'gcp') {
+        try {
+          const gcpData = await fetchGcpCosts({
+            projectId: 'sample-project',
+            clientEmail: 'mock@example.com',
+            privateKey: 'mock',
+            startDate: startDate as string || '2025-01-01',
+            endDate: endDate as string || '2025-01-31',
+          });
+          allCostData.push(...normalizeGcpCosts(gcpData));
+        } catch (error) {
+          console.warn('GCP cost fetch failed, using sample data');
+        }
+      }
+      
+      // Add Azure data if available
+      if ((!provider || provider === 'azure') && cachedCostData) {
+        // Convert Azure processed data to unified format
+        // This is a simplified conversion - in production would query from costHistory
+        const azureUnified = cachedCostData.dailyTrends.flatMap((day: any) =>
+          Object.entries(day.services).map(([serviceName, cost]) => ({
+            provider: 'azure' as schema.CloudProvider,
+            accountId: 'azure-subscription',
+            accountName: 'Azure Subscription',
+            date: day.date,
+            serviceName,
+            region: undefined,
+            cost: cost as number,
+            currency: 'USD',
+            tags: {},
+            metadata: {},
+          }))
+        );
+        allCostData.push(...azureUnified);
+      }
+      
+      // Process and return unified data
+      const processedData = processMultiCloudCosts(allCostData, provider as schema.CloudProvider);
+      
+      res.json({
+        success: true,
+        data: processedData,
+        provider: provider || 'all',
+        dateRange: {
+          start: startDate || '2025-01-01',
+          end: endDate || '2025-01-31',
+        }
+      });
+    } catch (error) {
+      console.error("Error fetching multi-cloud costs:", error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to fetch multi-cloud costs",
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+  
+  // Multi-cloud comparison
+  app.get("/api/multi-cloud/comparison", async (req, res) => {
+    try {
+      const { period = 'monthly' } = req.query;
+      
+      const { fetchAwsCosts } = await import('./utils/aws-cost-client');
+      const { fetchGcpCosts } = await import('./utils/gcp-cost-client');
+      const { 
+        normalizeAwsCosts, 
+        normalizeGcpCosts,
+        calculateMultiCloudComparison 
+      } = await import('./utils/multi-cloud-processor');
+      
+      const allCostData = [];
+      
+      // Fetch all providers
+      const awsData = await fetchAwsCosts({
+        accessKeyId: 'mock',
+        secretAccessKey: 'mock',
+        region: 'us-east-1',
+        startDate: '2025-01-01',
+        endDate: '2025-01-31',
+      });
+      allCostData.push(...normalizeAwsCosts(awsData));
+      
+      const gcpData = await fetchGcpCosts({
+        projectId: 'sample-project',
+        clientEmail: 'mock@example.com',
+        privateKey: 'mock',
+        startDate: '2025-01-01',
+        endDate: '2025-01-31',
+      });
+      allCostData.push(...normalizeGcpCosts(gcpData));
+      
+      // Add Azure if available
+      if (cachedCostData) {
+        const azureUnified = cachedCostData.dailyTrends.flatMap((day: any) =>
+          Object.entries(day.services).map(([serviceName, cost]) => ({
+            provider: 'azure' as schema.CloudProvider,
+            accountId: 'azure-subscription',
+            accountName: 'Azure Subscription',
+            date: day.date,
+            serviceName,
+            cost: cost as number,
+            currency: 'USD',
+            tags: {},
+          }))
+        );
+        allCostData.push(...azureUnified);
+      }
+      
+      const comparison = calculateMultiCloudComparison(allCostData);
+      
+      res.json({
+        success: true,
+        comparison,
+        period,
+      });
+    } catch (error) {
+      console.error("Error calculating multi-cloud comparison:", error);
+      res.status(500).json({ 
+        success: false, 
+        error: "Failed to calculate multi-cloud comparison" 
+      });
+    }
+  });
+  
+  // ==================== RESOURCE INVENTORY ====================
+  
+  // Get resource inventory
+  app.get("/api/resources", async (req, res) => {
+    try {
+      const { provider, state } = req.query;
+      const resources = await storage.getResourceInventory(
+        provider as schema.CloudProvider,
+        state as string
+      );
+      res.json({ success: true, resources });
+    } catch (error) {
+      console.error("Error fetching resource inventory:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch resource inventory" });
+    }
+  });
+  
+  // Get idle resources
+  app.get("/api/resources/idle", async (req, res) => {
+    try {
+      const { provider } = req.query;
+      const resources = await storage.getIdleResources(provider as schema.CloudProvider);
+      res.json({ success: true, resources });
+    } catch (error) {
+      console.error("Error fetching idle resources:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch idle resources" });
+    }
+  });
+  
+  // ==================== TAG ANALYSIS ====================
+  
+  // Get tag analysis
+  app.get("/api/tags/allocation", async (req, res) => {
+    try {
+      const { provider, period } = req.query;
+      const analysis = await storage.getTagAnalysis(
+        provider as schema.CloudProvider,
+        period as string
+      );
+      res.json({ success: true, analysis });
+    } catch (error) {
+      console.error("Error fetching tag analysis:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch tag analysis" });
+    }
+  });
+  
+  // ==================== SAVINGS PLANS ====================
+  
+  // Get savings plans
+  app.get("/api/savings/plans", async (req, res) => {
+    try {
+      const { provider, status } = req.query;
+      const plans = await storage.getSavingsPlans(
+        provider as schema.CloudProvider,
+        status as string
+      );
+      res.json({ success: true, plans });
+    } catch (error) {
+      console.error("Error fetching savings plans:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch savings plans" });
+    }
+  });
+  
+  // ==================== ANOMALY EVENTS ====================
+  
+  // Get anomaly events
+  app.get("/api/anomalies/events", async (req, res) => {
+    try {
+      const { provider, status } = req.query;
+      const events = await storage.getAnomalyEvents(
+        provider as schema.CloudProvider,
+        status as string
+      );
+      res.json({ success: true, events });
+    } catch (error) {
+      console.error("Error fetching anomaly events:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch anomaly events" });
     }
   });
 
