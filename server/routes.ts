@@ -287,8 +287,73 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      // Get cost data from server cache instead of trusting client payload
-      const costData = cachedCostData || loadSampleData();
+      // Detect which cloud provider the user is asking about
+      const queryLower = query.toLowerCase();
+      let detectedProvider: CloudProvider = 'all';
+      let providerName = 'multi-cloud';
+      
+      if (queryLower.includes('aws') || queryLower.includes('amazon')) {
+        detectedProvider = 'aws';
+        providerName = 'AWS';
+      } else if (queryLower.includes('gcp') || queryLower.includes('google')) {
+        detectedProvider = 'gcp';
+        providerName = 'GCP';
+      } else if (queryLower.includes('azure') || queryLower.includes('microsoft')) {
+        detectedProvider = 'azure';
+        providerName = 'Azure';
+      }
+      
+      console.log(`AI query detected provider: ${detectedProvider} from query: "${query}"`);
+      
+      // Fetch appropriate provider's data using same logic as /api/cost-data
+      const sampleData = loadMultiCloudSampleData();
+      const awsConfigured = isAWSConfigured();
+      let costData;
+      
+      if (detectedProvider === 'aws') {
+        // Fetch AWS data (real or sample)
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            costData = processMultiCloudCosts(awsResult.data);
+            console.log('Using real AWS data for AI analysis');
+          } else {
+            costData = sampleData.awsOnly;
+            console.log('Using sample AWS data for AI analysis');
+          }
+        } else {
+          costData = sampleData.awsOnly;
+          console.log('Using sample AWS data for AI analysis (no credentials)');
+        }
+      } else if (detectedProvider === 'gcp') {
+        costData = sampleData.gcpOnly;
+        console.log('Using sample GCP data for AI analysis');
+      } else if (detectedProvider === 'azure') {
+        costData = sampleData.azureOnly;
+        console.log('Using sample Azure data for AI analysis');
+      } else {
+        // Multi-cloud or unspecified - use all providers
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            const allData = [
+              ...awsResult.data,
+              ...sampleData.gcpData,
+              ...sampleData.azureData
+            ];
+            costData = processMultiCloudCosts(allData);
+            console.log('Using real AWS + sample GCP/Azure for AI analysis');
+          } else {
+            costData = sampleData.allProviders;
+            console.log('Using sample multi-cloud data for AI analysis');
+          }
+        } else {
+          costData = sampleData.allProviders;
+          console.log('Using sample multi-cloud data for AI analysis');
+        }
+      }
 
       // Get anomaly data for comprehensive analysis
       let anomalyData: any = null;
@@ -298,8 +363,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Continue without anomaly data if detection fails
       }
 
-      // Prepare comprehensive context for AI
-      const context = `You are an AI assistant analyzing Azure cloud spending data. Answer questions clearly and concisely based on the data provided.
+      // Prepare comprehensive context for AI with dynamic provider reference
+      const context = `You are an AI assistant analyzing ${providerName} cloud spending data. Answer questions clearly and concisely based on the data provided.
 
 COST SUMMARY:
 - Total Cost: $${costData.totalCost.toFixed(2)}
