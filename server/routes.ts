@@ -287,23 +287,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
       
-      // Detect which cloud provider the user is asking about
+      // Detect which cloud provider(s) the user is asking about
       const queryLower = query.toLowerCase();
       let detectedProvider: CloudProvider | 'all' = 'all';
       let providerName = 'multi-cloud';
       
-      if (queryLower.includes('aws') || queryLower.includes('amazon')) {
+      // Check for multiple providers (comparison queries)
+      const hasAws = queryLower.includes('aws') || queryLower.includes('amazon');
+      const hasGcp = queryLower.includes('gcp') || queryLower.includes('google');
+      const hasAzure = queryLower.includes('azure') || queryLower.includes('microsoft');
+      const providerCount = [hasAws, hasGcp, hasAzure].filter(Boolean).length;
+      
+      // If multiple providers mentioned, or comparison words present, use multi-cloud
+      const isComparison = queryLower.includes('compare') || 
+                          queryLower.includes('between') || 
+                          queryLower.includes('vs') ||
+                          queryLower.includes('versus');
+      
+      if (providerCount > 1 || (providerCount > 0 && isComparison)) {
+        detectedProvider = 'all';
+        providerName = 'multi-cloud';
+        console.log(`AI query detected multi-cloud comparison from query: "${query}"`);
+      } else if (hasAws) {
         detectedProvider = 'aws';
         providerName = 'AWS';
-      } else if (queryLower.includes('gcp') || queryLower.includes('google')) {
+        console.log(`AI query detected provider: aws from query: "${query}"`);
+      } else if (hasGcp) {
         detectedProvider = 'gcp';
         providerName = 'GCP';
-      } else if (queryLower.includes('azure') || queryLower.includes('microsoft')) {
+        console.log(`AI query detected provider: gcp from query: "${query}"`);
+      } else if (hasAzure) {
         detectedProvider = 'azure';
         providerName = 'Azure';
+        console.log(`AI query detected provider: azure from query: "${query}"`);
+      } else {
+        console.log(`AI query - no specific provider detected, using multi-cloud data from query: "${query}"`);
       }
-      
-      console.log(`AI query detected provider: ${detectedProvider} from query: "${query}"`);
       
       // Fetch appropriate provider's data using same logic as /api/cost-data
       const sampleData = loadMultiCloudSampleData();
