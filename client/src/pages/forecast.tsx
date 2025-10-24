@@ -48,6 +48,14 @@ export default function Forecast() {
   const { toast } = useToast();
   const [forecastDays, setForecastDays] = useState(30);
   const [selectedProvider, setSelectedProvider] = useState<CloudProvider>("all");
+  
+  // Store forecast data per provider
+  const [providerForecasts, setProviderForecasts] = useState<Record<CloudProvider, ForecastResult | null>>({
+    all: null,
+    aws: null,
+    gcp: null,
+    azure: null,
+  });
 
   // Fetch forecast mutation
   const forecastMutation = useMutation({
@@ -57,12 +65,18 @@ export default function Forecast() {
         provider: provider === "all" ? undefined : provider
       });
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
+      // Store the forecast data for the specific provider
+      setProviderForecasts(prev => ({
+        ...prev,
+        [variables.provider]: data
+      }));
+      
       toast({
         title: "Forecast generated",
         description: "Cost forecast has been successfully generated using ML algorithms",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/forecast", selectedProvider] });
+      queryClient.invalidateQueries({ queryKey: ["/api/forecast", variables.provider] });
     },
     onError: (error: any) => {
       toast({
@@ -73,12 +87,8 @@ export default function Forecast() {
     },
   });
 
-  // Reset forecast data when switching providers
-  useEffect(() => {
-    forecastMutation.reset();
-  }, [selectedProvider]);
-
-  const forecastData = forecastMutation.data;
+  // Get the forecast data for the currently selected provider
+  const forecastData = providerForecasts[selectedProvider];
 
   // Prepare chart data with safety checks
   const chartData = forecastData?.success && forecastData?.forecasts?.map((f) => ({
