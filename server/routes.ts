@@ -298,13 +298,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const hasAzure = queryLower.includes('azure') || queryLower.includes('microsoft');
       const providerCount = [hasAws, hasGcp, hasAzure].filter(Boolean).length;
       
-      // If multiple providers mentioned, or comparison words present, use multi-cloud
-      const isComparison = queryLower.includes('compare') || 
-                          queryLower.includes('between') || 
-                          queryLower.includes('vs') ||
-                          queryLower.includes('versus');
-      
-      if (providerCount > 1 || (providerCount > 0 && isComparison)) {
+      // Only use multi-cloud when multiple providers are explicitly mentioned
+      // Don't trigger on single-provider comparisons like "compare AWS costs month over month"
+      if (providerCount > 1) {
         detectedProvider = 'all';
         providerName = 'multi-cloud';
         console.log(`AI query detected multi-cloud comparison from query: "${query}"`);
@@ -454,7 +450,33 @@ When answering:
         console.log('Query lower:', query.toLowerCase());
         
         // Generate fallback answer based on query type
-        if (query.toLowerCase().includes('anomal')) {
+        // Check comparison queries FIRST (before service/cost) to avoid false matches
+        if (query.toLowerCase().includes('compare') || 
+           query.toLowerCase().includes('between') || 
+           query.toLowerCase().includes('vs') || 
+           query.toLowerCase().includes('versus')) {
+          console.log('Taking comparison fallback branch');
+          // Fallback for comparison queries
+          if (detectedProvider === 'all') {
+            // Multi-cloud comparison
+            answer = `${providerName} Cost Summary:\n\n` +
+              `Total Spending: $${costData.totalCost.toFixed(2)}\n` +
+              `Average Daily Cost: $${costData.avgDailyCost.toFixed(2)}\n\n` +
+              `Top Services:\n` +
+              costData.serviceBreakdown.slice(0, 5).map((s: any) => 
+                `- ${s.name}: $${s.cost.toFixed(2)} (${s.percentage.toFixed(1)}%)`
+              ).join('\n');
+          } else {
+            // Single provider temporal comparison
+            const recentTrends = costData.dailyTrends.slice(-7);
+            const avgRecent = recentTrends.reduce((sum: number, d: any) => sum + d.cost, 0) / recentTrends.length;
+            answer = `${providerName} Cost Overview:\n\n` +
+              `Total Cost: $${costData.totalCost.toFixed(2)}\n` +
+              `Recent 7-day average: $${avgRecent.toFixed(2)}\n` +
+              `Peak day: ${costData.peakDay.date} ($${costData.peakDay.cost.toFixed(2)})\n\n` +
+              `Top service: ${costData.topService.name} at $${costData.topService.cost.toFixed(2)}`;
+          }
+        } else if (query.toLowerCase().includes('anomal')) {
           console.log('Taking anomaly fallback branch');
           if (anomalyData?.anomalies?.length > 0) {
             answer = `I detected ${anomalyData.anomalies.length} spending anomalies:\n\n` +
@@ -474,6 +496,12 @@ When answering:
           answer = `Recent 7-day average: $${avgRecent.toFixed(2)}\n` +
             `Compared to earlier period: ${change > 0 ? '+' : ''}${change.toFixed(1)}%\n` +
             `Peak day this period: ${costData.peakDay.date} ($${costData.peakDay.cost.toFixed(2)})`;
+        } else if (query.toLowerCase().includes('top') || query.toLowerCase().includes('driver')) {
+          console.log('Taking top driver fallback branch');
+          // Fallback for top cost driver queries
+          const topServicePercentage = ((costData.topService.cost / costData.totalCost) * 100).toFixed(1);
+          answer = `Your top cost driver is ${costData.topService.name} at $${costData.topService.cost.toFixed(2)}, ` +
+            `which represents ${topServicePercentage}% of your total ${providerName} spending.`;
         } else if (query.toLowerCase().includes('service') || query.toLowerCase().includes('cost')) {
           console.log('Taking service/cost fallback branch');
           // Fallback for service/cost queries
@@ -483,12 +511,6 @@ When answering:
               `- ${s.name}: $${s.cost.toFixed(2)} (${s.percentage.toFixed(1)}%)`
             ).join('\n') +
             `\n\nNote: ${costData.topService.name} accounts for ${topServicePercentage}% of your total spending.`;
-        } else if (query.toLowerCase().includes('top') || query.toLowerCase().includes('driver')) {
-          console.log('Taking top driver fallback branch');
-          // Fallback for top cost driver queries
-          const topServicePercentage = ((costData.topService.cost / costData.totalCost) * 100).toFixed(1);
-          answer = `Your top cost driver is ${costData.topService.name} at $${costData.topService.cost.toFixed(2)}, ` +
-            `which represents ${topServicePercentage}% of your total ${providerName} spending.`;
         } else {
           console.log('No matching fallback branch - using generic message');
           answer = "I couldn't generate an answer.";
