@@ -2,12 +2,15 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from "recharts";
-import { TrendingUp, Loader2, AlertTriangle, CheckCircle2, DollarSign } from "lucide-react";
+import { TrendingUp, Loader2, AlertTriangle, CheckCircle2, DollarSign, Cloud } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+
+type CloudProvider = "all" | "aws" | "gcp" | "azure";
 
 interface ForecastData {
   date: string;
@@ -38,23 +41,28 @@ interface ForecastResult {
     accuracy: number;
   };
   dataPoints?: number;
+  error?: string;
 }
 
 export default function Forecast() {
   const { toast } = useToast();
   const [forecastDays, setForecastDays] = useState(30);
+  const [selectedProvider, setSelectedProvider] = useState<CloudProvider>("all");
 
   // Fetch forecast mutation
   const forecastMutation = useMutation({
-    mutationFn: async (days: number) => {
-      return apiRequest<ForecastResult>("POST", "/api/forecast", { forecastDays: days });
+    mutationFn: async ({ days, provider }: { days: number; provider: CloudProvider }) => {
+      return apiRequest<ForecastResult>("POST", "/api/forecast", { 
+        forecastDays: days,
+        provider: provider === "all" ? undefined : provider
+      });
     },
     onSuccess: () => {
       toast({
         title: "Forecast generated",
         description: "Cost forecast has been successfully generated using ML algorithms",
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/forecast"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/forecast", selectedProvider] });
     },
     onError: (error: any) => {
       toast({
@@ -99,20 +107,24 @@ export default function Forecast() {
     }
   };
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Cost Forecasting</h1>
-          <p className="text-muted-foreground mt-2">
-            ML-powered predictions for future Azure spending
-          </p>
-        </div>
+  const getProviderName = (provider: CloudProvider) => {
+    switch (provider) {
+      case "aws": return "AWS";
+      case "gcp": return "GCP";
+      case "azure": return "Azure";
+      case "all": return "Multi-Cloud";
+      default: return "Multi-Cloud";
+    }
+  };
+
+  const renderForecastContent = () => (
+    <>
+      <div className="flex items-center justify-between mb-6">
         <div className="flex gap-3">
           <Button
             onClick={() => {
               setForecastDays(30);
-              forecastMutation.mutate(30);
+              forecastMutation.mutate({ days: 30, provider: selectedProvider });
             }}
             variant={forecastDays === 30 ? "default" : "outline"}
             disabled={forecastMutation.isPending}
@@ -123,7 +135,7 @@ export default function Forecast() {
           <Button
             onClick={() => {
               setForecastDays(60);
-              forecastMutation.mutate(60);
+              forecastMutation.mutate({ days: 60, provider: selectedProvider });
             }}
             variant={forecastDays === 60 ? "default" : "outline"}
             disabled={forecastMutation.isPending}
@@ -134,7 +146,7 @@ export default function Forecast() {
           <Button
             onClick={() => {
               setForecastDays(90);
-              forecastMutation.mutate(90);
+              forecastMutation.mutate({ days: 90, provider: selectedProvider });
             }}
             variant={forecastDays === 90 ? "default" : "outline"}
             disabled={forecastMutation.isPending}
@@ -341,10 +353,10 @@ export default function Forecast() {
             <TrendingUp className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">Generate Cost Forecast</h3>
             <p className="text-sm text-muted-foreground text-center max-w-md mb-6">
-              Use machine learning to predict future Azure costs based on historical patterns
+              Use machine learning to predict future {getProviderName(selectedProvider)} costs based on historical patterns
             </p>
             <Button
-              onClick={() => forecastMutation.mutate(30)}
+              onClick={() => forecastMutation.mutate({ days: 30, provider: selectedProvider })}
               size="lg"
               data-testid="button-generate-forecast"
             >
@@ -353,6 +365,58 @@ export default function Forecast() {
           </CardContent>
         </Card>
       )}
+    </>
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">
+            {getProviderName(selectedProvider)} Cost Forecasting
+          </h1>
+          <p className="text-muted-foreground mt-2">
+            ML-powered predictions for future {getProviderName(selectedProvider)} spending
+          </p>
+        </div>
+      </div>
+
+      <Tabs value={selectedProvider} onValueChange={(value) => setSelectedProvider(value as CloudProvider)} className="space-y-6">
+        <TabsList className="grid w-full grid-cols-4" data-testid="tabs-provider-selector">
+          <TabsTrigger value="all" data-testid="tab-all" className="gap-2">
+            <Cloud className="h-4 w-4" />
+            All Clouds
+          </TabsTrigger>
+          <TabsTrigger value="aws" data-testid="tab-aws" className="gap-2">
+            <Cloud className="h-4 w-4" />
+            AWS
+          </TabsTrigger>
+          <TabsTrigger value="gcp" data-testid="tab-gcp" className="gap-2">
+            <Cloud className="h-4 w-4" />
+            GCP
+          </TabsTrigger>
+          <TabsTrigger value="azure" data-testid="tab-azure" className="gap-2">
+            <Cloud className="h-4 w-4" />
+            Azure
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="all" className="space-y-6">
+          {renderForecastContent()}
+        </TabsContent>
+
+        <TabsContent value="aws" className="space-y-6">
+          {renderForecastContent()}
+        </TabsContent>
+
+        <TabsContent value="gcp" className="space-y-6">
+          {renderForecastContent()}
+        </TabsContent>
+
+        <TabsContent value="azure" className="space-y-6">
+          {renderForecastContent()}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

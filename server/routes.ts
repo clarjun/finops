@@ -491,8 +491,40 @@ When answering:
   // ML-based cost forecasting
   app.post("/api/forecast", async (req, res) => {
     try {
-      const { forecastDays = 30 } = req.body;
-      const costData = cachedCostData || loadSampleData();
+      const { forecastDays = 30, provider } = req.body;
+      const cloudProvider = (provider as CloudProvider | 'all' | undefined) || 'all';
+      
+      let costData;
+      
+      // Check if we have real Azure data and it's requested
+      const hasRealAzureData = cachedCostData !== null;
+      const needsAzureData = cloudProvider === 'azure' || cloudProvider === 'all';
+      
+      if (hasRealAzureData && needsAzureData && cloudProvider === 'azure') {
+        // Use real Azure data when available and specifically requested
+        costData = cachedCostData;
+      } else if (hasRealAzureData && needsAzureData && cloudProvider === 'all') {
+        // For 'all' provider with real Azure data, use legacy behavior for backward compatibility
+        costData = cachedCostData;
+      } else {
+        // Use multi-cloud sample data for AWS, GCP, or when Azure data isn't available
+        const sampleData = loadMultiCloudSampleData();
+        
+        switch (cloudProvider) {
+          case 'aws':
+            costData = sampleData.awsOnly;
+            break;
+          case 'gcp':
+            costData = sampleData.gcpOnly;
+            break;
+          case 'azure':
+            costData = sampleData.azureOnly;
+            break;
+          case 'all':
+          default:
+            costData = sampleData.allProviders;
+        }
+      }
       
       // Run Python forecasting script
       const forecastResult = await runPythonScript("cost_forecasting.py", {
