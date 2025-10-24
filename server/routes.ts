@@ -255,7 +255,7 @@ When answering:
           { role: "system", content: context },
           { role: "user", content: query }
         ],
-        max_completion_tokens: 500,
+        max_completion_tokens: 2000,
       });
 
       console.log(`OpenAI completion choices:`, completion.choices?.length || 0);

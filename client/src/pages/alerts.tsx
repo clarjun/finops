@@ -222,14 +222,14 @@ export default function AlertsPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Provider (optional)</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value || ""}>
+                          <Select onValueChange={(value) => field.onChange(value === "all" ? undefined : value)} value={field.value || "all"}>
                             <FormControl>
                               <SelectTrigger data-testid="select-provider">
                                 <SelectValue placeholder="All providers" />
                               </SelectTrigger>
                             </FormControl>
                             <SelectContent>
-                              <SelectItem value="">All providers</SelectItem>
+                              <SelectItem value="all">All providers</SelectItem>
                               <SelectItem value="aws">AWS</SelectItem>
                               <SelectItem value="gcp">GCP</SelectItem>
                               <SelectItem value="azure">Azure</SelectItem>
