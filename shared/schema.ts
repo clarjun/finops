@@ -1,6 +1,19 @@
 import { z } from "zod";
-import { pgTable, text, varchar, timestamp, numeric, integer, jsonb, serial } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, numeric, integer, jsonb, serial, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
+
+// Cloud Provider Types
+export type CloudProvider = 'azure' | 'aws' | 'gcp';
+
+export const cloudProviderSchema = z.enum(['azure', 'aws', 'gcp']);
+
+// Multi-Cloud Provider Configuration
+export interface ProviderConfig {
+  provider: CloudProvider;
+  accountName: string;
+  isActive: boolean;
+  credentials: AzureConfig | AwsConfig | GcpConfig;
+}
 
 // Azure Cost Data Row Schema
 export const azureCostRowSchema = z.tuple([
@@ -113,6 +126,28 @@ export const azureConfigSchema = z.object({
 
 export type AzureConfig = z.infer<typeof azureConfigSchema>;
 
+// AWS Configuration for Cost Explorer API
+export const awsConfigSchema = z.object({
+  accessKeyId: z.string().min(1, "AWS Access Key ID is required"),
+  secretAccessKey: z.string().min(1, "AWS Secret Access Key is required"),
+  region: z.string().default('us-east-1'),
+  accountId: z.string().optional(),
+  refreshInterval: z.number().min(3600).default(86400),
+});
+
+export type AwsConfig = z.infer<typeof awsConfigSchema>;
+
+// GCP Configuration for Cloud Billing API
+export const gcpConfigSchema = z.object({
+  projectId: z.string().min(1, "GCP Project ID is required"),
+  clientEmail: z.string().email("Valid service account email required"),
+  privateKey: z.string().min(1, "GCP Private Key is required"),
+  billingAccountId: z.string().optional(),
+  refreshInterval: z.number().min(3600).default(86400),
+});
+
+export type GcpConfig = z.infer<typeof gcpConfigSchema>;
+
 // Azure Query Request Body
 export interface AzureQueryBody {
   type: 'Usage' | 'ActualCost';
@@ -131,16 +166,20 @@ export interface AzureQueryBody {
 
 // ==================== DATABASE SCHEMA ====================
 
-// Historical Cost Data - stores daily cost records for ML training and analysis
+// Historical Cost Data - stores daily cost records for ML training and analysis (Multi-Cloud)
 export const costHistory = pgTable("cost_history", {
   id: serial("id").primaryKey(),
+  provider: varchar("provider", { length: 20 }).notNull(), // 'azure', 'aws', 'gcp'
   date: timestamp("date").notNull(),
-  subscriptionId: varchar("subscription_id", { length: 255 }).notNull(),
-  subscriptionName: varchar("subscription_name", { length: 255 }).notNull(),
-  resourceGroup: varchar("resource_group", { length: 255 }).notNull(),
-  serviceName: varchar("service_name", { length: 255 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(), // AWS Account ID, Azure Subscription ID, GCP Project ID
+  accountName: varchar("account_name", { length: 255 }).notNull(),
+  resourceGroup: varchar("resource_group", { length: 255 }), // Azure: Resource Group, AWS: Tag-based, GCP: Label-based
+  serviceName: varchar("service_name", { length: 255 }).notNull(), // EC2, S3, Lambda, Compute Engine, etc.
+  region: varchar("region", { length: 100 }), // us-east-1, eastus, us-central1, etc.
   cost: numeric("cost", { precision: 10, scale: 2 }).notNull(),
   currency: varchar("currency", { length: 10 }).notNull().default('USD'),
+  tags: jsonb("tags"), // Key-value tags/labels for cost allocation
+  metadata: jsonb("metadata"), // Additional provider-specific data
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -148,24 +187,42 @@ export const insertCostHistorySchema = createInsertSchema(costHistory).omit({ id
 export type InsertCostHistory = z.infer<typeof insertCostHistorySchema>;
 export type CostHistory = typeof costHistory.$inferSelect;
 
-// Azure Account Configurations - stores multiple Azure account credentials
+// Multi-Cloud Account Configurations - stores credentials for Azure, AWS, and GCP
 // NOTE: This table stores sensitive credentials. In production:
-// 1. Encrypt clientSecret, tenantId, and clientId before storage using a secret management service
-// 2. Use environment variables or Azure Key Vault for credential management
+// 1. Encrypt all credentials before storage using AES-256-GCM or similar
+// 2. Use environment variables or cloud-specific secret management (Azure Key Vault, AWS Secrets Manager, GCP Secret Manager)
 // 3. Implement row-level security and access controls
 // 4. Audit all access to this table
+export const cloudAccounts = pgTable("cloud_accounts", {
+  id: serial("id").primaryKey(),
+  provider: varchar("provider", { length: 20 }).notNull(), // 'azure', 'aws', 'gcp'
+  accountName: varchar("account_name", { length: 255 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(), // AWS Account ID, Azure Subscription ID, GCP Project ID
+  credentials: jsonb("credentials").notNull(), // Encrypted provider-specific credentials
+  refreshInterval: integer("refresh_interval").notNull().default(86400),
+  isActive: boolean("is_active").notNull().default(true),
+  lastSyncAt: timestamp("last_sync_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertCloudAccountSchema = createInsertSchema(cloudAccounts).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCloudAccount = z.infer<typeof insertCloudAccountSchema>;
+export type CloudAccount = typeof cloudAccounts.$inferSelect;
+
+// Legacy Azure Accounts table (deprecated - migrate to cloudAccounts)
 export const azureAccounts = pgTable("azure_accounts", {
   id: serial("id").primaryKey(),
   accountName: varchar("account_name", { length: 255 }).notNull(),
-  tenantId: varchar("tenant_id", { length: 255 }).notNull(), // TODO: Encrypt in production
-  clientId: varchar("client_id", { length: 255 }).notNull(), // TODO: Encrypt in production
-  clientSecret: text("client_secret").notNull(), // TODO: Encrypt in production
+  tenantId: varchar("tenant_id", { length: 255 }).notNull(),
+  clientId: varchar("client_id", { length: 255 }).notNull(),
+  clientSecret: text("client_secret").notNull(),
   subscriptionId: varchar("subscription_id", { length: 255 }).notNull(),
   scope: varchar("scope", { length: 50 }).notNull().default('subscription'),
   resourceGroupName: varchar("resource_group_name", { length: 255 }),
   billingAccountId: varchar("billing_account_id", { length: 255 }),
   refreshInterval: integer("refresh_interval").notNull().default(86400),
-  isActive: integer("is_active").notNull().default(1), // 1 = active, 0 = inactive
+  isActive: integer("is_active").notNull().default(1),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -174,17 +231,40 @@ export const insertAzureAccountSchema = createInsertSchema(azureAccounts).omit({
 export type InsertAzureAccount = z.infer<typeof insertAzureAccountSchema>;
 export type AzureAccount = typeof azureAccounts.$inferSelect;
 
-// Alert Rules - for budget threshold notifications
+// Budgets - for tracking spending limits across cloud providers
+export const budgets = pgTable("budgets", {
+  id: serial("id").primaryKey(),
+  budgetName: varchar("budget_name", { length: 255 }).notNull(),
+  provider: varchar("provider", { length: 20 }), // null = all providers
+  accountId: varchar("account_id", { length: 255 }), // null = all accounts
+  serviceName: varchar("service_name", { length: 255 }), // null = all services
+  amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+  period: varchar("period", { length: 20 }).notNull(), // 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'
+  startDate: timestamp("start_date").notNull(),
+  endDate: timestamp("end_date"),
+  alertThresholds: jsonb("alert_thresholds"), // { 50: true, 75: true, 90: true, 100: true }
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertBudgetSchema = createInsertSchema(budgets).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertBudget = z.infer<typeof insertBudgetSchema>;
+export type Budget = typeof budgets.$inferSelect;
+
+// Alert Rules - for budget threshold notifications (multi-cloud)
 export const alertRules = pgTable("alert_rules", {
   id: serial("id").primaryKey(),
   ruleName: varchar("rule_name", { length: 255 }).notNull(),
-  subscriptionId: varchar("subscription_id", { length: 255 }),
+  provider: varchar("provider", { length: 20 }), // null = all providers
+  accountId: varchar("account_id", { length: 255 }), // null = all accounts
   serviceName: varchar("service_name", { length: 255 }),
   thresholdAmount: numeric("threshold_amount", { precision: 10, scale: 2 }).notNull(),
   thresholdType: varchar("threshold_type", { length: 50 }).notNull(), // 'daily', 'weekly', 'monthly'
   comparisonOperator: varchar("comparison_operator", { length: 20 }).notNull().default('gt'),
   emailRecipients: text("email_recipients").notNull(), // Comma-separated emails
-  isEnabled: integer("is_enabled").notNull().default(1),
+  webhookUrl: varchar("webhook_url", { length: 500 }), // For Slack/Teams integration
+  isEnabled: boolean("is_enabled").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -212,15 +292,59 @@ export const insertReportScheduleSchema = createInsertSchema(reportSchedules).om
 export type InsertReportSchedule = z.infer<typeof insertReportScheduleSchema>;
 export type ReportSchedule = typeof reportSchedules.$inferSelect;
 
-// ML Forecast Data - stores prediction results
+// Resource Inventory - tracks cloud resources across providers
+export const resourceInventory = pgTable("resource_inventory", {
+  id: serial("id").primaryKey(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(),
+  resourceId: varchar("resource_id", { length: 500 }).notNull(), // Unique resource identifier
+  resourceType: varchar("resource_type", { length: 100 }).notNull(), // EC2, S3, Lambda, RDS, Compute Engine, etc.
+  resourceName: varchar("resource_name", { length: 255 }),
+  region: varchar("region", { length: 100 }),
+  state: varchar("state", { length: 50 }), // running, stopped, idle, etc.
+  size: varchar("size", { length: 100 }), // Instance type/size
+  monthlyCost: numeric("monthly_cost", { precision: 10, scale: 2 }),
+  utilizationPercent: numeric("utilization_percent", { precision: 5, scale: 2 }), // CPU/memory utilization
+  tags: jsonb("tags"),
+  metadata: jsonb("metadata"), // Provider-specific details
+  lastSeenAt: timestamp("last_seen_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertResourceInventorySchema = createInsertSchema(resourceInventory).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertResourceInventory = z.infer<typeof insertResourceInventorySchema>;
+export type ResourceInventory = typeof resourceInventory.$inferSelect;
+
+// Tag Analysis - for cost allocation and governance
+export const tagAnalysis = pgTable("tag_analysis", {
+  id: serial("id").primaryKey(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(),
+  tagKey: varchar("tag_key", { length: 255 }).notNull(),
+  tagValue: varchar("tag_value", { length: 500 }),
+  resourceCount: integer("resource_count").notNull().default(0),
+  totalCost: numeric("total_cost", { precision: 10, scale: 2 }).notNull().default('0'),
+  period: varchar("period", { length: 20 }).notNull(), // 'daily', 'weekly', 'monthly'
+  periodDate: timestamp("period_date").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertTagAnalysisSchema = createInsertSchema(tagAnalysis).omit({ id: true, createdAt: true });
+export type InsertTagAnalysis = z.infer<typeof insertTagAnalysisSchema>;
+export type TagAnalysis = typeof tagAnalysis.$inferSelect;
+
+// ML Forecast Data - stores prediction results (multi-cloud)
 export const forecastData = pgTable("forecast_data", {
   id: serial("id").primaryKey(),
-  subscriptionId: varchar("subscription_id", { length: 255 }).notNull(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(),
   serviceName: varchar("service_name", { length: 255 }),
   forecastDate: timestamp("forecast_date").notNull(),
   predictedCost: numeric("predicted_cost", { precision: 10, scale: 2 }).notNull(),
   confidenceInterval: jsonb("confidence_interval"), // { lower: number, upper: number }
   modelVersion: varchar("model_version", { length: 50 }).notNull(),
+  modelType: varchar("model_type", { length: 50 }), // 'arima', 'prophet', 'lstm', etc.
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -228,17 +352,23 @@ export const insertForecastDataSchema = createInsertSchema(forecastData).omit({ 
 export type InsertForecastData = z.infer<typeof insertForecastDataSchema>;
 export type ForecastData = typeof forecastData.$inferSelect;
 
-// Cost Optimization Recommendations
+// Cost Optimization Recommendations (multi-cloud)
 export const optimizationRecommendations = pgTable("optimization_recommendations", {
   id: serial("id").primaryKey(),
-  subscriptionId: varchar("subscription_id", { length: 255 }).notNull(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(),
+  resourceId: varchar("resource_id", { length: 500 }),
   serviceName: varchar("service_name", { length: 255 }).notNull(),
-  recommendationType: varchar("recommendation_type", { length: 100 }).notNull(), // 'reserved_instance', 'right_sizing', 'idle_resource'
+  recommendationType: varchar("recommendation_type", { length: 100 }).notNull(), // 'reserved_instance', 'savings_plan', 'right_sizing', 'idle_resource', 'spot_instance'
   currentCost: numeric("current_cost", { precision: 10, scale: 2 }).notNull(),
+  optimizedCost: numeric("optimized_cost", { precision: 10, scale: 2 }).notNull(),
   potentialSavings: numeric("potential_savings", { precision: 10, scale: 2 }).notNull(),
+  savingsPercent: numeric("savings_percent", { precision: 5, scale: 2 }),
+  priority: varchar("priority", { length: 20 }).default('medium'), // 'low', 'medium', 'high', 'critical'
   description: text("description").notNull(),
   actionRequired: text("action_required"),
-  status: varchar("status", { length: 50 }).notNull().default('active'), // 'active', 'implemented', 'dismissed'
+  impactScore: numeric("impact_score", { precision: 5, scale: 2 }), // ML-calculated impact
+  status: varchar("status", { length: 50 }).notNull().default('active'), // 'active', 'implemented', 'dismissed', 'expired'
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -246,3 +376,52 @@ export const optimizationRecommendations = pgTable("optimization_recommendations
 export const insertOptimizationRecommendationSchema = createInsertSchema(optimizationRecommendations).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertOptimizationRecommendation = z.infer<typeof insertOptimizationRecommendationSchema>;
 export type OptimizationRecommendation = typeof optimizationRecommendations.$inferSelect;
+
+// Savings Plans / Reserved Instances Analysis
+export const savingsPlans = pgTable("savings_plans", {
+  id: serial("id").primaryKey(),
+  provider: varchar("provider", { length: 20 }).notNull(), // 'aws', 'azure', 'gcp'
+  accountId: varchar("account_id", { length: 255 }).notNull(),
+  planType: varchar("plan_type", { length: 100 }).notNull(), // 'compute_savings_plan', 'ec2_ri', 'azure_ri', 'gcp_cud'
+  serviceName: varchar("service_name", { length: 255 }),
+  term: varchar("term", { length: 50 }), // '1_year', '3_year'
+  paymentOption: varchar("payment_option", { length: 50 }), // 'all_upfront', 'partial_upfront', 'no_upfront'
+  commitmentAmount: numeric("commitment_amount", { precision: 10, scale: 2 }),
+  utilizationPercent: numeric("utilization_percent", { precision: 5, scale: 2 }),
+  coveragePercent: numeric("coverage_percent", { precision: 5, scale: 2 }),
+  netSavings: numeric("net_savings", { precision: 10, scale: 2 }),
+  startDate: timestamp("start_date"),
+  endDate: timestamp("end_date"),
+  recommendedAction: text("recommended_action"),
+  status: varchar("status", { length: 50 }).default('active'), // 'active', 'expired', 'recommended'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertSavingsPlanSchema = createInsertSchema(savingsPlans).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertSavingsPlan = z.infer<typeof insertSavingsPlanSchema>;
+export type SavingsPlan = typeof savingsPlans.$inferSelect;
+
+// Anomaly Events - for root cause analysis
+export const anomalyEvents = pgTable("anomaly_events", {
+  id: serial("id").primaryKey(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(),
+  detectedAt: timestamp("detected_at").notNull(),
+  anomalyDate: timestamp("anomaly_date").notNull(),
+  serviceName: varchar("service_name", { length: 255 }),
+  anomalyType: varchar("anomaly_type", { length: 50 }).notNull(), // 'spike', 'drop', 'trend_change'
+  severity: varchar("severity", { length: 20 }).notNull(), // 'low', 'medium', 'high'
+  expectedCost: numeric("expected_cost", { precision: 10, scale: 2 }).notNull(),
+  actualCost: numeric("actual_cost", { precision: 10, scale: 2 }).notNull(),
+  deviation: numeric("deviation", { precision: 5, scale: 2 }), // Percentage deviation
+  rootCause: text("root_cause"), // AI-generated explanation
+  correlatedEvents: jsonb("correlated_events"), // Deployment events, scaling events, etc.
+  resolvedAt: timestamp("resolved_at"),
+  status: varchar("status", { length: 50 }).default('active'), // 'active', 'investigating', 'resolved'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertAnomalyEventSchema = createInsertSchema(anomalyEvents).omit({ id: true, createdAt: true });
+export type InsertAnomalyEvent = z.infer<typeof insertAnomalyEventSchema>;
+export type AnomalyEvent = typeof anomalyEvents.$inferSelect;
