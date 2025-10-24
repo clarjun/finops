@@ -2,6 +2,7 @@ import { Cloud, CloudCog, Database } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 
+// Use 'all' for UI filtering, or specific provider from schema
 export type CloudProvider = 'all' | 'azure' | 'aws' | 'gcp';
 
 interface ProviderSelectorProps {
@@ -14,26 +15,22 @@ const providerConfig = {
   all: {
     label: 'All Providers',
     icon: CloudCog,
-    color: 'text-purple-600 dark:text-purple-400',
-    bgColor: 'bg-purple-50 dark:bg-purple-950/30',
+    colorClass: 'text-purple-600 dark:text-purple-400',
   },
   azure: {
     label: 'Microsoft Azure',
     icon: Cloud,
-    color: 'text-blue-600 dark:text-blue-400',
-    bgColor: 'bg-blue-50 dark:bg-blue-950/30',
+    colorClass: 'text-primary',
   },
   aws: {
     label: 'Amazon AWS',
     icon: Database,
-    color: 'text-orange-600 dark:text-orange-400',
-    bgColor: 'bg-orange-50 dark:bg-orange-950/30',
+    colorClass: 'text-orange-600 dark:text-orange-400',
   },
   gcp: {
     label: 'Google Cloud',
     icon: CloudCog,
-    color: 'text-green-600 dark:text-green-400',
-    bgColor: 'bg-green-50 dark:bg-green-950/30',
+    colorClass: 'text-green-600 dark:text-green-400',
   },
 };
 
@@ -56,7 +53,7 @@ export function ProviderSelector({ value, onChange, showAllOption = true }: Prov
             return (
               <SelectItem key={provider} value={provider} data-testid={`option-provider-${provider}`}>
                 <div className="flex items-center gap-2">
-                  <Icon className={`h-4 w-4 ${config.color}`} />
+                  <Icon className={`h-4 w-4 ${config.colorClass}`} />
                   <span>{config.label}</span>
                 </div>
               </SelectItem>
@@ -84,10 +81,9 @@ export function ProviderBadges({ value, onChange }: ProviderSelectorProps) {
             variant={isActive ? "default" : "outline"}
             size="sm"
             onClick={() => onChange(provider)}
-            className={!isActive ? config.bgColor : ""}
             data-testid={`button-provider-${provider}`}
           >
-            <Icon className={`h-4 w-4 mr-2 ${isActive ? 'text-primary-foreground' : config.color}`} />
+            <Icon className={`h-4 w-4 mr-2 ${isActive ? 'text-primary-foreground' : config.colorClass}`} />
             {config.label}
           </Button>
         );

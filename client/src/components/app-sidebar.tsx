@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, Settings } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Settings } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -28,6 +28,11 @@ const menuItems = [
     icon: TrendingUp,
   },
   {
+    title: "Budgets",
+    url: "/budgets",
+    icon: DollarSign,
+  },
+  {
     title: "Settings",
     url: "/settings",
     icon: Settings,
@@ -42,7 +47,7 @@ export function AppSidebar() {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel className="text-xs font-semibold tracking-wide uppercase text-muted-foreground px-3">
-            Azure Cost Analysis
+            Multi-Cloud FinOps
           </SidebarGroupLabel>
           <SidebarGroupContent className="mt-4">
             <SidebarMenu>

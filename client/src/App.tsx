@@ -10,6 +10,7 @@ import { AppSidebar } from "@/components/app-sidebar";
 import Dashboard from "@/pages/dashboard";
 import AiQuery from "@/pages/ai-query";
 import Forecast from "@/pages/forecast";
+import Budgets from "@/pages/budgets";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -19,6 +20,7 @@ function Router() {
       <Route path="/" component={Dashboard} />
       <Route path="/ai-query" component={AiQuery} />
       <Route path="/forecast" component={Forecast} />
+      <Route path="/budgets" component={Budgets} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>
