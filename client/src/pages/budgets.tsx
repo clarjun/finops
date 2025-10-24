@@ -479,14 +479,13 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
             render={({ field }) => (
               <FormItem>
                 <FormLabel>Cloud Provider (Optional)</FormLabel>
-                <Select onValueChange={field.onChange} value={field.value || ''}>
+                <Select onValueChange={(value) => field.onChange(value || null)} value={field.value || undefined}>
                   <FormControl>
                     <SelectTrigger data-testid="select-provider-filter">
                       <SelectValue placeholder="All providers" />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    <SelectItem value="">All Providers</SelectItem>
                     <SelectItem value="azure">Azure</SelectItem>
                     <SelectItem value="aws">AWS</SelectItem>
                     <SelectItem value="gcp">GCP</SelectItem>
