@@ -12,6 +12,7 @@ import AiQuery from "@/pages/ai-query";
 import Forecast from "@/pages/forecast";
 import Budgets from "@/pages/budgets";
 import Alerts from "@/pages/alerts";
+import Optimization from "@/pages/optimization";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -23,6 +24,7 @@ function Router() {
       <Route path="/forecast" component={Forecast} />
       <Route path="/budgets" component={Budgets} />
       <Route path="/alerts" component={Alerts} />
+      <Route path="/optimization" component={Optimization} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>

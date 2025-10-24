@@ -1246,6 +1246,41 @@ When answering:
     }
   });
   
+  // ==================== OPTIMIZATION RECOMMENDATIONS ====================
+  
+  // Get optimization recommendations
+  app.get("/api/optimization/recommendations", async (req, res) => {
+    try {
+      const { provider, accountId } = req.query;
+      // Validate provider - treat missing/invalid as "all providers" (undefined)
+      const validProvider = (provider && ['aws', 'gcp', 'azure'].includes(provider as string)) 
+        ? (provider as schema.CloudProvider) 
+        : undefined;
+      
+      const recommendations = await storage.getActiveRecommendations(
+        accountId as string,
+        validProvider
+      );
+      res.json({ success: true, recommendations });
+    } catch (error) {
+      console.error("Error fetching recommendations:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch recommendations" });
+    }
+  });
+  
+  // Update recommendation status
+  app.patch("/api/optimization/recommendations/:id", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const updates = req.body;
+      const updated = await storage.updateOptimizationRecommendation(id, updates);
+      res.json({ success: true, recommendation: updated });
+    } catch (error) {
+      console.error("Error updating recommendation:", error);
+      res.status(500).json({ success: false, error: "Failed to update recommendation" });
+    }
+  });
+  
   // ==================== ANOMALY EVENTS ====================
   
   // Get anomaly events
