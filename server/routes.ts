@@ -24,6 +24,7 @@ import {
 } from "./utils/sample-data-generator";
 import { checkBudgetAlerts } from "./utils/budget-alert-checker";
 import type { CloudProvider } from "@shared/schema";
+import { fetchAWSCostData, isAWSConfigured } from "./aws-client";
 
 // Multi-cloud sample data cache
 let multiCloudSampleData: ReturnType<typeof generateMultiCloudSampleData> | null = null;
@@ -110,40 +111,136 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
   }
 }
 
+async function fetchRealAWSData(): Promise<{ success: boolean; data: any[]; error?: string }> {
+  try {
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+    
+    const awsData = await fetchAWSCostData(
+      startDate.toISOString().split('T')[0],
+      endDate.toISOString().split('T')[0]
+    );
+    
+    const transformedData = awsData.map(record => ({
+      provider: 'aws' as const,
+      accountId: 'real-aws-account',
+      accountName: 'AWS Account',
+      date: record.date,
+      serviceName: record.service,
+      region: record.region || 'us-east-1', // Default to us-east-1 since SERVICE grouping doesn't include region
+      cost: record.cost,
+      currency: 'USD',
+      tags: record.tags || {},
+      metadata: {
+        source: 'aws-cost-explorer',
+        fetchedAt: new Date().toISOString()
+      }
+    }));
+    
+    return { success: true, data: transformedData };
+  } catch (error: any) {
+    console.error('Error fetching real AWS data:', error);
+    return { success: false, data: [], error: error.message || 'Failed to fetch AWS data' };
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Check AWS configuration status on startup (informational only, will re-check on each request)
+  const initialAwsCheck = await isAWSConfigured();
+  console.log(`AWS Cost Explorer: ${initialAwsCheck ? 'CONFIGURED ✓' : 'Not configured - using sample data'}`);
+
   // Get processed cost data with optional provider filtering
   app.get("/api/cost-data", async (req, res) => {
     try {
       const provider = (req.query.provider as CloudProvider | 'all') || 'all';
       
-      // Check if we have real cloud accounts configured
-      const hasRealAccounts = false; // TODO: Check database for configured accounts
-      
-      if (hasRealAccounts) {
-        // TODO: Fetch real data from cloud providers
-        return res.status(501).json({ error: "Real cloud account fetching not yet implemented" });
-      }
-      
-      // Use sample data for demo
+      // Load sample data as baseline
       const sampleData = loadMultiCloudSampleData();
       
+      // Track data sources and warnings
+      let dataSource = 'sample';
+      let warnings: string[] = [];
+      
+      // Check if AWS is configured (re-check on each request to support dynamic credentials)
+      let awsConfigured = false;
+      if (provider === 'aws' || provider === 'all') {
+        awsConfigured = await isAWSConfigured();
+        if (!awsConfigured && process.env.AWS_ACCESS_KEY_ID) {
+          // Credentials exist but test failed - this is a real outage
+          warnings.push('AWS Cost Explorer connectivity test failed. Showing sample data.');
+        }
+      }
+      
+      // Try to fetch real AWS data if configured
+      let awsResult = null;
+      if (awsConfigured && (provider === 'aws' || provider === 'all')) {
+        awsResult = await fetchRealAWSData();
+        
+        if (!awsResult.success) {
+          // AWS fetch failed - log error and warn user
+          console.error(`AWS Cost Explorer fetch failed: ${awsResult.error}`);
+          warnings.push(`Failed to fetch AWS data: ${awsResult.error}. Showing sample data instead.`);
+          awsResult = null; // Force fallback to sample data
+        } else if (awsResult.data.length === 0) {
+          // AWS returned no data - this is valid (zero costs)
+          console.log('AWS Cost Explorer returned zero cost records (valid empty response)');
+          dataSource = 'real-aws-zero-cost';
+        } else {
+          // AWS data successfully fetched
+          dataSource = provider === 'all' ? 'real-aws-sample-others' : 'real-aws';
+          console.log(`Using real AWS data: ${awsResult.data.length} records`);
+        }
+      }
+      
+      // If we have real AWS data, use it; otherwise fall back to sample data
       let processedData;
       switch (provider) {
         case 'aws':
-          processedData = sampleData.awsOnly;
+          if (awsResult?.success) {
+            // Use real AWS data with the multi-cloud processor
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            processedData = processMultiCloudCosts(awsResult.data);
+          } else {
+            processedData = sampleData.awsOnly;
+          }
           break;
         case 'gcp':
           processedData = sampleData.gcpOnly;
+          dataSource = 'sample';
           break;
         case 'azure':
           processedData = sampleData.azureOnly;
+          dataSource = 'sample';
           break;
         case 'all':
         default:
-          processedData = sampleData.allProviders;
+          if (awsResult?.success) {
+            // Merge real AWS data with sample GCP and Azure data
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            const allData = [
+              ...awsResult.data,
+              ...sampleData.gcpData,
+              ...sampleData.azureData
+            ];
+            processedData = processMultiCloudCosts(allData);
+          } else {
+            processedData = sampleData.allProviders;
+          }
       }
       
-      res.json(processedData);
+      // Add metadata to response
+      const response = {
+        ...processedData,
+        _metadata: {
+          dataSource,
+          warnings: warnings.length > 0 ? warnings : undefined,
+          awsConfigured: awsConfigured || false,
+          timestamp: new Date().toISOString()
+        }
+      };
+      
+      res.json(response);
     } catch (error) {
       console.error('Error loading cost data:', error);
       res.status(500).json({ error: "Failed to process cost data" });
