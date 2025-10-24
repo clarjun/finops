@@ -54,16 +54,18 @@ Preferred communication style: Simple, everyday language.
 -   **Runtime**: Node.js with Express.js.
 -   **Language**: TypeScript with ES modules.
 -   **API Pattern**: RESTful endpoints with JSON responses.
--   **Data Processing**: Server-side cost data aggregation and transformation. Python processes via `uv` handle ML computations (anomaly detection, forecasting).
+-   **Data Processing**: Server-side multi-cloud cost data aggregation and transformation. Python processes via `uv` handle ML computations (anomaly detection, forecasting).
 -   **AI Integration**: OpenAI API client using Replit's AI Integrations service (GPT-5 model).
+-   **Sample Data System**: Multi-cloud sample data generator (`server/utils/sample-data-generator.ts`) provides realistic cost data for AWS, GCP, and Azure with 30 days of historical data, service-specific pricing patterns, regional variations, tag-based allocation, and random cost spikes for anomaly detection testing.
 -   **Key Endpoints**:
-    -   `GET /api/cost-data`: Processed Azure cost analytics.
+    -   `GET /api/cost-data?provider={aws|gcp|azure|all}`: Processed multi-cloud cost analytics with optional provider filtering.
     -   `POST /api/cost-data`: Accepts raw Azure API responses for processing.
     -   `GET /api/anomalies`: ML-detected spending anomalies.
     -   `POST /api/analyze`: Natural language query processing with AI.
     -   `POST /api/forecast`, `GET /api/forecast/history`: Cost forecasting.
     -   Alert rules and report schedules CRUD API endpoints.
--   **Data Processing Flow**: Raw Azure Cost Management API responses are transformed into aggregated metrics, followed by a Python ML pipeline for anomaly detection and forecasting. Cached processed data minimizes recomputation.
+    -   Budget management CRUD endpoints with multi-cloud filtering.
+-   **Data Processing Flow**: Multi-cloud cost data is normalized into a unified format using `multi-cloud-processor.ts`, then aggregated into metrics and insights. Python ML pipeline processes the unified data for anomaly detection and forecasting. Cached processed data minimizes recomputation.
 
 ### System Design Choices
 -   **Security**: OAuth 2.0 authentication with Azure AD for Azure API. Credentials encrypted using AES-256-GCM and never exposed to the client.
@@ -74,7 +76,10 @@ Preferred communication style: Simple, everyday language.
 
 -   **OpenAI API**: For natural language query processing, accessed via Replit AI Integrations (GPT-5 model).
 -   **Neon Serverless Postgres**: The primary database, configured via Drizzle ORM and `@neondatabase/serverless` driver.
--   **Azure Cost Management Query API**: Source of raw cost data.
+-   **Multi-Cloud Cost Data Sources**:
+    -   **Azure Cost Management Query API**: Source of Azure cost data. Sample data loaded from `attached_assets/azure_1760597470327.json`.
+    -   **AWS Cost Explorer API**: Placeholder for AWS cost data. Currently using generated sample data with realistic cost patterns.
+    -   **GCP Cloud Billing API**: Placeholder for GCP cost data. Currently using generated sample data with realistic cost patterns.
 -   **Python ML Stack**:
     -   **scikit-learn**: Isolation Forest for anomaly detection, Ridge Regression for forecasting.
     -   **pandas**: Data manipulation and time series analysis.

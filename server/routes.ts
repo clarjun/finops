@@ -18,20 +18,41 @@ import {
   generateForecastCSV,
   generateComprehensiveReportCSV 
 } from "./utils/csv-generator";
+import { 
+  generateMultiCloudSampleData, 
+  getSampleDataByProvider 
+} from "./utils/sample-data-generator";
+import type { CloudProvider } from "@shared/schema";
 
-// Load sample Azure cost data for initial display
-let cachedCostData: any = null;
+// Multi-cloud sample data cache
+let multiCloudSampleData: ReturnType<typeof generateMultiCloudSampleData> | null = null;
+let cachedCostData: any = null; // Legacy Azure-only cache
 let azureClient: AzureCostManagementClient | null = null;
 let currentAzureAccountId: number | null = null;
 let autoRefreshInterval: NodeJS.Timeout | null = null;
 
 function loadSampleData() {
+  // Legacy function for Azure-only data (backward compatibility)
   if (!cachedCostData) {
     const samplePath = join(process.cwd(), "attached_assets", "azure_1760597470327.json");
     const sampleData = JSON.parse(readFileSync(samplePath, "utf-8"));
     cachedCostData = processAzureCostData(sampleData);
   }
   return cachedCostData;
+}
+
+function loadMultiCloudSampleData() {
+  if (!multiCloudSampleData) {
+    console.log('Generating multi-cloud sample data (AWS, GCP, Azure)...');
+    multiCloudSampleData = generateMultiCloudSampleData(30);
+    console.log('Sample data generated:', {
+      aws: multiCloudSampleData.awsData.length + ' records',
+      gcp: multiCloudSampleData.gcpData.length + ' records',
+      azure: multiCloudSampleData.azureData.length + ' records',
+      total: multiCloudSampleData.allCostData.length + ' records'
+    });
+  }
+  return multiCloudSampleData;
 }
 
 // Save cost data to historical database for ML training
@@ -89,12 +110,41 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Get processed cost data
-  app.get("/api/cost-data", async (_req, res) => {
+  // Get processed cost data with optional provider filtering
+  app.get("/api/cost-data", async (req, res) => {
     try {
-      const processedData = loadSampleData();
+      const provider = (req.query.provider as CloudProvider | 'all') || 'all';
+      
+      // Check if we have real cloud accounts configured
+      const hasRealAccounts = false; // TODO: Check database for configured accounts
+      
+      if (hasRealAccounts) {
+        // TODO: Fetch real data from cloud providers
+        return res.status(501).json({ error: "Real cloud account fetching not yet implemented" });
+      }
+      
+      // Use sample data for demo
+      const sampleData = loadMultiCloudSampleData();
+      
+      let processedData;
+      switch (provider) {
+        case 'aws':
+          processedData = sampleData.awsOnly;
+          break;
+        case 'gcp':
+          processedData = sampleData.gcpOnly;
+          break;
+        case 'azure':
+          processedData = sampleData.azureOnly;
+          break;
+        case 'all':
+        default:
+          processedData = sampleData.allProviders;
+      }
+      
       res.json(processedData);
     } catch (error) {
+      console.error('Error loading cost data:', error);
       res.status(500).json({ error: "Failed to process cost data" });
     }
   });
