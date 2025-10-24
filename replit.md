@@ -1,20 +1,37 @@
-# Azure Cost Analysis Dashboard
+# Multi-Cloud FinOps Dashboard
 
 ## Overview
 
-This AI-powered Azure cost analysis dashboard provides interactive visualizations, natural language querying, and anomaly detection for cloud spending insights. It processes Azure Cost Management API responses to deliver comprehensive cost analytics through an intuitive interface. The project's vision is to offer real-time, actionable insights into cloud spending, enabling businesses to optimize costs and make informed financial decisions.
+This AI-powered multi-cloud FinOps dashboard provides comprehensive cost optimization across Azure, AWS, and GCP. It delivers interactive visualizations, natural language querying, ML-based anomaly detection, and automated cost optimization recommendations. The project enables businesses to track spending, optimize resources, and make data-driven financial decisions across all major cloud providers.
 
 Key capabilities include:
--   **Interactive Dashboard**: Real-time cost visualizations with service breakdowns, daily trends, and cost distribution analysis.
--   **Subscription Analysis**: Dedicated chart card showing cost breakdown by Azure subscription with selectable chart types (Line, Bar, Area, Pie).
--   **Daily Cost Trend Analysis**: Chart with selectable visualization types (Line, Bar, Area) and service filtering.
--   **Light/Dark Theme**: Complete theme switching with persistent user preference stored in localStorage. Summary cards feature attractive gradient backgrounds (blue, green, purple, orange) in light mode and standard backgrounds in dark mode.
--   **AI Query Interface**: Natural language processing for cost-related questions using OpenAI integration.
--   **Anomaly Detection**: Machine learning-based detection of spending anomalies using Python's scikit-learn (Isolation Forest algorithm).
--   **ML Cost Forecasting**: Ridge Regression model for 30/60/90-day predictions with confidence intervals.
--   **Multi-dimensional Analysis**: Cost tracking across subscriptions, services, resource groups, and time periods.
--   **Email Alerts & Scheduled Reports**: Automated notifications and reports based on cost thresholds and anomalies.
--   **CSV Export Functionality**: Export of various cost data, anomalies, and forecasts.
+
+### Core FinOps Features
+-   **Multi-Cloud Cost Tracking**: Daily/weekly/monthly spending across Azure, AWS, and GCP with unified dashboard
+-   **Budget Management**: Track spending limits with multi-threshold alerts (50%, 75%, 90%, 100%)
+-   **Resource Inventory**: Monitor EC2, S3, Lambda, RDS, Compute Engine, Cloud Storage, and Azure resources
+-   **Cost Allocation & Tagging**: Breakdown costs by teams, projects, or business units using tags/labels across all providers
+-   **Interactive Visualizations**: Multiple chart types (Line, Bar, Area, Pie) with service filtering and date range selection
+-   **Light/Dark Theme**: Complete theme switching with gradient summary cards (blue, green, purple, orange) in light mode
+
+### AI-Powered Features
+-   **Predictive Forecasting**: Multi-cloud cost predictions using time-series ML models (30/60/90-day forecasts with confidence intervals)
+-   **Anomaly Detection**: Automatic detection of cost spikes and unusual spending patterns using Isolation Forest
+-   **Natural Language Queries**: Ask questions like "What will next month's AWS cost be?" using OpenAI GPT-5
+-   **Automated Rightsizing**: ML-based recommendations to downsize underutilized resources (EC2, Compute Engine, Azure VMs)
+-   **Root Cause Analysis**: AI-generated explanations for cost anomalies with deployment correlation
+
+### Savings Optimization
+-   **Reserved Instance Analysis**: RI/Savings Plans/CUD recommendations with utilization tracking
+-   **Idle Resource Detection**: Identify stopped, unused, or underutilized resources across all clouds
+-   **Spot Instance Predictions**: Recommendations for workloads suitable for spot/preemptible VMs
+-   **Multi-Cloud Comparison**: Cost comparison and workload placement recommendations
+
+### Alerts & Reports
+-   **Budget Alerts**: Email and webhook notifications (Slack/Teams integration)
+-   **Scheduled Reports**: Automated PDF/CSV reports (daily/weekly/monthly)
+-   **Anomaly Notifications**: Instant alerts for unusual spending patterns
+-   **CSV/PDF Export**: Download cost data, forecasts, and optimization recommendations
 
 ## User Preferences
 
