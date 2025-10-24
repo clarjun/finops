@@ -289,7 +289,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Detect which cloud provider the user is asking about
       const queryLower = query.toLowerCase();
-      let detectedProvider: CloudProvider = 'all';
+      let detectedProvider: CloudProvider | 'all' = 'all';
       let providerName = 'multi-cloud';
       
       if (queryLower.includes('aws') || queryLower.includes('amazon')) {
@@ -307,7 +307,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Fetch appropriate provider's data using same logic as /api/cost-data
       const sampleData = loadMultiCloudSampleData();
-      const awsConfigured = isAWSConfigured();
+      const awsConfigured = await isAWSConfigured();
       let costData;
       
       if (detectedProvider === 'aws') {
@@ -458,16 +458,18 @@ When answering:
         } else if (query.toLowerCase().includes('service') || query.toLowerCase().includes('cost')) {
           console.log('Taking service/cost fallback branch');
           // Fallback for service/cost queries
+          const topServicePercentage = ((costData.topService.cost / costData.totalCost) * 100).toFixed(1);
           answer = `Top services by cost:\n` +
             costData.serviceBreakdown.slice(0, 8).map((s: any) => 
               `- ${s.name}: $${s.cost.toFixed(2)} (${s.percentage.toFixed(1)}%)`
             ).join('\n') +
-            `\n\nNote: ${costData.topService.name} accounts for ${costData.topService.percentage?.toFixed(1)}% of your total spending.`;
+            `\n\nNote: ${costData.topService.name} accounts for ${topServicePercentage}% of your total spending.`;
         } else if (query.toLowerCase().includes('top') || query.toLowerCase().includes('driver')) {
           console.log('Taking top driver fallback branch');
           // Fallback for top cost driver queries
+          const topServicePercentage = ((costData.topService.cost / costData.totalCost) * 100).toFixed(1);
           answer = `Your top cost driver is ${costData.topService.name} at $${costData.topService.cost.toFixed(2)}, ` +
-            `which represents ${costData.topService.percentage?.toFixed(1)}% of your total Azure spending.`;
+            `which represents ${topServicePercentage}% of your total ${providerName} spending.`;
         } else {
           console.log('No matching fallback branch - using generic message');
           answer = "I couldn't generate an answer.";
