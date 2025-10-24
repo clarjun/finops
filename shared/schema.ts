@@ -131,22 +131,6 @@ export interface AzureQueryBody {
 
 // ==================== DATABASE SCHEMA ====================
 
-// Users - stores authenticated Microsoft Azure AD users
-export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  azureId: varchar("azure_id", { length: 255 }).notNull().unique(), // Azure AD OID
-  email: varchar("email", { length: 255 }).notNull().unique(),
-  name: varchar("name", { length: 255 }).notNull(),
-  firstName: varchar("first_name", { length: 255 }),
-  lastName: varchar("last_name", { length: 255 }),
-  lastLogin: timestamp("last_login").notNull().defaultNow(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
-export type InsertUser = z.infer<typeof insertUserSchema>;
-export type User = typeof users.$inferSelect;
-
 // Historical Cost Data - stores daily cost records for ML training and analysis
 export const costHistory = pgTable("cost_history", {
   id: serial("id").primaryKey(),

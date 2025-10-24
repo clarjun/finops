@@ -77,28 +77,15 @@ NODE_ENV=development
    - Local PostgreSQL: `postgresql://postgres:password@localhost:5432/azure_cost_db`
    - Cloud (Neon): Sign up at [neon.tech](https://neon.tech) and copy your connection string
 
-2. **Azure AD Authentication** (Required):
-   - Go to [Azure Portal - App Registrations](https://portal.azure.com/#blade/Microsoft_AAD_IAM/ActiveDirectoryMenuBlade/RegisteredApps)
-   - Click "New registration"
-   - Enter app name (e.g., "Azure Cost Dashboard")
-   - Select "Accounts in this organizational directory only" for single tenant
-   - Set Redirect URI: Web platform, `http://localhost:5000/auth/callback`
-   - Click "Register"
-   - Copy **Application (client) ID** → `AZURE_CLIENT_ID`
-   - Copy **Directory (tenant) ID** → `AZURE_TENANT_ID`
-   - Go to "Certificates & secrets" → "New client secret"
-   - Copy the secret value → `AZURE_CLIENT_SECRET`
-   - Go to "Authentication" → Enable "ID tokens" and "Access tokens"
-
-3. **OpenAI API Key**: 
+2. **OpenAI API Key**: 
    - Sign up at [platform.openai.com](https://platform.openai.com/)
    - Create an API key in your account settings
 
-4. **Session Secret**: 
+3. **Session Secret**: 
    - Generate a random string (min 32 characters)
    - Example: `openssl rand -base64 32` (run in terminal)
 
-5. **Email Service** (optional):
+4. **Email Service** (optional):
    - Resend: Sign up at [resend.com](https://resend.com)
    - SendGrid: Sign up at [sendgrid.com](https://sendgrid.com)
 
@@ -142,10 +129,8 @@ You should see:
 ## Step 6: Access the Dashboard
 
 1. Open your browser and navigate to `http://localhost:5000`
-2. You'll be redirected to the login page
-3. Click "Sign in with Microsoft" to authenticate with your Azure AD account
-4. After successful login, you'll see the Azure Cost Analysis Dashboard
-5. Initially, it will use sample data since no Azure accounts are configured
+2. You'll see the Azure Cost Analysis Dashboard
+3. Initially, it will use sample data since no Azure accounts are configured
 
 ## Step 7: Configure Azure Integration (Optional)
 

@@ -22,61 +22,35 @@ Preferred communication style: Simple, everyday language.
 
 ## System Architecture
 
-### Authentication & Security
--   **Authentication**: Microsoft Azure AD OAuth 2.0 / OpenID Connect integration using Passport.js
--   **Session Management**: Express-session with PostgreSQL-backed session store (connect-pg-simple) for persistent sessions across server restarts
--   **Protected Routes**: All dashboard routes require authentication, automatic redirect to login page for unauthenticated users
--   **Security Features**: Session regeneration after authentication, HttpOnly cookies, secure cookies in production, trust proxy configuration for reverse proxy deployments, fail-fast validation for missing SESSION_SECRET in production
--   **Graceful Degradation**: Application shows helpful configuration errors when Azure AD credentials are missing instead of crashing, allowing development mode operation
-
 ### Frontend Architecture
 -   **Framework**: React 18 with TypeScript, using Vite.
--   **Routing**: Wouter with protected route wrappers for authentication.
+-   **Routing**: Wouter.
 -   **State Management**: TanStack Query (React Query) for server state and caching.
 -   **UI Components**: Custom component library built on Radix UI primitives with Tailwind CSS.
 -   **Design System**: "New York" style variant from shadcn/ui, with light and dark theme support.
 -   **Theme Management**: React Context-based ThemeProvider with localStorage persistence and toggle control in header.
 -   **Visualization**: Recharts library for interactive charts with multiple chart type options (Line, Bar, Area, Pie). All major charts feature dynamic type selection via dropdown controls.
 -   **Styling**: Tailwind CSS with a custom color system supporting both light and dark modes. Light mode features colorful gradient summary cards (blue, green, purple, orange), while dark mode uses deep navy-charcoal backgrounds with vibrant cyan-blue accents.
--   **Authentication UI**: Microsoft-branded login page with configuration status checking and error handling.
 -   **Key Design Decisions**: Dual theme support (light/dark) with theme-specific styling, component composition with Radix UI for accessibility, path aliases for clean imports, mobile-responsive layout, and dynamic chart type selection across all visualizations.
 
 ### Backend Architecture
 -   **Runtime**: Node.js with Express.js.
 -   **Language**: TypeScript with ES modules.
 -   **API Pattern**: RESTful endpoints with JSON responses.
--   **Authentication**: Passport.js with passport-azure-ad strategy for OAuth 2.0 / OpenID Connect
--   **Session Store**: PostgreSQL-backed sessions using connect-pg-simple with automatic fallback to in-memory store
 -   **Data Processing**: Server-side cost data aggregation and transformation. Python processes via `uv` handle ML computations (anomaly detection, forecasting).
 -   **AI Integration**: OpenAI API client using Replit's AI Integrations service (GPT-5 model).
 -   **Key Endpoints**:
-    -   `GET /auth/login`: Initiates Azure AD OAuth flow
-    -   `GET /auth/callback`: Azure AD callback endpoint
-    -   `GET /auth/status`: Returns authentication status and configuration
-    -   `GET /auth/logout`: Clears session and logs out user
-    -   `GET /api/cost-data`: Processed Azure cost analytics (protected).
-    -   `POST /api/cost-data`: Accepts raw Azure API responses for processing (protected).
-    -   `GET /api/anomalies`: ML-detected spending anomalies (protected).
-    -   `POST /api/analyze`: Natural language query processing with AI (protected).
-    -   `POST /api/forecast`, `GET /api/forecast/history`: Cost forecasting (protected).
-    -   Alert rules and report schedules CRUD API endpoints (protected).
+    -   `GET /api/cost-data`: Processed Azure cost analytics.
+    -   `POST /api/cost-data`: Accepts raw Azure API responses for processing.
+    -   `GET /api/anomalies`: ML-detected spending anomalies.
+    -   `POST /api/analyze`: Natural language query processing with AI.
+    -   `POST /api/forecast`, `GET /api/forecast/history`: Cost forecasting.
+    -   Alert rules and report schedules CRUD API endpoints.
 -   **Data Processing Flow**: Raw Azure Cost Management API responses are transformed into aggregated metrics, followed by a Python ML pipeline for anomaly detection and forecasting. Cached processed data minimizes recomputation.
 
 ### System Design Choices
--   **Security**: 
-    -   OAuth 2.0 authentication with Azure AD for user authentication
-    -   Session-based authentication with secure, HttpOnly cookies
-    -   PostgreSQL-backed persistent sessions
-    -   Trust proxy configuration for secure cookies behind reverse proxies
-    -   Fail-fast validation for missing SESSION_SECRET in production
-    -   Azure API credentials encrypted using AES-256-GCM and never exposed to the client
--   **Data Persistence**: PostgreSQL database (Neon Serverless Postgres) for all application data, including:
-    -   Users table for authenticated user profiles
-    -   Session table for persistent login sessions
-    -   Encrypted Azure credentials
-    -   Cost history, forecast data
-    -   Alert rules and report schedules
-    -   Drizzle ORM for schema management
+-   **Security**: OAuth 2.0 authentication with Azure AD for Azure API. Credentials encrypted using AES-256-GCM and never exposed to the client.
+-   **Data Persistence**: PostgreSQL database (Neon Serverless Postgres) for all application data, including encrypted Azure credentials, cost history, forecast data, alert rules, and report schedules. Drizzle ORM for schema management.
 -   **ML Model**: Ridge Regression for forecasting, Isolation Forest for anomaly detection.
 
 ## External Dependencies
