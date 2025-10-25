@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-cost-explorer": "^3.916.0",
+    "@google-cloud/bigquery": "^8.1.1",
     "@hookform/resolvers": "^3.10.0",
     "@jridgewell/trace-mapping": "^0.3.25",
     "@neondatabase/serverless": "^0.10.4",
