@@ -1920,6 +1920,305 @@ When answering:
   // Initialize on startup
   initializeAzureClient();
 
+  // ==================== AGENTIC AI ENDPOINTS ====================
+  
+  // Import AI Agent Planner, Action Executor, and Self-Correction Engine
+  const { aiAgentPlanner } = await import('./ai-agent-planner');
+  const { aiActionExecutor } = await import('./ai-action-executor');
+  const { aiSelfCorrection } = await import('./ai-self-correction');
+
+  // POST /api/agent/plan - Generate an optimization plan
+  app.post("/api/agent/plan", async (req, res) => {
+    try {
+      const { goal, provider, includeContext } = req.body;
+
+      if (!goal) {
+        return res.status(400).json({ error: "Goal is required" });
+      }
+
+      // Gather context if requested
+      let context: any = { goal, provider };
+
+      if (includeContext) {
+        // Get current cost data
+        const providerFilter = provider || 'all';
+        const sampleData = loadMultiCloudSampleData();
+        const filteredData = providerFilter === 'all' 
+          ? sampleData.allCostData 
+          : sampleData[`${providerFilter}Data` as keyof typeof sampleData] as any[];
+
+        context.currentCostData = {
+          totalCost: filteredData.reduce((sum: number, d: any) => sum + d.cost, 0),
+          avgDailyCost: filteredData.reduce((sum: number, d: any) => sum + d.cost, 0) / 30,
+          serviceCount: new Set(filteredData.map((d: any) => d.serviceName)).size,
+          topService: {
+            name: filteredData[0]?.serviceName || 'Unknown',
+            cost: filteredData[0]?.cost || 0
+          },
+          serviceBreakdown: Object.entries(
+            filteredData.reduce((acc: any, d: any) => {
+              acc[d.serviceName] = (acc[d.serviceName] || 0) + d.cost;
+              return acc;
+            }, {})
+          ).map(([name, cost]) => ({ name, cost })).slice(0, 5)
+        };
+
+        // Get recent anomalies
+        const anomalies = await storage.getAnomalyEvents(providerFilter === 'all' ? undefined : providerFilter as CloudProvider);
+        context.anomalies = anomalies.slice(0, 3);
+
+        // Get existing recommendations
+        const recommendations = await storage.getActiveRecommendations(undefined, providerFilter === 'all' ? undefined : providerFilter as CloudProvider);
+        context.recommendations = recommendations.slice(0, 5);
+      }
+
+      // Generate the plan
+      const plan = await aiAgentPlanner.generateOptimizationPlan(context);
+
+      res.json(plan);
+    } catch (error: any) {
+      console.error("Error generating optimization plan:", error);
+      res.status(500).json({ error: error.message || "Failed to generate optimization plan" });
+    }
+  });
+
+  // GET /api/agent/plans - List all optimization plans
+  app.get("/api/agent/plans", async (req, res) => {
+    try {
+      const { status, provider } = req.query;
+
+      let query = db.select().from(schema.optimizationPlans);
+
+      if (status) {
+        query = query.where(eq(schema.optimizationPlans.status, status as string)) as any;
+      }
+
+      if (provider) {
+        query = query.where(eq(schema.optimizationPlans.provider, provider as string)) as any;
+      }
+
+      const plans = await query.orderBy(schema.optimizationPlans.createdAt);
+      res.json(plans);
+    } catch (error: any) {
+      console.error("Error fetching plans:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch plans" });
+    }
+  });
+
+  // GET /api/agent/plans/:id - Get specific plan with actions
+  app.get("/api/agent/plans/:id", async (req, res) => {
+    try {
+      const planId = parseInt(req.params.id);
+
+      const plan = await db.select().from(schema.optimizationPlans).where(eq(schema.optimizationPlans.id, planId)).limit(1);
+
+      if (plan.length === 0) {
+        return res.status(404).json({ error: "Plan not found" });
+      }
+
+      const actions = await db.select().from(schema.optimizationActions).where(eq(schema.optimizationActions.planId, planId));
+
+      res.json({
+        ...plan[0],
+        actions
+      });
+    } catch (error: any) {
+      console.error("Error fetching plan:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch plan" });
+    }
+  });
+
+  // GET /api/agent/actions - List all optimization actions
+  app.get("/api/agent/actions", async (req, res) => {
+    try {
+      const { status, provider, planId } = req.query;
+
+      let query = db.select().from(schema.optimizationActions);
+
+      if (status) {
+        query = query.where(eq(schema.optimizationActions.status, status as string)) as any;
+      }
+
+      if (provider) {
+        query = query.where(eq(schema.optimizationActions.provider, provider as string)) as any;
+      }
+
+      if (planId) {
+        query = query.where(eq(schema.optimizationActions.planId, parseInt(planId as string))) as any;
+      }
+
+      const actions = await query.orderBy(schema.optimizationActions.createdAt);
+      res.json(actions);
+    } catch (error: any) {
+      console.error("Error fetching actions:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch actions" });
+    }
+  });
+
+  // POST /api/agent/actions/:id/approve - Approve an action
+  app.post("/api/agent/actions/:id/approve", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      const { approvedBy } = req.body;
+
+      const result = await db.update(schema.optimizationActions)
+        .set({
+          status: 'approved',
+          approvedAt: new Date(),
+          approvedBy: approvedBy || 'user'
+        })
+        .where(eq(schema.optimizationActions.id, actionId))
+        .returning();
+
+      if (result.length === 0) {
+        return res.status(404).json({ error: "Action not found" });
+      }
+
+      res.json(result[0]);
+    } catch (error: any) {
+      console.error("Error approving action:", error);
+      res.status(500).json({ error: error.message || "Failed to approve action" });
+    }
+  });
+
+  // POST /api/agent/actions/:id/reject - Reject an action
+  app.post("/api/agent/actions/:id/reject", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      const { reason } = req.body;
+
+      const result = await db.update(schema.optimizationActions)
+        .set({
+          status: 'rejected',
+          executionError: reason || 'Rejected by user'
+        })
+        .where(eq(schema.optimizationActions.id, actionId))
+        .returning();
+
+      if (result.length === 0) {
+        return res.status(404).json({ error: "Action not found" });
+      }
+
+      res.json(result[0]);
+    } catch (error: any) {
+      console.error("Error rejecting action:", error);
+      res.status(500).json({ error: error.message || "Failed to reject action" });
+    }
+  });
+
+  // GET /api/agent/config - Get agent configuration
+  app.get("/api/agent/config", async (req, res) => {
+    try {
+      const config = await db.select().from(schema.agentConfig).limit(1);
+      
+      if (config.length === 0) {
+        return res.status(404).json({ error: "Agent configuration not found" });
+      }
+
+      res.json(config[0]);
+    } catch (error: any) {
+      console.error("Error fetching agent config:", error);
+      res.status(500).json({ error: error.message || "Failed to fetch agent config" });
+    }
+  });
+
+  // PUT /api/agent/config - Update agent configuration
+  app.put("/api/agent/config", async (req, res) => {
+    try {
+      const updates = req.body;
+
+      const config = await db.select().from(schema.agentConfig).limit(1);
+      
+      if (config.length === 0) {
+        return res.status(404).json({ error: "Agent configuration not found" });
+      }
+
+      const result = await db.update(schema.agentConfig)
+        .set({
+          ...updates,
+          updatedAt: new Date()
+        })
+        .where(eq(schema.agentConfig.id, config[0].id))
+        .returning();
+
+      res.json(result[0]);
+    } catch (error: any) {
+      console.error("Error updating agent config:", error);
+      res.status(500).json({ error: error.message || "Failed to update agent config" });
+    }
+  });
+
+  // POST /api/agent/actions/:id/execute - Execute a single action
+  app.post("/api/agent/actions/:id/execute", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      const result = await aiActionExecutor.executeAction(actionId);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error executing action:", error);
+      res.status(500).json({ error: error.message || "Failed to execute action" });
+    }
+  });
+
+  // POST /api/agent/plans/:id/execute - Execute all approved actions in a plan
+  app.post("/api/agent/plans/:id/execute", async (req, res) => {
+    try {
+      const planId = parseInt(req.params.id);
+      const result = await aiActionExecutor.executePlan(planId);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error executing plan:", error);
+      res.status(500).json({ error: error.message || "Failed to execute plan" });
+    }
+  });
+
+  // POST /api/agent/actions/:id/rollback - Rollback a completed action
+  app.post("/api/agent/actions/:id/rollback", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      const result = await aiActionExecutor.rollbackAction(actionId);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error rolling back action:", error);
+      res.status(500).json({ error: error.message || "Failed to rollback action" });
+    }
+  });
+
+  // POST /api/agent/actions/:id/analyze-failure - Analyze why an action failed
+  app.post("/api/agent/actions/:id/analyze-failure", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      const analysis = await aiSelfCorrection.analyzeFailure(actionId);
+      res.json(analysis);
+    } catch (error: any) {
+      console.error("Error analyzing failure:", error);
+      res.status(500).json({ error: error.message || "Failed to analyze failure" });
+    }
+  });
+
+  // POST /api/agent/actions/:id/retry - Retry failed action with alternative strategy
+  app.post("/api/agent/actions/:id/retry", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      const result = await aiSelfCorrection.retryWithCorrection(actionId);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error retrying action:", error);
+      res.status(500).json({ error: error.message || "Failed to retry action" });
+    }
+  });
+
+  // POST /api/agent/auto-correct - Run auto-correction on all failed actions
+  app.post("/api/agent/auto-correct", async (req, res) => {
+    try {
+      const result = await aiSelfCorrection.autoCorrectFailedActions();
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error running auto-correction:", error);
+      res.status(500).json({ error: error.message || "Failed to run auto-correction" });
+    }
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;

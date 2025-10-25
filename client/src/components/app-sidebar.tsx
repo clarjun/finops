@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Bell, Lightbulb, Settings } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Bell, Lightbulb, Brain, Settings } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -41,6 +41,11 @@ const menuItems = [
     title: "Optimization",
     url: "/optimization",
     icon: Lightbulb,
+  },
+  {
+    title: "AI Agent",
+    url: "/agent",
+    icon: Brain,
   },
   {
     title: "Settings",

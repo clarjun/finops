@@ -13,6 +13,7 @@ import Forecast from "@/pages/forecast";
 import Budgets from "@/pages/budgets";
 import Alerts from "@/pages/alerts";
 import Optimization from "@/pages/optimization";
+import AgentDashboard from "@/pages/agent-dashboard";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -25,6 +26,7 @@ function Router() {
       <Route path="/budgets" component={Budgets} />
       <Route path="/alerts" component={Alerts} />
       <Route path="/optimization" component={Optimization} />
+      <Route path="/agent" component={AgentDashboard} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>
