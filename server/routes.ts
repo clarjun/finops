@@ -1372,7 +1372,15 @@ When answering:
   app.patch("/api/budgets/:id", async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const budget = await storage.updateBudget(id, req.body);
+      
+      // Ensure dates are properly formatted
+      const updates = {
+        ...req.body,
+        startDate: req.body.startDate ? new Date(req.body.startDate) : undefined,
+        endDate: req.body.endDate ? new Date(req.body.endDate) : undefined,
+      };
+      
+      const budget = await storage.updateBudget(id, updates);
       
       if (!budget) {
         return res.status(404).json({ success: false, error: "Budget not found" });
