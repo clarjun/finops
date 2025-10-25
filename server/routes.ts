@@ -260,10 +260,66 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Detect anomalies using Python ML algorithm
-  app.get("/api/anomalies", async (_req, res) => {
+  app.get("/api/anomalies", async (req, res) => {
     try {
-      const costData = loadSampleData();
-      const anomalyResult = await runPythonScript("anomaly_detection.py", costData);
+      const provider = (req.query.provider as string) || 'all';
+      console.log(`Anomaly detection requested for provider: ${provider}`);
+      
+      // Load appropriate provider's data (same logic as /api/cost-data)
+      const sampleData = loadMultiCloudSampleData();
+      const awsConfigured = await isAWSConfigured();
+      let rawCostData: any[] = [];
+      
+      if (provider === 'aws') {
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            rawCostData = awsResult.data;
+            console.log(`Using real AWS data for anomaly detection: ${rawCostData.length} records`);
+          } else {
+            rawCostData = sampleData.awsData;
+            console.log(`Using sample AWS data for anomaly detection`);
+          }
+        } else {
+          rawCostData = sampleData.awsData;
+          console.log(`Using sample AWS data for anomaly detection (no credentials)`);
+        }
+      } else if (provider === 'gcp') {
+        rawCostData = sampleData.gcpData;
+        console.log(`Using sample GCP data for anomaly detection`);
+      } else if (provider === 'azure') {
+        rawCostData = sampleData.azureData;
+        console.log(`Using sample Azure data for anomaly detection`);
+      } else {
+        // Multi-cloud: combine all providers
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            rawCostData = [
+              ...awsResult.data,
+              ...sampleData.gcpData,
+              ...sampleData.azureData
+            ];
+            console.log(`Using real AWS + sample GCP/Azure for anomaly detection: ${rawCostData.length} records`);
+          } else {
+            rawCostData = [
+              ...sampleData.awsData,
+              ...sampleData.gcpData,
+              ...sampleData.azureData
+            ];
+            console.log(`Using all sample data for anomaly detection`);
+          }
+        } else {
+          rawCostData = [
+            ...sampleData.awsData,
+            ...sampleData.gcpData,
+            ...sampleData.azureData
+          ];
+          console.log(`Using all sample data for anomaly detection (no AWS credentials)`);
+        }
+      }
+      
+      const anomalyResult = await runPythonScript("anomaly_detection.py", rawCostData);
       res.json(anomalyResult);
     } catch (error) {
       console.error("Anomaly detection error:", error);
