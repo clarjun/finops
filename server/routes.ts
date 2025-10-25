@@ -1991,13 +1991,23 @@ When answering:
           ).map(([name, cost]) => ({ name, cost })).slice(0, 5)
         };
 
-        // Get recent anomalies
-        const anomalies = await storage.getAnomalyEvents(providerFilter === 'all' ? undefined : providerFilter as CloudProvider);
-        context.anomalies = anomalies.slice(0, 3);
+        // Get recent anomalies (with defensive error handling)
+        try {
+          const anomalies = await storage.getAnomalyEvents(providerFilter === 'all' ? undefined : providerFilter as CloudProvider);
+          context.anomalies = anomalies.slice(0, 3);
+        } catch (error) {
+          console.log('Could not fetch anomalies (table may not exist yet):', error);
+          context.anomalies = [];
+        }
 
-        // Get existing recommendations
-        const recommendations = await storage.getActiveRecommendations(undefined, providerFilter === 'all' ? undefined : providerFilter as CloudProvider);
-        context.recommendations = recommendations.slice(0, 5);
+        // Get existing recommendations (with defensive error handling)
+        try {
+          const recommendations = await storage.getActiveRecommendations(undefined, providerFilter === 'all' ? undefined : providerFilter as CloudProvider);
+          context.recommendations = recommendations.slice(0, 5);
+        } catch (error) {
+          console.log('Could not fetch recommendations (table may not exist yet):', error);
+          context.recommendations = [];
+        }
       }
 
       // Generate the plan

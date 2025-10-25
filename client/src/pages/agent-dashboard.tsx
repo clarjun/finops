@@ -43,7 +43,7 @@ export default function AgentDashboard() {
   // Create optimization plan
   const createPlanMutation = useMutation({
     mutationFn: async (data: { goal: string; provider: string }) => {
-      return apiRequest("/api/agent/plan", "POST", {
+      return apiRequest("POST", "/api/agent/plan", {
         goal: data.goal,
         provider: data.provider,
         includeContext: true,
@@ -70,7 +70,7 @@ export default function AgentDashboard() {
   // Approve action
   const approveMutation = useMutation({
     mutationFn: async (actionId: number) => {
-      return apiRequest(`/api/agent/actions/${actionId}/approve`, "POST", {
+      return apiRequest("POST", `/api/agent/actions/${actionId}/approve`, {
         approvedBy: "user",
       });
     },
@@ -86,7 +86,7 @@ export default function AgentDashboard() {
   // Reject action
   const rejectMutation = useMutation({
     mutationFn: async ({ actionId, reason }: { actionId: number; reason: string }) => {
-      return apiRequest(`/api/agent/actions/${actionId}/reject`, "POST", { reason });
+      return apiRequest("POST", `/api/agent/actions/${actionId}/reject`, { reason });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/agent/actions"] });
@@ -100,7 +100,7 @@ export default function AgentDashboard() {
   // Execute action
   const executeMutation = useMutation({
     mutationFn: async (actionId: number) => {
-      return apiRequest(`/api/agent/actions/${actionId}/execute`, "POST", {});
+      return apiRequest("POST", `/api/agent/actions/${actionId}/execute`, {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/agent/actions"] });
@@ -114,7 +114,7 @@ export default function AgentDashboard() {
   // Retry failed action
   const retryMutation = useMutation({
     mutationFn: async (actionId: number) => {
-      return apiRequest(`/api/agent/actions/${actionId}/retry`, "POST", {});
+      return apiRequest("POST", `/api/agent/actions/${actionId}/retry`, {});
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/agent/actions"] });
