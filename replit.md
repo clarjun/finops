@@ -66,7 +66,7 @@ Preferred communication style: Simple, everyday language.
 -   **Key Endpoints**:
     -   `GET /api/cost-data?provider={aws|gcp|azure|all}`: Processed multi-cloud cost analytics with optional provider filtering.
     -   `POST /api/cost-data`: Accepts raw Azure API responses for processing.
-    -   `GET /api/anomalies`: ML-detected spending anomalies.
+    -   `GET /api/anomalies?provider={aws|gcp|azure|all}`: ML-detected spending anomalies with provider-specific filtering.
     -   `POST /api/analyze`: Natural language query processing with AI.
     -   `POST /api/forecast`, `GET /api/forecast/history`: Cost forecasting.
     -   Alert rules and report schedules CRUD API endpoints.
