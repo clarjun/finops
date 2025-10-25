@@ -4,7 +4,7 @@
 
 This AI-powered multi-cloud FinOps dashboard provides comprehensive cost optimization across Azure, AWS, and GCP. It delivers interactive visualizations, natural language querying, ML-based anomaly detection, and automated cost optimization recommendations. The project enables businesses to track spending, optimize resources, and make data-driven financial decisions across all major cloud providers.
 
-**Implementation Status:** All core features fully implemented and tested (October 24, 2025). Multi-cloud tabbed interface with per-provider forecast caching operational. AWS Cost Explorer API integration complete with real-time data fetching. Database schema synchronized for multi-cloud support. All AI features (anomaly detection, forecasting, natural language queries) operational with smart provider detection and robust fallback logic.
+**Implementation Status:** All core features fully implemented and tested (October 25, 2025). Multi-cloud tabbed interface with per-provider forecast caching operational. AWS Cost Explorer API integration complete with real-time data fetching. Database schema synchronized for multi-cloud support. All AI features (anomaly detection, forecasting, natural language queries) operational with smart provider detection and robust fallback logic. Dashboard improvements deployed: Potential Savings card, Week-over-Week trend indicators, and Quick Wins panel for immediate actionability.
 
 Key capabilities include:
 
@@ -15,6 +15,9 @@ Key capabilities include:
 -   **Cost Allocation & Tagging**: Breakdown costs by teams, projects, or business units using tags/labels across all providers
 -   **Interactive Visualizations**: Multiple chart types (Line, Bar, Area, Pie) with service filtering and date range selection
 -   **Light/Dark Theme**: Complete theme switching with gradient summary cards (blue, green, purple, orange) in light mode
+-   **Week-over-Week Trends**: Cost change indicators on Total Cost card showing ↓ (green) for decreases and ↑ (red) for increases
+-   **Potential Savings Card**: Dashboard card showing total optimization opportunities from all recommendations
+-   **Quick Wins Panel**: Top 3 highest-priority cost optimization recommendations visible on main dashboard
 
 ### AI-Powered Features
 -   **Predictive Forecasting**: Multi-cloud cost predictions using time-series ML models (30/60/90-day forecasts with confidence intervals)

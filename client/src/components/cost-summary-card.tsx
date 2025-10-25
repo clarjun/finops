@@ -71,7 +71,7 @@ export function CostSummaryCard({ title, value, icon: Icon, trend, loading, vari
                 }`}
                 data-testid={`trend-${title.toLowerCase().replace(/\s+/g, '-')}`}
               >
-                {trend.isPositive ? "↑" : "↓"} {trend.value}
+                {trend.isPositive ? "↓" : "↑"} {trend.value}
               </span>
             )}
           </div>
