@@ -35,6 +35,8 @@ Preferred communication style: Simple, everyday language.
 -   **API Pattern**: RESTful endpoints with JSON responses.
 -   **Data Processing**: Server-side multi-cloud cost data aggregation. Python processes (via `uv`) handle ML computations (anomaly detection, forecasting).
 -   **AI Integration**: OpenAI API client (GPT-5 model) via Replit's AI Integrations.
+    -   **GPT-5 Configuration**: Uses `max_completion_tokens: 8192` (critical for reasoning models), `response_format: { type: "json_object" }` for structured output, and excludes `temperature` parameter (not supported by GPT-5).
+    -   **Important**: GPT-5 is a reasoning model that allocates tokens to both internal reasoning and actual output. A token limit of 2500 resulted in all tokens being used for reasoning with zero output. The 8192 limit ensures sufficient capacity for both reasoning and JSON generation.
 -   **Key Endpoints**:
     -   `GET /api/cost-data`: Processed multi-cloud cost analytics.
     -   `GET /api/anomalies`: ML-detected spending anomalies.

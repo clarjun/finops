@@ -65,6 +65,7 @@ export class AIAgentPlanner {
 
     try {
       // Call GPT-5 to generate the plan
+      // Note: gpt-5 is the newest OpenAI model released August 7, 2025. Do not change unless explicitly requested.
       const response = await openai.chat.completions.create({
         model: "gpt-5",
         messages: [
@@ -105,11 +106,12 @@ Dependencies: Array of stepIndex values that must complete first.`
             content: prompt
           }
         ],
-        max_completion_tokens: 2500,
+        response_format: { type: "json_object" },
+        max_completion_tokens: 8192, // GPT-5 uses reasoning tokens + output tokens, needs higher limit
       });
 
       const aiResponse = response.choices[0]?.message?.content || '';
-      console.log('[AI Agent Planner] GPT-5 Response:', aiResponse);
+      console.log('[AI Agent Planner] Successfully received GPT-5 response');
 
       // Parse AI response
       const plan = this.parseAIPlan(aiResponse);
@@ -196,20 +198,37 @@ Dependencies: Array of stepIndex values that must complete first.`
 
   private parseAIPlan(aiResponse: string): { strategy: string; steps: PlanStep[] } {
     try {
+      // Remove markdown code blocks if present
+      let cleanResponse = aiResponse.trim();
+      
+      // Remove ```json and ``` wrappers
+      cleanResponse = cleanResponse.replace(/^```(?:json)?\s*/i, '');
+      cleanResponse = cleanResponse.replace(/\s*```\s*$/, '');
+      cleanResponse = cleanResponse.trim();
+      
       // Try to extract JSON from response
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
+      const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
+        console.error('[AI Agent Planner] No JSON found in cleaned response:', cleanResponse);
         throw new Error('No JSON found in AI response');
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
       
+      if (!parsed.strategy || !parsed.steps || !Array.isArray(parsed.steps)) {
+        console.error('[AI Agent Planner] Invalid plan structure:', parsed);
+        throw new Error('Invalid plan structure from AI');
+      }
+      
+      console.log('[AI Agent Planner] Successfully parsed plan with', parsed.steps.length, 'steps');
+      
       return {
-        strategy: parsed.strategy || 'AI-generated optimization strategy',
-        steps: parsed.steps || []
+        strategy: parsed.strategy,
+        steps: parsed.steps
       };
     } catch (error) {
       console.error('[AI Agent Planner] Failed to parse AI response:', error);
+      console.error('[AI Agent Planner] Raw AI response was:', aiResponse);
       throw error;
     }
   }
