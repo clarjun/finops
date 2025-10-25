@@ -25,6 +25,7 @@ type AlertFormValues = z.infer<typeof alertFormSchema>;
 export default function AlertsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<AlertRule | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const { toast } = useToast();
 
   // Fetch alert rules
@@ -116,6 +117,18 @@ export default function AlertsPage() {
     },
   });
 
+  // Fetch services for the selected provider
+  const { data: servicesData } = useQuery<{ success: boolean; services: Array<{ name: string; cost: number; percentage: number }> }>({
+    queryKey: ['/api/services', selectedProvider],
+    queryFn: async () => {
+      if (!selectedProvider) return { success: false, services: [] };
+      const response = await fetch(`/api/services?provider=${selectedProvider}`);
+      if (!response.ok) throw new Error('Failed to fetch services');
+      return response.json();
+    },
+    enabled: !!selectedProvider && ['aws', 'gcp', 'azure'].includes(selectedProvider),
+  });
+
   const form = useForm<AlertFormValues>({
     resolver: zodResolver(alertFormSchema),
     defaultValues: {
@@ -134,6 +147,7 @@ export default function AlertsPage() {
 
   const handleEdit = (rule: AlertRule) => {
     setEditingRule(rule);
+    setSelectedProvider(rule.provider || null);
     form.reset({
       ruleName: rule.ruleName,
       provider: rule.provider || undefined,
@@ -222,7 +236,12 @@ export default function AlertsPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Provider (optional)</FormLabel>
-                          <Select onValueChange={(value) => field.onChange(value === "all" ? undefined : value)} value={field.value || "all"}>
+                          <Select onValueChange={(value) => {
+                            field.onChange(value === "all" ? undefined : value);
+                            setSelectedProvider(value === 'all' ? null : value);
+                            // Reset service name when provider changes
+                            form.setValue('serviceName', undefined);
+                          }} value={field.value || "all"}>
                             <FormControl>
                               <SelectTrigger data-testid="select-provider">
                                 <SelectValue placeholder="All providers" />
@@ -261,9 +280,29 @@ export default function AlertsPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Service Name (optional)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="e.g., Amazon EC2, Compute Engine" {...field} value={field.value || ""} data-testid="input-service-name" />
-                        </FormControl>
+                        <Select 
+                          onValueChange={field.onChange} 
+                          value={field.value || undefined}
+                          disabled={!selectedProvider}
+                        >
+                          <FormControl>
+                            <SelectTrigger data-testid="select-service-name">
+                              <SelectValue placeholder={selectedProvider ? "Select service" : "Select provider first"} />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="all">All services</SelectItem>
+                            {servicesData?.services?.map((service, idx) => (
+                              <SelectItem 
+                                key={service.name} 
+                                value={service.name}
+                                data-testid={`select-option-service-${idx}`}
+                              >
+                                {service.name} (${service.cost.toFixed(2)})
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                         <FormDescription>Leave empty to monitor all services</FormDescription>
                         <FormMessage />
                       </FormItem>
