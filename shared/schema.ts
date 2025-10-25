@@ -425,3 +425,100 @@ export const anomalyEvents = pgTable("anomaly_events", {
 export const insertAnomalyEventSchema = createInsertSchema(anomalyEvents).omit({ id: true, createdAt: true });
 export type InsertAnomalyEvent = z.infer<typeof insertAnomalyEventSchema>;
 export type AnomalyEvent = typeof anomalyEvents.$inferSelect;
+
+// ==================== AGENTIC AI SYSTEM ====================
+
+// Optimization Actions - Track AI-proposed and executed optimizations
+export const optimizationActions = pgTable("optimization_actions", {
+  id: serial("id").primaryKey(),
+  planId: integer("plan_id"), // Foreign key to optimization_plans
+  actionType: varchar("action_type", { length: 100 }).notNull(), // 'ec2_downsize', 's3_lifecycle', 'ri_purchase', 'delete_snapshot', etc.
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }).notNull(),
+  resourceId: varchar("resource_id", { length: 500 }), // EC2 instance ID, S3 bucket name, etc.
+  resourceType: varchar("resource_type", { length: 100 }), // 'ec2_instance', 's3_bucket', 'ebs_volume'
+  currentState: jsonb("current_state"), // Current configuration
+  proposedState: jsonb("proposed_state"), // Proposed configuration
+  estimatedSavings: numeric("estimated_savings", { precision: 10, scale: 2 }),
+  estimatedCostImpact: numeric("estimated_cost_impact", { precision: 10, scale: 2 }), // One-time cost (negative = savings)
+  riskLevel: varchar("risk_level", { length: 20 }).default('low'), // 'low', 'medium', 'high'
+  status: varchar("status", { length: 50 }).default('proposed'), // 'proposed', 'approved', 'executing', 'completed', 'failed', 'rolled_back', 'rejected'
+  aiReasoning: text("ai_reasoning"), // Why the AI proposed this action
+  executionDetails: jsonb("execution_details"), // API calls made, responses received
+  executionError: text("execution_error"),
+  rollbackDetails: jsonb("rollback_details"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  approvedAt: timestamp("approved_at"),
+  executedAt: timestamp("executed_at"),
+  completedAt: timestamp("completed_at"),
+  approvedBy: varchar("approved_by", { length: 255 }), // User who approved
+});
+
+export const insertOptimizationActionSchema = createInsertSchema(optimizationActions).omit({ id: true, createdAt: true });
+export type InsertOptimizationAction = z.infer<typeof insertOptimizationActionSchema>;
+export type OptimizationAction = typeof optimizationActions.$inferSelect;
+
+// Optimization Plans - Multi-step AI-generated plans
+export const optimizationPlans = pgTable("optimization_plans", {
+  id: serial("id").primaryKey(),
+  goal: text("goal").notNull(), // "Reduce AWS costs by 30%", "Optimize idle resources"
+  provider: varchar("provider", { length: 20 }), // Specific provider or 'all' for multi-cloud
+  targetSavings: numeric("target_savings", { precision: 10, scale: 2 }),
+  actualSavings: numeric("actual_savings", { precision: 10, scale: 2 }),
+  status: varchar("status", { length: 50 }).default('planning'), // 'planning', 'approved', 'executing', 'completed', 'failed', 'cancelled'
+  aiStrategy: text("ai_strategy"), // The AI's overall strategy
+  steps: jsonb("steps"), // Array of step definitions [{stepIndex, actionType, dependencies, status}]
+  currentStepIndex: integer("current_step_index").default(0),
+  totalSteps: integer("total_steps"),
+  completedSteps: integer("completed_steps").default(0),
+  failedSteps: integer("failed_steps").default(0),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  approvedAt: timestamp("approved_at"),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  approvedBy: varchar("approved_by", { length: 255 }),
+});
+
+export const insertOptimizationPlanSchema = createInsertSchema(optimizationPlans).omit({ id: true, createdAt: true });
+export type InsertOptimizationPlan = z.infer<typeof insertOptimizationPlanSchema>;
+export type OptimizationPlan = typeof optimizationPlans.$inferSelect;
+
+// Action Feedback - Learning from outcomes
+export const actionFeedback = pgTable("action_feedback", {
+  id: serial("id").primaryKey(),
+  actionId: integer("action_id").notNull(), // Foreign key to optimization_actions
+  actualSavings: numeric("actual_savings", { precision: 10, scale: 2 }),
+  savingsVariance: numeric("savings_variance", { precision: 5, scale: 2 }), // % difference from estimate
+  performanceImpact: varchar("performance_impact", { length: 50 }), // 'none', 'minor', 'moderate', 'severe'
+  performanceDetails: text("performance_details"),
+  userSatisfaction: integer("user_satisfaction"), // 1-5 rating
+  issuesEncountered: jsonb("issues_encountered"),
+  lessonsLearned: text("lessons_learned"), // AI-generated insights
+  wouldRecommendAgain: integer("would_recommend_again").default(1), // 1 = yes, 0 = no
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertActionFeedbackSchema = createInsertSchema(actionFeedback).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertActionFeedback = z.infer<typeof insertActionFeedbackSchema>;
+export type ActionFeedback = typeof actionFeedback.$inferSelect;
+
+// Agent Configuration - Control AI behavior
+export const agentConfig = pgTable("agent_config", {
+  id: serial("id").primaryKey(),
+  autoExecuteEnabled: integer("auto_execute_enabled").default(0), // 0 = require approval, 1 = auto-execute
+  requireApprovalFor: jsonb("require_approval_for"), // Array of action types that always need approval
+  maxCostImpactWithoutApproval: numeric("max_cost_impact_without_approval", { precision: 10, scale: 2 }).default('100.00'),
+  aggressiveness: varchar("aggressiveness", { length: 20 }).default('medium'), // 'low', 'medium', 'high'
+  learningEnabled: integer("learning_enabled").default(1), // 0 = disabled, 1 = enabled
+  enabledProviders: jsonb("enabled_providers"), // ['aws', 'gcp', 'azure']
+  enabledActionTypes: jsonb("enabled_action_types"), // Which optimization types are allowed
+  safetyMode: integer("safety_mode").default(1), // 1 = enabled (prevents destructive actions)
+  dryRunMode: integer("dry_run_mode").default(1), // 1 = simulate only, 0 = execute
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertAgentConfigSchema = createInsertSchema(agentConfig).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertAgentConfig = z.infer<typeof insertAgentConfigSchema>;
+export type AgentConfig = typeof agentConfig.$inferSelect;
