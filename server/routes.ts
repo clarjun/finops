@@ -319,7 +319,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
       
-      const anomalyResult = await runPythonScript("anomaly_detection.py", rawCostData);
+      // Process the raw data to get it in the correct format for Python script
+      // The Python script expects the full processed cost data object
+      const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+      const processedData = processMultiCloudCosts(rawCostData);
+      
+      // Pass the full processed data to Python (it needs dailyTrends, services, topService, etc.)
+      const anomalyResult = await runPythonScript("anomaly_detection.py", processedData);
       res.json(anomalyResult);
     } catch (error) {
       console.error("Anomaly detection error:", error);
