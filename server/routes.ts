@@ -1373,12 +1373,18 @@ When answering:
     try {
       const id = Number(req.params.id);
       
-      // Ensure dates are properly formatted
-      const updates = {
-        ...req.body,
-        startDate: req.body.startDate ? new Date(req.body.startDate) : undefined,
-        endDate: req.body.endDate ? new Date(req.body.endDate) : undefined,
-      };
+      // Ensure dates are properly formatted, preserving explicit null values
+      const updates: any = { ...req.body };
+      
+      if ('startDate' in req.body) {
+        updates.startDate = req.body.startDate ? new Date(req.body.startDate) : undefined;
+      }
+      
+      if ('endDate' in req.body) {
+        // Preserve explicit null to allow clearing the end date
+        updates.endDate = req.body.endDate === null ? null : 
+                         req.body.endDate ? new Date(req.body.endDate) : undefined;
+      }
       
       const budget = await storage.updateBudget(id, updates);
       
