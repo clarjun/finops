@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DollarSign, TrendingUp, Server, Calendar, RefreshCw, Download, Cloud } from "lucide-react";
+import { DollarSign, TrendingUp, Server, Calendar, RefreshCw, Download, Cloud, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -18,6 +18,7 @@ import { ServiceBreakdownChart } from "@/components/service-breakdown-chart";
 import { SubscriptionChart } from "@/components/subscription-chart";
 import { CostDistributionTable } from "@/components/cost-distribution-table";
 import { InsightsPanel } from "@/components/insights-panel";
+import { QuickWinsPanel } from "@/components/quick-wins-panel";
 import { useToast } from "@/hooks/use-toast";
 import type { ProcessedCostData, AnomalyDetectionResult } from "@shared/schema";
 
@@ -51,6 +52,19 @@ export default function Dashboard() {
       return await response.json();
     },
     enabled: !!costData,
+  });
+
+  // Fetch optimization recommendations for savings card
+  const { data: recommendationsData } = useQuery({
+    queryKey: ['/api/optimization/recommendations', selectedProvider],
+    queryFn: async () => {
+      const url = selectedProvider === "all" 
+        ? '/api/optimization/recommendations'
+        : `/api/optimization/recommendations?provider=${selectedProvider}`;
+      const response = await fetch(url, { credentials: 'include' });
+      if (!response.ok) throw new Error('Failed to fetch recommendations');
+      return await response.json();
+    },
   });
 
   const handleRefresh = async () => {
@@ -113,15 +127,47 @@ export default function Dashboard() {
     }
   };
 
+  // Calculate total potential savings from recommendations
+  const totalSavings = (recommendationsData as { success: boolean; recommendations: any[] })?.recommendations?.reduce(
+    (sum, rec) => sum + parseFloat(rec.potentialSavings?.toString() || '0'),
+    0
+  ) || 0;
+
+  // Calculate Week-over-Week trend
+  const calculateWoWTrend = () => {
+    if (!costData?.dailyTrends || costData.dailyTrends.length < 14) return null;
+    
+    const sortedDays = [...costData.dailyTrends].sort((a, b) => 
+      new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
+    
+    const lastWeek = sortedDays.slice(-7);
+    const previousWeek = sortedDays.slice(-14, -7);
+    
+    const lastWeekTotal = lastWeek.reduce((sum, day) => sum + day.cost, 0);
+    const previousWeekTotal = previousWeek.reduce((sum, day) => sum + day.cost, 0);
+    
+    if (previousWeekTotal === 0) return null;
+    
+    const change = ((lastWeekTotal - previousWeekTotal) / previousWeekTotal) * 100;
+    return {
+      value: `${Math.abs(change).toFixed(1)}%`,
+      isPositive: change < 0, // Negative change (cost reduction) is positive
+    };
+  };
+
+  const wowTrend = calculateWoWTrend();
+
   const renderDashboardContent = () => (
     <>
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
         <CostSummaryCard
           title="Total Cost"
           value={costData ? `$${costData.totalCost.toFixed(2)}` : "$0.00"}
           icon={DollarSign}
           loading={costLoading}
           variant="blue"
+          trend={wowTrend || undefined}
           data-testid={`card-total-cost-${selectedProvider}`}
         />
         <CostSummaryCard
@@ -133,11 +179,19 @@ export default function Dashboard() {
           data-testid={`card-avg-daily-${selectedProvider}`}
         />
         <CostSummaryCard
+          title="Potential Savings"
+          value={`$${totalSavings.toFixed(2)}`}
+          icon={Zap}
+          loading={costLoading}
+          variant="purple"
+          data-testid={`card-potential-savings-${selectedProvider}`}
+        />
+        <CostSummaryCard
           title="Top Service"
           value={costData ? costData.topService.name : "N/A"}
           icon={Server}
           loading={costLoading}
-          variant="purple"
+          variant="orange"
           data-testid={`card-top-service-${selectedProvider}`}
         />
         <CostSummaryCard
@@ -145,7 +199,7 @@ export default function Dashboard() {
           value={costData ? costData.serviceCount.toString() : "0"}
           icon={Calendar}
           loading={costLoading}
-          variant="orange"
+          variant="blue"
           data-testid={`card-service-count-${selectedProvider}`}
         />
       </div>
@@ -186,6 +240,11 @@ export default function Dashboard() {
             serviceCount={costData?.serviceCount}
             anomalies={anomalyData?.anomalies}
             loading={costLoading || anomalyLoading}
+          />
+          
+          <QuickWinsPanel
+            recommendations={(recommendationsData as { success: boolean; recommendations: any[] })?.recommendations}
+            loading={costLoading}
           />
         </div>
       </div>
