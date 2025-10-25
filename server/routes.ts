@@ -1421,6 +1421,153 @@ When answering:
     }
   });
   
+  // Get current spending for a specific budget
+  app.get("/api/budgets/:id/spending", async (req, res) => {
+    try {
+      const budgetId = Number(req.params.id);
+      const budget = await storage.getBudget(budgetId);
+      
+      if (!budget) {
+        return res.status(404).json({ success: false, error: "Budget not found" });
+      }
+      
+      // Get current month start/end dates
+      const now = new Date();
+      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const currentMonthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+      
+      // Fetch cost data based on budget filters
+      const sampleData = loadMultiCloudSampleData();
+      const awsConfigured = await isAWSConfigured();
+      let costData;
+      
+      // Determine which provider's data to use
+      if (budget.provider === 'aws') {
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            costData = processMultiCloudCosts(awsResult.data);
+          } else {
+            costData = sampleData.awsOnly;
+          }
+        } else {
+          costData = sampleData.awsOnly;
+        }
+      } else if (budget.provider === 'gcp') {
+        costData = sampleData.gcpOnly;
+      } else if (budget.provider === 'azure') {
+        costData = sampleData.azureOnly;
+      } else {
+        // No provider specified - use all data
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            const allData = [
+              ...awsResult.data,
+              ...sampleData.gcpData,
+              ...sampleData.azureData
+            ];
+            costData = processMultiCloudCosts(allData);
+          } else {
+            costData = sampleData.allProviders;
+          }
+        } else {
+          costData = sampleData.allProviders;
+        }
+      }
+      
+      // Filter by current month
+      const currentMonthTrends = costData.dailyTrends.filter((day: any) => {
+        const dayDate = new Date(day.date);
+        return dayDate >= currentMonthStart && dayDate <= currentMonthEnd;
+      });
+      
+      // Calculate spending based on service filter
+      let currentSpending = 0;
+      
+      if (budget.serviceName) {
+        // Filter by specific service
+        currentSpending = currentMonthTrends.reduce((sum: number, day: any) => {
+          const serviceCost = day.services[budget.serviceName] || 0;
+          return sum + serviceCost;
+        }, 0);
+      } else {
+        // Total spending (all services)
+        currentSpending = currentMonthTrends.reduce((sum: number, day: any) => {
+          return sum + day.cost;
+        }, 0);
+      }
+      
+      res.json({
+        success: true,
+        currentSpending,
+        budgetAmount: parseFloat(budget.amount),
+        percentage: (currentSpending / parseFloat(budget.amount)) * 100,
+        period: 'current_month',
+        monthStart: currentMonthStart.toISOString(),
+        monthEnd: currentMonthEnd.toISOString(),
+      });
+    } catch (error) {
+      console.error("Error calculating budget spending:", error);
+      res.status(500).json({ success: false, error: "Failed to calculate budget spending" });
+    }
+  });
+  
+  // Get available services for a cloud provider
+  app.get("/api/services", async (req, res) => {
+    try {
+      const { provider } = req.query;
+      
+      if (!provider || !['aws', 'gcp', 'azure'].includes(provider as string)) {
+        return res.status(400).json({ 
+          success: false, 
+          error: "Valid provider parameter required (aws, gcp, or azure)" 
+        });
+      }
+      
+      // Load cost data to extract service names
+      const sampleData = loadMultiCloudSampleData();
+      const awsConfigured = await isAWSConfigured();
+      let costData;
+      
+      if (provider === 'aws') {
+        if (awsConfigured) {
+          const awsResult = await fetchRealAWSData();
+          if (awsResult?.success && awsResult.data.length > 0) {
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            costData = processMultiCloudCosts(awsResult.data);
+          } else {
+            costData = sampleData.awsOnly;
+          }
+        } else {
+          costData = sampleData.awsOnly;
+        }
+      } else if (provider === 'gcp') {
+        costData = sampleData.gcpOnly;
+      } else {
+        costData = sampleData.azureOnly;
+      }
+      
+      // Extract unique service names from service breakdown
+      const services = costData.serviceBreakdown.map((service: any) => ({
+        name: service.name,
+        cost: service.cost,
+        percentage: service.percentage,
+      }));
+      
+      res.json({ 
+        success: true, 
+        services,
+        provider 
+      });
+    } catch (error) {
+      console.error("Error fetching services:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch services" });
+    }
+  });
+  
   // ==================== MULTI-CLOUD COST DATA ====================
   
   // Get multi-cloud cost data with sample data for AWS/GCP

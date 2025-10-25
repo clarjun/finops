@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueries } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,14 +24,20 @@ type Budget = Omit<SchemaBudget, 'alertThresholds'> & {
   alertThresholds: Record<string, boolean> | null;
 };
 
-// Extend insert schema for form validation with string dates and optional fields
+// Extend insert schema for form validation with string dates and required service name
 const budgetFormSchema = insertBudgetSchema.extend({
   startDate: z.string(),
   endDate: z.string().optional().nullable(),
-  provider: z.string().nullable().optional(),
+  provider: z.string().nullable(),
   accountId: z.string().nullable().optional(),
-  serviceName: z.string().nullable().optional(),
+  serviceName: z.string().nullable(),
   alertThresholds: z.record(z.boolean()).nullable().optional(),
+}).refine((data) => data.provider !== null && data.provider !== '', {
+  message: "Provider is required",
+  path: ["provider"],
+}).refine((data) => data.serviceName !== null && data.serviceName !== '', {
+  message: "Service name is required",
+  path: ["serviceName"],
 });
 
 type BudgetFormValues = z.infer<typeof budgetFormSchema>;
@@ -44,11 +50,6 @@ export default function BudgetsPage() {
 
   const { data: budgetsData, isLoading } = useQuery<{ success: boolean; budgets: Budget[] }>({
     queryKey: selectedProvider === 'all' ? ['/api/budgets'] : ['/api/budgets', `?provider=${selectedProvider}`],
-    enabled: true,
-  });
-
-  const { data: costData } = useQuery<{ success: boolean; totalCost: number }>({
-    queryKey: selectedProvider === 'all' ? ['/api/cost-data'] : ['/api/cost-data', `?provider=${selectedProvider}`],
     enabled: true,
   });
 
@@ -66,7 +67,27 @@ export default function BudgetsPage() {
   });
 
   const budgets = budgetsData?.budgets || [];
-  const currentCost = costData?.totalCost || 0;
+
+  // Fetch spending data for all budgets using useQueries (safe for dynamic lists)
+  const budgetSpendingQueries = useQueries({
+    queries: budgets.map((budget) => ({
+      queryKey: ['/api/budgets', budget.id, 'spending'],
+      queryFn: async () => {
+        const response = await fetch(`/api/budgets/${budget.id}/spending`);
+        if (!response.ok) throw new Error('Failed to fetch spending');
+        return response.json() as Promise<{ success: boolean; currentSpending: number; percentage: number }>;
+      },
+      enabled: !!budget.id,
+    })),
+  });
+
+  // Create a map of budget ID to spending data
+  const spendingMap = budgets.reduce((acc, budget, index) => {
+    if (budgetSpendingQueries[index]?.data) {
+      acc[budget.id] = budgetSpendingQueries[index].data!;
+    }
+    return acc;
+  }, {} as Record<number, { success: boolean; currentSpending: number; percentage: number }>);
 
   const handleEdit = (budget: Budget) => {
     setEditingBudget(budget);
@@ -80,16 +101,16 @@ export default function BudgetsPage() {
   };
 
   const calculateBudgetStatus = (budget: Budget) => {
-    // NOTE: MVP limitation - using global cost for all budgets
-    // Production implementation should filter cost data by:
-    // - budget.provider (if set)
-    // - budget.accountId (if set)  
-    // - budget.serviceName (if set)
-    // - budget period date range
-    // This would require a new API endpoint: GET /api/budgets/:id/spending
-    const spent = currentCost;
-    const budgetAmount = parseFloat(budget.amount);
-    const percentage = (spent / budgetAmount) * 100;
+    // Get spending data from the map
+    const spendingData = spendingMap[budget.id];
+    
+    if (!spendingData) {
+      // Loading state - return minimal data
+      return { spent: 0, percentage: 0, status: 'success' as const };
+    }
+    
+    const spent = spendingData.currentSpending;
+    const percentage = spendingData.percentage;
     
     let status: 'success' | 'warning' | 'danger' = 'success';
     if (percentage >= 100) status = 'danger';
@@ -329,6 +350,7 @@ export default function BudgetsPage() {
 
 function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () => void }) {
   const { toast } = useToast();
+  const [selectedProvider, setSelectedProvider] = useState<string | null>(budget?.provider || null);
 
   const form = useForm<BudgetFormValues>({
     resolver: zodResolver(budgetFormSchema),
@@ -354,6 +376,18 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
       alertThresholds: { "50": true, "75": true, "90": true, "100": true },
       isActive: true,
     },
+  });
+  
+  // Fetch services for the selected provider
+  const { data: servicesData } = useQuery<{ success: boolean; services: Array<{ name: string; cost: number; percentage: number }> }>({
+    queryKey: ['/api/services', selectedProvider],
+    queryFn: async () => {
+      if (!selectedProvider) return { success: false, services: [] };
+      const response = await fetch(`/api/services?provider=${selectedProvider}`);
+      if (!response.ok) throw new Error('Failed to fetch services');
+      return response.json();
+    },
+    enabled: !!selectedProvider && ['aws', 'gcp', 'azure'].includes(selectedProvider),
   });
 
   const createMutation = useMutation({
@@ -478,19 +512,25 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
             name="provider"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Cloud Provider (Optional)</FormLabel>
-                <Select onValueChange={(value) => field.onChange(value || null)} value={field.value || undefined}>
+                <FormLabel>Cloud Provider</FormLabel>
+                <Select onValueChange={(value) => {
+                  field.onChange(value);
+                  setSelectedProvider(value);
+                  // Reset service name when provider changes
+                  form.setValue('serviceName', null);
+                }} value={field.value || undefined}>
                   <FormControl>
                     <SelectTrigger data-testid="select-provider-filter">
-                      <SelectValue placeholder="All providers" />
+                      <SelectValue placeholder="Select provider" />
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
-                    <SelectItem value="azure">Azure</SelectItem>
                     <SelectItem value="aws">AWS</SelectItem>
                     <SelectItem value="gcp">GCP</SelectItem>
+                    <SelectItem value="azure">Azure</SelectItem>
                   </SelectContent>
                 </Select>
+                <FormDescription>Required to select service</FormDescription>
                 <FormMessage />
               </FormItem>
             )}
@@ -515,10 +555,30 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
             name="serviceName"
             render={({ field }) => (
               <FormItem>
-                <FormLabel>Service Name (Optional)</FormLabel>
-                <FormControl>
-                  <Input placeholder="All services" {...field} value={field.value || ''} data-testid="input-service-name" />
-                </FormControl>
+                <FormLabel>Service Name</FormLabel>
+                <Select 
+                  onValueChange={field.onChange} 
+                  value={field.value || undefined}
+                  disabled={!selectedProvider}
+                >
+                  <FormControl>
+                    <SelectTrigger data-testid="select-service-name">
+                      <SelectValue placeholder={selectedProvider ? "Select service" : "Select provider first"} />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {servicesData?.services?.map((service, idx) => (
+                      <SelectItem 
+                        key={service.name} 
+                        value={service.name}
+                        data-testid={`select-option-service-${idx}`}
+                      >
+                        {service.name} (${service.cost.toFixed(2)})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormDescription>Required for accurate budget tracking</FormDescription>
                 <FormMessage />
               </FormItem>
             )}
