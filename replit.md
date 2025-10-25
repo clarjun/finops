@@ -37,7 +37,10 @@ Key capabilities include:
 -   **Multi-Cloud Comparison**: Cost comparison and workload placement recommendations
 
 ### Alerts & Reports
--   **Budget Alerts**: Email and webhook notifications (Slack/Teams integration)
+-   **Budget Alerts**: Email and webhook notifications (Slack/Teams integration) - **ACTIVE**: Automated scheduler runs every 60 minutes checking all budgets
+-   **Multi-Threshold Notifications**: Alerts triggered at 50%, 75%, 90%, and 100% of budget
+-   **Email Notifications**: Beautiful HTML emails with progress bars, budget details, and provider breakdown
+-   **Webhook Notifications**: Slack/Teams integration via webhook URLs with formatted messages
 -   **Scheduled Reports**: Automated PDF/CSV reports (daily/weekly/monthly)
 -   **Anomaly Notifications**: Instant alerts for unusual spending patterns
 -   **CSV/PDF Export**: Download cost data, forecasts, and optimization recommendations
@@ -93,7 +96,11 @@ Preferred communication style: Simple, everyday language.
     -   **scikit-learn**: Isolation Forest for anomaly detection, Ridge Regression for forecasting.
     -   **pandas**: Data manipulation and time series analysis.
     -   **numpy**: Numerical computations.
--   **Email Services**: Resend or SendGrid for sending alerts and scheduled reports. Configuration via `RESEND_API_KEY` or `SENDGRID_API_KEY` environment variables.
+-   **Email Services**: Resend or SendGrid for sending alerts and scheduled reports.
+    -   **Configuration**: Set `RESEND_API_KEY` or `SENDGRID_API_KEY` environment variable
+    -   **Current Status**: Mock provider (emails logged to console) - configure API key to enable real emails
+    -   **Recommended**: Resend (simpler setup, generous free tier)
+    -   **Budget Alert Scheduler**: Runs automatically every 60 minutes, checking all active budgets and sending alerts when thresholds are crossed
 -   **Key Libraries**:
     -   **Recharts**: Interactive chart rendering.
     -   **React Hook Form** with **Zod**: Form state management and validation.
