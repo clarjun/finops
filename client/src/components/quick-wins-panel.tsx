@@ -53,6 +53,8 @@ export function QuickWinsPanel({ recommendations = [], loading }: QuickWinsPanel
   };
 
   const getTypeLabel = (type: string) => {
+    if (!type) return 'Optimization';
+    
     switch (type) {
       case 'right_sizing':
         return 'Rightsizing';
