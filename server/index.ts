@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import { startBudgetAlertScheduler } from "./utils/budget-alert-checker";
 
 const app = express();
 app.use(express.json());
@@ -67,5 +68,9 @@ app.use((req, res, next) => {
     reusePort: true,
   }, () => {
     log(`serving on port ${port}`);
+    
+    // Start budget alert scheduler (checks every 60 minutes)
+    startBudgetAlertScheduler(60);
+    log('Budget alert scheduler started');
   });
 })();
