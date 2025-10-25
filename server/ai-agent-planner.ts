@@ -105,7 +105,6 @@ Dependencies: Array of stepIndex values that must complete first.`
             content: prompt
           }
         ],
-        temperature: 0.7,
         max_completion_tokens: 2500,
       });
 
