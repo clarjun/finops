@@ -1489,8 +1489,9 @@ When answering:
       
       if (budget.serviceName) {
         // Filter by specific service
+        const serviceName = budget.serviceName; // TypeScript narrowing
         currentSpending = currentMonthTrends.reduce((sum: number, day: any) => {
-          const serviceCost = day.services[budget.serviceName] || 0;
+          const serviceCost = day.services[serviceName] || 0;
           return sum + serviceCost;
         }, 0);
       } else {
