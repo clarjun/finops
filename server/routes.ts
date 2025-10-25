@@ -1001,6 +1001,10 @@ When answering:
   // Create alert rule
   app.post("/api/alerts/rules", async (req, res) => {
     try {
+      // Convert boolean to integer for isEnabled (1 = enabled, 0 = disabled)
+      const isEnabled = req.body.isEnabled !== undefined ? req.body.isEnabled : (req.body.enabled !== undefined ? req.body.enabled : true);
+      const isEnabledInt = typeof isEnabled === 'boolean' ? (isEnabled ? 1 : 0) : isEnabled;
+      
       // Map API fields to database schema (multi-cloud compatible)
       const ruleData: schema.InsertAlertRule = {
         ruleName: req.body.name || req.body.ruleName,
@@ -1011,7 +1015,7 @@ When answering:
         thresholdType: req.body.type === 'threshold' ? 'daily' : (req.body.thresholdType || 'daily'),
         comparisonOperator: req.body.condition?.operator === '>' ? 'gt' : (req.body.comparisonOperator || 'gt'),
         emailRecipients: Array.isArray(req.body.emails) ? req.body.emails.join(',') : (req.body.emailRecipients || ''),
-        isEnabled: req.body.enabled !== undefined ? req.body.enabled : true,
+        isEnabled: isEnabledInt,
       };
       
       const rule = await storage.createAlertRule(ruleData);
@@ -1026,7 +1030,14 @@ When answering:
   app.patch("/api/alerts/rules/:id", async (req, res) => {
     try {
       const id = Number(req.params.id);
-      const rule = await storage.updateAlertRule(id, req.body);
+      
+      // Convert boolean to integer for isEnabled if present
+      const updates = { ...req.body };
+      if ('isEnabled' in updates && typeof updates.isEnabled === 'boolean') {
+        updates.isEnabled = updates.isEnabled ? 1 : 0;
+      }
+      
+      const rule = await storage.updateAlertRule(id, updates);
       if (!rule) {
         return res.status(404).json({ success: false, error: "Alert rule not found" });
       }

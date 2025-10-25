@@ -141,7 +141,7 @@ export default function AlertsPage() {
       comparisonOperator: "gt",
       emailRecipients: "",
       webhookUrl: undefined,
-      isEnabled: true,
+      isEnabled: 1, // 1 = enabled, 0 = disabled
     },
   });
 
@@ -158,7 +158,7 @@ export default function AlertsPage() {
       comparisonOperator: rule.comparisonOperator,
       emailRecipients: rule.emailRecipients,
       webhookUrl: rule.webhookUrl || undefined,
-      isEnabled: rule.isEnabled,
+      isEnabled: rule.isEnabled, // Already a number from database
     });
     setDialogOpen(true);
   };
@@ -391,8 +391,8 @@ export default function AlertsPage() {
                         </div>
                         <FormControl>
                           <Switch
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
+                            checked={Boolean(field.value)}
+                            onCheckedChange={(checked) => field.onChange(checked ? 1 : 0)}
                             data-testid="switch-is-enabled"
                           />
                         </FormControl>

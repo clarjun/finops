@@ -264,7 +264,7 @@ export const alertRules = pgTable("alert_rules", {
   comparisonOperator: varchar("comparison_operator", { length: 20 }).notNull().default('gt'),
   emailRecipients: text("email_recipients").notNull(), // Comma-separated emails
   webhookUrl: varchar("webhook_url", { length: 500 }), // For Slack/Teams integration
-  isEnabled: boolean("is_enabled").notNull().default(true),
+  isEnabled: integer("is_enabled").notNull().default(1), // 1 = enabled, 0 = disabled
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
