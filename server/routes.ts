@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { readFileSync } from "fs";
 import { join } from "path";
 import { eq, and, gte, lte } from "drizzle-orm";
+import { z } from "zod";
 import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig, azureAccounts, costHistory, insertCostHistorySchema, forecastData } from "@shared/schema";
 import * as schema from "@shared/schema";
 import { processAzureCostData } from "./utils/process-cost-data";
@@ -1927,14 +1928,41 @@ When answering:
   const { aiActionExecutor } = await import('./ai-action-executor');
   const { aiSelfCorrection } = await import('./ai-self-correction');
 
+  // Zod validation schemas for agent endpoints
+  const createPlanSchema = z.object({
+    goal: z.string().min(1, "Goal is required"),
+    provider: z.enum(['aws', 'gcp', 'azure', 'all']).optional(),
+    includeContext: z.boolean().optional(),
+  });
+
+  const approveActionSchema = z.object({
+    approvedBy: z.string().min(1, "Approver name is required"),
+  });
+
+  const rejectActionSchema = z.object({
+    reason: z.string().min(1, "Rejection reason is required"),
+  });
+
+  const submitFeedbackSchema = z.object({
+    outcome: z.enum(['success', 'partial', 'failed', 'rolled_back']),
+    actualSavings: z.number().optional(),
+    userSatisfaction: z.number().min(1).max(5).optional(),
+    notes: z.string().optional(),
+  });
+
   // POST /api/agent/plan - Generate an optimization plan
   app.post("/api/agent/plan", async (req, res) => {
     try {
-      const { goal, provider, includeContext } = req.body;
-
-      if (!goal) {
-        return res.status(400).json({ error: "Goal is required" });
+      // Validate request body
+      const validation = createPlanSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          error: "Invalid request", 
+          details: validation.error.errors 
+        });
       }
+
+      const { goal, provider, includeContext } = validation.data;
 
       // Gather context if requested
       let context: any = { goal, provider };
@@ -2058,8 +2086,17 @@ When answering:
   // POST /api/agent/actions/:id/approve - Approve an action
   app.post("/api/agent/actions/:id/approve", async (req, res) => {
     try {
+      // Validate request body
+      const validation = approveActionSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          error: "Invalid request", 
+          details: validation.error.errors 
+        });
+      }
+
       const actionId = parseInt(req.params.id);
-      const { approvedBy } = req.body;
+      const { approvedBy } = validation.data;
 
       const result = await db.update(schema.optimizationActions)
         .set({
@@ -2084,8 +2121,17 @@ When answering:
   // POST /api/agent/actions/:id/reject - Reject an action
   app.post("/api/agent/actions/:id/reject", async (req, res) => {
     try {
+      // Validate request body
+      const validation = rejectActionSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ 
+          error: "Invalid request", 
+          details: validation.error.errors 
+        });
+      }
+
       const actionId = parseInt(req.params.id);
-      const { reason } = req.body;
+      const { reason } = validation.data;
 
       const result = await db.update(schema.optimizationActions)
         .set({

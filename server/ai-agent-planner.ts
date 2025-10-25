@@ -66,7 +66,7 @@ export class AIAgentPlanner {
     try {
       // Call GPT-5 to generate the plan
       const response = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-5",
         messages: [
           {
             role: "system",
