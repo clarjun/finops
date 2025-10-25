@@ -85,7 +85,7 @@ Preferred communication style: Simple, everyday language.
 -   **Multi-Cloud Cost Data Sources**:
     -   **Azure Cost Management Query API**: Source of Azure cost data. Sample data loaded from `attached_assets/azure_1760597470327.json`.
     -   **AWS Cost Explorer API**: Real-time AWS cost data integration via `@aws-sdk/client-cost-explorer`. Fetches daily cost data grouped by service. Requires `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION` environment variables. Falls back to sample data if not configured.
-    -   **GCP Cloud Billing API**: Placeholder for GCP cost data. Currently using generated sample data with realistic cost patterns.
+    -   **GCP BigQuery Billing Export**: Real-time GCP cost data integration via `@google-cloud/bigquery`. Queries BigQuery billing export tables for cost data. Requires `GCP_SERVICE_ACCOUNT_KEY` (JSON), `GCP_PROJECT_ID`, `GCP_BILLING_DATASET` (default: "cloud_billing_data"), and `GCP_BILLING_TABLE` environment variables. Falls back to sample data if not configured.
 -   **Python ML Stack**:
     -   **scikit-learn**: Isolation Forest for anomaly detection, Ridge Regression for forecasting.
     -   **pandas**: Data manipulation and time series analysis.
