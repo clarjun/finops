@@ -170,7 +170,12 @@ export default function AlertsPage() {
   };
 
   const onSubmit = (values: AlertFormValues) => {
-    saveMutation.mutate(values);
+    // Normalize form values: ensure isEnabled is a number (1 or 0)
+    const normalizedValues = {
+      ...values,
+      isEnabled: typeof values.isEnabled === 'boolean' ? (values.isEnabled ? 1 : 0) : values.isEnabled,
+    };
+    saveMutation.mutate(normalizedValues);
   };
 
   return (
