@@ -25,6 +25,7 @@ import {
 import { checkBudgetAlerts } from "./utils/budget-alert-checker";
 import type { CloudProvider } from "@shared/schema";
 import { fetchAWSCostData, isAWSConfigured } from "./aws-client";
+import { fetchGCPCostData, isGCPConfigured } from "./gcp-client";
 
 // Multi-cloud sample data cache
 let multiCloudSampleData: ReturnType<typeof generateMultiCloudSampleData> | null = null;
@@ -145,10 +146,46 @@ async function fetchRealAWSData(): Promise<{ success: boolean; data: any[]; erro
   }
 }
 
+async function fetchRealGCPData(): Promise<{ success: boolean; data: any[]; error?: string }> {
+  try {
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - 30);
+    
+    const gcpData = await fetchGCPCostData(
+      startDate.toISOString().split('T')[0],
+      endDate.toISOString().split('T')[0]
+    );
+    
+    const transformedData = gcpData.map(record => ({
+      provider: 'gcp' as const,
+      accountId: process.env.GCP_PROJECT_ID || 'real-gcp-project',
+      accountName: 'GCP Project',
+      date: record.date,
+      serviceName: record.service,
+      region: record.region || 'us-central1',
+      cost: record.cost,
+      currency: 'USD',
+      tags: record.tags || {},
+      metadata: {
+        source: 'gcp-bigquery-billing',
+        fetchedAt: new Date().toISOString()
+      }
+    }));
+    
+    return { success: true, data: transformedData };
+  } catch (error: any) {
+    console.error('Error fetching real GCP data:', error);
+    return { success: false, data: [], error: error.message || 'Failed to fetch GCP data' };
+  }
+}
+
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Check AWS configuration status on startup (informational only, will re-check on each request)
+  // Check cloud provider configuration status on startup (informational only, will re-check on each request)
   const initialAwsCheck = await isAWSConfigured();
+  const initialGcpCheck = await isGCPConfigured();
   console.log(`AWS Cost Explorer: ${initialAwsCheck ? 'CONFIGURED ✓' : 'Not configured - using sample data'}`);
+  console.log(`GCP BigQuery Billing: ${initialGcpCheck ? 'CONFIGURED ✓' : 'Not configured - using sample data'}`);
 
   // Get processed cost data with optional provider filtering
   app.get("/api/cost-data", async (req, res) => {
@@ -167,8 +204,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (provider === 'aws' || provider === 'all') {
         awsConfigured = await isAWSConfigured();
         if (!awsConfigured && process.env.AWS_ACCESS_KEY_ID) {
-          // Credentials exist but test failed - this is a real outage
           warnings.push('AWS Cost Explorer connectivity test failed. Showing sample data.');
+        }
+      }
+      
+      // Check if GCP is configured
+      let gcpConfigured = false;
+      if (provider === 'gcp' || provider === 'all') {
+        gcpConfigured = await isGCPConfigured();
+        if (!gcpConfigured && process.env.GCP_SERVICE_ACCOUNT_KEY) {
+          warnings.push('GCP BigQuery connectivity test failed. Showing sample data.');
         }
       }
       
@@ -178,27 +223,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
         awsResult = await fetchRealAWSData();
         
         if (!awsResult.success) {
-          // AWS fetch failed - log error and warn user
           console.error(`AWS Cost Explorer fetch failed: ${awsResult.error}`);
           warnings.push(`Failed to fetch AWS data: ${awsResult.error}. Showing sample data instead.`);
-          awsResult = null; // Force fallback to sample data
+          awsResult = null;
         } else if (awsResult.data.length === 0) {
-          // AWS returned no data - this is valid (zero costs)
           console.log('AWS Cost Explorer returned zero cost records (valid empty response)');
           dataSource = 'real-aws-zero-cost';
         } else {
-          // AWS data successfully fetched
-          dataSource = provider === 'all' ? 'real-aws-sample-others' : 'real-aws';
+          dataSource = provider === 'all' ? 'real-aws' : 'real-aws';
           console.log(`Using real AWS data: ${awsResult.data.length} records`);
         }
       }
       
-      // If we have real AWS data, use it; otherwise fall back to sample data
+      // Try to fetch real GCP data if configured
+      let gcpResult = null;
+      if (gcpConfigured && (provider === 'gcp' || provider === 'all')) {
+        gcpResult = await fetchRealGCPData();
+        
+        if (!gcpResult.success) {
+          console.error(`GCP BigQuery fetch failed: ${gcpResult.error}`);
+          warnings.push(`Failed to fetch GCP data: ${gcpResult.error}. Showing sample data instead.`);
+          gcpResult = null;
+        } else if (gcpResult.data.length === 0) {
+          console.log('GCP BigQuery returned zero cost records (valid empty response)');
+          dataSource = dataSource === 'real-aws' ? 'real-aws-gcp-zero-cost' : 'real-gcp-zero-cost';
+        } else {
+          if (dataSource === 'real-aws') {
+            dataSource = 'real-aws-gcp';
+          } else {
+            dataSource = 'real-gcp';
+          }
+          console.log(`Using real GCP data: ${gcpResult.data.length} records`);
+        }
+      }
+      
+      // Build final dataset based on real data availability and provider selection
       let processedData;
       switch (provider) {
         case 'aws':
           if (awsResult?.success) {
-            // Use real AWS data with the multi-cloud processor
             const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
             processedData = processMultiCloudCosts(awsResult.data);
           } else {
@@ -206,8 +269,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
           break;
         case 'gcp':
-          processedData = sampleData.gcpOnly;
-          dataSource = 'sample';
+          if (gcpResult?.success) {
+            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+            processedData = processMultiCloudCosts(gcpResult.data);
+          } else {
+            processedData = sampleData.gcpOnly;
+          }
           break;
         case 'azure':
           processedData = sampleData.azureOnly;
@@ -215,17 +282,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           break;
         case 'all':
         default:
-          if (awsResult?.success) {
-            // Merge real AWS data with sample GCP and Azure data
-            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-            const allData = [
-              ...awsResult.data,
-              ...sampleData.gcpData,
-              ...sampleData.azureData
-            ];
-            processedData = processMultiCloudCosts(allData);
-          } else {
-            processedData = sampleData.allProviders;
+          // Merge all available real data with sample data for unconfigured providers
+          const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+          const allData = [
+            ...(awsResult?.success ? awsResult.data : sampleData.awsData),
+            ...(gcpResult?.success ? gcpResult.data : sampleData.gcpData),
+            ...sampleData.azureData
+          ];
+          processedData = processMultiCloudCosts(allData);
+          
+          // Update data source based on what's real
+          if (awsResult?.success && gcpResult?.success) {
+            dataSource = 'real-aws-gcp-sample-azure';
+          } else if (awsResult?.success) {
+            dataSource = 'real-aws-sample-others';
+          } else if (gcpResult?.success) {
+            dataSource = 'real-gcp-sample-others';
           }
       }
       
@@ -236,6 +308,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           dataSource,
           warnings: warnings.length > 0 ? warnings : undefined,
           awsConfigured: awsConfigured || false,
+          gcpConfigured: gcpConfigured || false,
           timestamp: new Date().toISOString()
         }
       };
