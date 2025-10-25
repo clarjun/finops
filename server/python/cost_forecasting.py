@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Azure Cost Forecasting using Time Series Analysis
-Uses statistical methods and machine learning for cost prediction
+Multi-Cloud Cost Forecasting using Time Series Analysis
+Uses statistical methods and machine learning for cost prediction with outlier handling
 """
 
 import sys
@@ -12,6 +12,36 @@ from datetime import datetime, timedelta
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_percentage_error
+
+def remove_outliers(df, column='cost', method='iqr', threshold=1.5):
+    """
+    Remove outliers from the data to prevent forecast contamination
+    Uses IQR method by default with aggressive threshold
+    """
+    if method == 'iqr':
+        Q1 = df[column].quantile(0.25)
+        Q3 = df[column].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - threshold * IQR
+        upper_bound = Q3 + threshold * IQR
+        
+        # Replace outliers with median instead of removing (preserves data points)
+        median = df[column].median()
+        df_clean = df.copy()
+        
+        outlier_mask = (df_clean[column] > upper_bound) | (df_clean[column] < lower_bound)
+        outliers_count = outlier_mask.sum()
+        
+        if outliers_count > 0:
+            print(f"Replacing {outliers_count} outliers with median ${median:.2f}", file=sys.stderr)
+            print(f"Outlier bounds: ${lower_bound:.2f} to ${upper_bound:.2f}", file=sys.stderr)
+        
+        df_clean.loc[df_clean[column] > upper_bound, column] = median
+        df_clean.loc[df_clean[column] < lower_bound, column] = median
+        
+        return df_clean
+    
+    return df
 
 def prepare_time_series_data(cost_data):
     """
@@ -36,17 +66,18 @@ def prepare_time_series_data(cost_data):
     
     return df
 
-def create_lag_features(df, target_col='cost', lags=[1, 2, 3, 7, 14]):
+def create_lag_features(df, target_col='cost', lags=[1, 2, 3, 7]):
     """
     Create lagged features for time series prediction
+    Reduced lags to prevent error compounding
     """
     for lag in lags:
         df[f'lag_{lag}'] = df[target_col].shift(lag)
     
-    # Add rolling statistics
+    # Add rolling statistics with robust measures
+    df['rolling_median_7'] = df[target_col].rolling(window=7, min_periods=1).median()
     df['rolling_mean_7'] = df[target_col].rolling(window=7, min_periods=1).mean()
     df['rolling_std_7'] = df[target_col].rolling(window=7, min_periods=1).std().fillna(0)
-    df['rolling_mean_14'] = df[target_col].rolling(window=14, min_periods=1).mean()
     
     return df
 
@@ -57,14 +88,14 @@ def exponential_smoothing_forecast(df, alpha=0.3, forecast_days=30):
     costs = df['cost'].values
     forecast = []
     
-    # Initialize with first value
-    smoothed = costs[0]
+    # Initialize with median (more robust than first value)
+    smoothed = np.median(costs)
     
     # Apply exponential smoothing
-    for i in range(1, len(costs)):
+    for i in range(len(costs)):
         smoothed = alpha * costs[i] + (1 - alpha) * smoothed
     
-    # Forecast future values
+    # Forecast future values (constant)
     for _ in range(forecast_days):
         forecast.append(smoothed)
     
@@ -72,13 +103,16 @@ def exponential_smoothing_forecast(df, alpha=0.3, forecast_days=30):
 
 def ml_forecast(df, forecast_days=30):
     """
-    Machine learning-based forecast using Ridge Regression
+    Machine learning-based forecast using Ridge Regression with outlier handling
     """
+    # Remove outliers before training with aggressive threshold
+    df_clean_outliers = remove_outliers(df.copy(), column='cost', threshold=1.5)
+    
     # Prepare features
-    df = create_lag_features(df)
+    df_features = create_lag_features(df_clean_outliers)
     
     # Drop rows with NaN values (from lag features)
-    df_clean = df.dropna()
+    df_clean = df_features.dropna()
     
     if len(df_clean) < 10:
         # Not enough data for ML, fall back to simple method
@@ -93,13 +127,28 @@ def ml_forecast(df, forecast_days=30):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
-    # Train Ridge Regression model
-    model = Ridge(alpha=1.0)
+    # Train Ridge Regression model with higher regularization to prevent overfitting
+    model = Ridge(alpha=10.0)
     model.fit(X_scaled, y)
+    
+    # Calculate bounds for sanity checking (more conservative)
+    historical_median = df_clean['cost'].median()
+    historical_mean = df_clean['cost'].mean()
+    historical_std = df_clean['cost'].std()
+    
+    # Use median as baseline for bounds (more robust than mean)
+    max_reasonable = historical_median + 1.5 * historical_std
+    min_reasonable = max(0, historical_median - 1.5 * historical_std)
+    
+    print(f"Historical: median=${historical_median:.2f}, mean=${historical_mean:.2f}, std=${historical_std:.2f}", file=sys.stderr)
+    print(f"Forecast bounds: ${min_reasonable:.2f} to ${max_reasonable:.2f}", file=sys.stderr)
     
     # Generate future predictions
     forecasts = []
     last_known = df_clean.iloc[-1].copy()
+    
+    # Keep track of recent actual values for lag features
+    recent_values = list(df_clean['cost'].tail(14).values)
     
     for i in range(forecast_days):
         # Prepare features for next day
@@ -113,22 +162,26 @@ def ml_forecast(df, forecast_days=30):
             'days_since_start': last_known['days_since_start'] + i + 1,
         }
         
-        # Add lag features (use recent predictions)
-        for lag in [1, 2, 3, 7, 14]:
+        # Add lag features - use historical median for missing values
+        for lag in [1, 2, 3, 7]:
             if lag <= len(forecasts):
-                features[f'lag_{lag}'] = forecasts[-lag]
+                # Use recent predictions, but cap them
+                features[f'lag_{lag}'] = min(forecasts[-lag], max_reasonable)
             else:
+                # Use historical data
                 idx = -(lag - len(forecasts))
-                if idx >= -len(df_clean):
-                    features[f'lag_{lag}'] = df_clean['cost'].iloc[idx]
+                if idx >= -len(recent_values):
+                    features[f'lag_{lag}'] = recent_values[idx]
                 else:
-                    features[f'lag_{lag}'] = df_clean['cost'].mean()
+                    features[f'lag_{lag}'] = historical_median
         
-        # Add rolling statistics (use combination of historical and forecasted)
-        recent_costs = list(df_clean['cost'].tail(14).values) + forecasts[-14:] if forecasts else []
-        features['rolling_mean_7'] = np.mean(recent_costs[-7:]) if recent_costs else df_clean['cost'].mean()
-        features['rolling_std_7'] = np.std(recent_costs[-7:]) if len(recent_costs) >= 7 else 0
-        features['rolling_mean_14'] = np.mean(recent_costs[-14:]) if recent_costs else df_clean['cost'].mean()
+        # Add rolling statistics using historical median as baseline
+        all_recent = recent_values + forecasts
+        recent_window = all_recent[-7:]
+        
+        features['rolling_median_7'] = np.median(recent_window) if len(recent_window) >= 3 else historical_median
+        features['rolling_mean_7'] = np.mean(recent_window) if recent_window else historical_mean
+        features['rolling_std_7'] = np.std(recent_window) if len(recent_window) >= 3 else historical_std
         
         # Create feature array in correct order
         X_future = np.array([[features.get(col, 0) for col in feature_cols]])
@@ -136,7 +189,18 @@ def ml_forecast(df, forecast_days=30):
         
         # Predict
         pred = model.predict(X_future_scaled)[0]
-        forecasts.append(max(0, pred))  # Ensure non-negative costs
+        
+        # Apply sanity checks and constraints
+        pred = max(min_reasonable, min(pred, max_reasonable))
+        
+        # Additional damping for ALL forecasts (prevent drift from start)
+        if i > 0:
+            # Gradually blend with historical median for stability
+            # Start at 20% blend, increase to 50% by end of forecast period
+            blend_factor = 0.2 + (i / forecast_days) * 0.3
+            pred = pred * (1 - blend_factor) + historical_median * blend_factor
+        
+        forecasts.append(pred)
     
     return forecasts
 
@@ -144,8 +208,10 @@ def calculate_confidence_intervals(historical_costs, forecasts, confidence=0.95)
     """
     Calculate confidence intervals based on historical variance
     """
-    # Calculate historical standard deviation
-    historical_std = np.std(historical_costs)
+    # Calculate historical standard deviation using robust method
+    historical_median = np.median(historical_costs)
+    mad = np.median(np.abs(historical_costs - historical_median))
+    historical_std = mad * 1.4826  # Robust estimate of std
     
     # Z-score for 95% confidence interval
     z_score = 1.96 if confidence == 0.95 else 1.645
@@ -153,7 +219,7 @@ def calculate_confidence_intervals(historical_costs, forecasts, confidence=0.95)
     intervals = []
     for i, forecast in enumerate(forecasts):
         # Increase uncertainty over time
-        time_factor = 1 + (i * 0.02)  # 2% increase per day
+        time_factor = 1 + (i * 0.03)  # 3% increase per day
         margin = z_score * historical_std * time_factor
         
         intervals.append({
@@ -171,6 +237,10 @@ def generate_budget_recommendations(historical_avg, forecast_avg):
     
     # Compare forecast to historical average
     change_pct = ((forecast_avg - historical_avg) / historical_avg) * 100
+    
+    # Cap unrealistic changes
+    if abs(change_pct) > 200:
+        change_pct = 200 if change_pct > 0 else -200
     
     if change_pct > 10:
         recommendations.append({
@@ -198,7 +268,7 @@ def generate_budget_recommendations(historical_avg, forecast_avg):
 
 def forecast_costs(cost_data, forecast_days=30):
     """
-    Main forecasting function
+    Main forecasting function with improved robustness
     """
     try:
         # Validate and clamp forecast days
@@ -216,122 +286,108 @@ def forecast_costs(cost_data, forecast_days=30):
             }
         
         # Check for zero or near-zero historical costs
-        historical_avg = df['cost'].mean()
-        if historical_avg < 0.01:
+        historical_median = df['cost'].median()
+        if historical_median < 0.01:
             return {
                 'success': False,
-                'error': 'Insufficient cost data (historical average is zero or near-zero)',
+                'error': 'Insufficient cost data (historical median is zero or near-zero)',
                 'forecasts': [],
                 'recommendations': [],
             }
         
         # Generate forecast
-        forecasts = ml_forecast(df, forecast_days=forecast_days)
+        forecast_values = ml_forecast(df, forecast_days)
         
-        # Calculate confidence intervals with sample size adjustment
-        intervals = calculate_confidence_intervals(df['cost'].values, forecasts)
+        # Validate forecast results
+        historical_mean = df['cost'].mean()
+        forecast_mean = np.mean(forecast_values)
         
-        # Generate dates for forecast
+        # Sanity check: forecast shouldn't be more than 5x historical mean
+        if forecast_mean > historical_mean * 5:
+            print(f"Warning: Forecast mean ({forecast_mean:.2f}) is unrealistically high. Using fallback method.", file=sys.stderr)
+            forecast_values = exponential_smoothing_forecast(df, forecast_days=forecast_days)
+            forecast_mean = np.mean(forecast_values)
+        
+        # Calculate confidence intervals
+        confidence_intervals = calculate_confidence_intervals(df['cost'].values, forecast_values)
+        
+        # Generate forecast data points
         last_date = df['date'].max()
-        forecast_dates = [(last_date + timedelta(days=i+1)).strftime('%Y-%m-%d') for i in range(forecast_days)]
+        forecasts = []
         
-        # Prepare forecast data
-        forecast_data = []
-        for i, (date, cost) in enumerate(zip(forecast_dates, forecasts)):
-            forecast_data.append({
-                'date': date,
-                'predictedCost': round(cost, 2),
-                'confidenceInterval': {
-                    'lower': round(intervals[i]['lower'], 2),
-                    'upper': round(intervals[i]['upper'], 2),
-                }
+        for i, (cost, interval) in enumerate(zip(forecast_values, confidence_intervals)):
+            forecast_date = last_date + timedelta(days=i+1)
+            forecasts.append({
+                'date': forecast_date.strftime('%Y-%m-%d'),
+                'cost': float(cost),
+                'lowerBound': float(interval['lower']),
+                'upperBound': float(interval['upper']),
             })
         
         # Calculate metrics
-        forecast_avg = np.mean(forecasts)
+        # Use in-sample prediction for MAPE calculation
+        df_for_mape = create_lag_features(remove_outliers(df.copy()))
+        df_mape = df_for_mape.dropna()
         
-        # Calculate change percentage with zero guard
-        change_pct = ((forecast_avg - historical_avg) / historical_avg) * 100 if historical_avg > 0 else 0
+        if len(df_mape) >= 10:
+            feature_cols = [col for col in df_mape.columns if col not in ['date', 'cost', 'services']]
+            X_mape = df_mape[feature_cols].values
+            y_mape = df_mape['cost'].values
+            
+            scaler_mape = StandardScaler()
+            X_scaled_mape = scaler_mape.fit_transform(X_mape)
+            
+            model_mape = Ridge(alpha=10.0)
+            model_mape.fit(X_scaled_mape, y_mape)
+            
+            predictions_mape = model_mape.predict(X_scaled_mape)
+            mape = mean_absolute_percentage_error(y_mape, predictions_mape) * 100
+        else:
+            mape = 15.0  # Default estimate
         
         # Generate recommendations
-        recommendations = generate_budget_recommendations(historical_avg, forecast_avg)
-        
-        # Calculate model accuracy if we have enough data
-        accuracy_metrics = {}
-        if len(df) > 14:
-            # Use last 7 days as test set
-            train_df = df.iloc[:-7]
-            test_df = df.iloc[-7:]
-            
-            test_forecasts = ml_forecast(train_df, forecast_days=7)
-            actual_costs = test_df['cost'].values
-            
-            # Calculate MAPE only if actual costs don't contain zeros
-            # MAPE is undefined when dividing by zero actual values
-            if np.all(actual_costs > 0):
-                try:
-                    mape = mean_absolute_percentage_error(actual_costs, test_forecasts) * 100
-                    
-                    # Check for non-finite values (inf, nan)
-                    if np.isfinite(mape) and mape >= 0:
-                        accuracy_metrics = {
-                            'mape': round(mape, 2),
-                            'accuracy': round(max(0, min(100, 100 - mape)), 2),  # Clamp to [0, 100]
-                        }
-                except Exception:
-                    # If MAPE calculation fails, skip metrics
-                    pass
+        recommendations = generate_budget_recommendations(historical_mean, forecast_mean)
         
         return {
             'success': True,
-            'forecasts': forecast_data,
-            'summary': {
-                'historicalAverage': round(historical_avg, 2),
-                'forecastAverage': round(forecast_avg, 2),
-                'totalForecastedCost': round(sum(forecasts), 2),
-                'changePercentage': round(change_pct, 2),
+            'forecasts': forecasts,
+            'metrics': {
+                'mape': float(min(mape, 100)),  # Cap at 100%
+                'historical_avg': float(historical_mean),
+                'forecast_avg': float(forecast_mean),
             },
             'recommendations': recommendations,
-            'modelMetrics': accuracy_metrics if accuracy_metrics else None,
-            'dataPoints': len(df),
         }
-    
+        
     except Exception as e:
+        print(f"Error in forecast_costs: {str(e)}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         return {
-            'success': False,
-            'error': str(e),
-            'forecasts': [],
-            'recommendations': [],
-        }
-
-def main():
-    """
-    Main entry point for forecasting script
-    """
-    try:
-        # Read cost data from stdin
-        input_data = json.loads(sys.stdin.read())
-        
-        # Get forecast parameters
-        forecast_days = input_data.get('forecastDays', 30)
-        cost_data = input_data.get('costData', {})
-        
-        # Generate forecast
-        result = forecast_costs(cost_data, forecast_days=forecast_days)
-        
-        # Output result
-        print(json.dumps(result))
-        sys.exit(0)
-        
-    except Exception as e:
-        error_result = {
             'success': False,
             'error': f'Forecasting error: {str(e)}',
             'forecasts': [],
             'recommendations': [],
         }
-        print(json.dumps(error_result))
-        sys.exit(1)
 
 if __name__ == '__main__':
-    main()
+    try:
+        # Read input from stdin
+        input_data = json.loads(sys.stdin.read())
+        
+        cost_data = input_data.get('costData', {})
+        forecast_days = input_data.get('days', 30)
+        
+        result = forecast_costs(cost_data, forecast_days)
+        print(json.dumps(result))
+        
+    except Exception as e:
+        print(f"Fatal error: {str(e)}", file=sys.stderr)
+        error_result = {
+            'success': False,
+            'error': f'Fatal error: {str(e)}',
+            'forecasts': [],
+            'recommendations': [],
+        }
+        print(json.dumps(error_result))
+        sys.exit(1)

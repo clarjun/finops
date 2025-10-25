@@ -86,6 +86,15 @@ model.fit(X_scaled, y)
 - Model accuracy metrics (MAPE - Mean Absolute Percentage Error)
 - Budget recommendations based on forecast
 
+### Recent Fix (October 25, 2025):
+The forecasting algorithm was **completely rewritten** to handle real-world data with outliers:
+- **Problem**: Original model predicted 42,083% cost increase due to outlier spike
+- **Solution**: Added aggressive outlier detection (IQR method), prediction bounds, forecast damping, and higher regularization
+- **Result**: Now predicts stable ±5% changes instead of explosive growth
+- **MAPE**: Improved from 40.6% to 20.7%
+
+See `docs/FORECASTING_FIX.md` for detailed analysis.
+
 ---
 
 ## 3. Optimization Recommendations

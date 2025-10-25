@@ -877,14 +877,41 @@ When answering:
         return res.status(400).json(forecastResult);
       }
       
+      // Transform Python output to match frontend expectations
+      const transformedResult = {
+        success: true,
+        forecasts: (forecastResult.forecasts || []).map((f: any) => ({
+          date: f.date,
+          predictedCost: f.cost,
+          confidenceInterval: {
+            lower: f.lowerBound || 0,
+            upper: f.upperBound || 0,
+          },
+        })),
+        summary: {
+          historicalAverage: forecastResult.metrics?.historical_avg || 0,
+          forecastAverage: forecastResult.metrics?.forecast_avg || 0,
+          totalForecastedCost: (forecastResult.forecasts || []).reduce((sum: number, f: any) => sum + (f.cost || 0), 0),
+          changePercentage: forecastResult.metrics?.historical_avg 
+            ? ((forecastResult.metrics.forecast_avg - forecastResult.metrics.historical_avg) / forecastResult.metrics.historical_avg) * 100
+            : 0,
+        },
+        recommendations: forecastResult.recommendations || [],
+        modelMetrics: {
+          mape: forecastResult.metrics?.mape || 0,
+          accuracy: forecastResult.metrics?.mape ? (100 - forecastResult.metrics.mape) : 0,
+        },
+        dataPoints: costData?.dailyTrends?.length || 0,
+      };
+      
       // Save forecast to database if successful and we have Azure account
-      if (forecastResult.forecasts && 
-          Array.isArray(forecastResult.forecasts) && 
-          forecastResult.forecasts.length > 0 && 
+      if (transformedResult.forecasts && 
+          Array.isArray(transformedResult.forecasts) && 
+          transformedResult.forecasts.length > 0 && 
           currentAzureAccountId) {
         try {
           // Validate forecast data before persisting
-          const validForecasts = forecastResult.forecasts.filter((f: any) => 
+          const validForecasts = transformedResult.forecasts.filter((f: any) => 
             f.date && 
             typeof f.predictedCost === 'number' && 
             Number.isFinite(f.predictedCost) &&
@@ -919,7 +946,7 @@ When answering:
         }
       }
       
-      res.json(forecastResult);
+      res.json(transformedResult);
     } catch (error) {
       console.error("Forecasting error:", error);
       res.status(500).json({
