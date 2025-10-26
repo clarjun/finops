@@ -179,6 +179,137 @@ Dependencies: Array of stepIndex values that must complete first.`
       prompt += '\n';
     }
 
+    // Include AWS resource inventory if available
+    if (context.awsResources) {
+      const aws = context.awsResources;
+      
+      prompt += `=== ACTUAL AWS RESOURCE INVENTORY ===\n\n`;
+      
+      // EC2 Instances
+      if (aws.ec2Instances && aws.ec2Instances.length > 0) {
+        prompt += `EC2 Instances (${aws.ec2Instances.length} total):\n`;
+        aws.ec2Instances.slice(0, 10).forEach((inst: any) => {
+          prompt += `- ${inst.instanceId}: ${inst.instanceType}, State: ${inst.state}`;
+          if (inst.launchTime) {
+            prompt += `, Launched: ${new Date(inst.launchTime).toISOString().split('T')[0]}`;
+          }
+          prompt += '\n';
+        });
+        if (aws.ec2Instances.length > 10) {
+          prompt += `... and ${aws.ec2Instances.length - 10} more instances\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // Lambda Functions
+      if (aws.lambdaFunctions && aws.lambdaFunctions.length > 0) {
+        prompt += `Lambda Functions (${aws.lambdaFunctions.length} total):\n`;
+        aws.lambdaFunctions.slice(0, 10).forEach((fn: any) => {
+          prompt += `- ${fn.functionName}: ${fn.memorySize}MB, Timeout: ${fn.timeout}s`;
+          if (fn.runtime) {
+            prompt += `, Runtime: ${fn.runtime}`;
+          }
+          prompt += '\n';
+        });
+        if (aws.lambdaFunctions.length > 10) {
+          prompt += `... and ${aws.lambdaFunctions.length - 10} more functions\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // RDS Instances
+      if (aws.rdsInstances && aws.rdsInstances.length > 0) {
+        prompt += `RDS Instances (${aws.rdsInstances.length} total):\n`;
+        aws.rdsInstances.slice(0, 10).forEach((db: any) => {
+          prompt += `- ${db.instanceId}: ${db.instanceClass}, Engine: ${db.engine}`;
+          if (db.allocatedStorage) {
+            prompt += `, Storage: ${db.allocatedStorage}GB`;
+          }
+          if (db.multiAZ) {
+            prompt += `, Multi-AZ`;
+          }
+          prompt += '\n';
+        });
+        if (aws.rdsInstances.length > 10) {
+          prompt += `... and ${aws.rdsInstances.length - 10} more instances\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // S3 Buckets
+      if (aws.s3Buckets && aws.s3Buckets.length > 0) {
+        prompt += `S3 Buckets (${aws.s3Buckets.length} total):\n`;
+        aws.s3Buckets.slice(0, 10).forEach((bucket: any) => {
+          prompt += `- ${bucket.name}`;
+          if (bucket.creationDate) {
+            prompt += ` (Created: ${new Date(bucket.creationDate).toISOString().split('T')[0]})`;
+          }
+          prompt += '\n';
+        });
+        if (aws.s3Buckets.length > 10) {
+          prompt += `... and ${aws.s3Buckets.length - 10} more buckets\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // EBS Volumes
+      if (aws.ebsVolumes && aws.ebsVolumes.length > 0) {
+        const unattachedVolumes = aws.ebsVolumes.filter((v: any) => !v.attachedTo);
+        prompt += `EBS Volumes (${aws.ebsVolumes.length} total, ${unattachedVolumes.length} unattached):\n`;
+        aws.ebsVolumes.slice(0, 5).forEach((vol: any) => {
+          prompt += `- ${vol.volumeId}: ${vol.volumeType}, ${vol.size}GB, State: ${vol.state}`;
+          if (!vol.attachedTo) {
+            prompt += ` [UNATTACHED - POTENTIAL SAVINGS]`;
+          }
+          prompt += '\n';
+        });
+        if (aws.ebsVolumes.length > 5) {
+          prompt += `... and ${aws.ebsVolumes.length - 5} more volumes\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // CloudWatch Log Groups
+      if (aws.cloudwatchLogGroups && aws.cloudwatchLogGroups.length > 0) {
+        const highRetention = aws.cloudwatchLogGroups.filter((lg: any) => !lg.retentionInDays || lg.retentionInDays > 365);
+        prompt += `CloudWatch Log Groups (${aws.cloudwatchLogGroups.length} total, ${highRetention.length} with high/infinite retention):\n`;
+        aws.cloudwatchLogGroups.slice(0, 5).forEach((lg: any) => {
+          prompt += `- ${lg.logGroupName}: Retention: ${lg.retentionInDays || 'Never expires'}`;
+          if (lg.storedBytes) {
+            const sizeMB = (lg.storedBytes / (1024 * 1024)).toFixed(2);
+            prompt += `, Size: ${sizeMB}MB`;
+          }
+          prompt += '\n';
+        });
+        if (aws.cloudwatchLogGroups.length > 5) {
+          prompt += `... and ${aws.cloudwatchLogGroups.length - 5} more log groups\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // EBS Snapshots
+      if (aws.ebsSnapshots && aws.ebsSnapshots.length > 0) {
+        prompt += `EBS Snapshots: ${aws.ebsSnapshots.length} total\n`;
+        prompt += `Consider reviewing for old/unused snapshots that can be deleted.\n\n`;
+      }
+      
+      // Elastic IPs
+      if (aws.elasticIPs && aws.elasticIPs.length > 0) {
+        const unassociated = aws.elasticIPs.filter((eip: any) => !eip.AssociationId);
+        prompt += `Elastic IPs: ${aws.elasticIPs.length} total`;
+        if (unassociated.length > 0) {
+          prompt += `, ${unassociated.length} UNASSOCIATED [COSTING MONEY]`;
+        }
+        prompt += '\n\n';
+      }
+      
+      prompt += `=== END AWS INVENTORY ===\n\n`;
+      
+      prompt += `IMPORTANT: Use the ACTUAL resource IDs and details from the inventory above in your recommendations. `;
+      prompt += `For example, if recommending EC2 rightsizing, reference specific instance IDs like "${aws.ec2Instances[0]?.instanceId || 'i-xxxxx'}". `;
+      prompt += `If recommending Lambda optimization, use actual function names like "${aws.lambdaFunctions[0]?.functionName || 'my-function'}". \n\n`;
+    }
+
     prompt += `Create a detailed, multi-step optimization plan to achieve the goal. `;
     prompt += `Consider resource rightsizing, idle resource elimination, storage lifecycle policies, and reserved capacity. `;
     prompt += `Make the plan ${aggressiveness} - `;

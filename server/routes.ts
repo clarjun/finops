@@ -1968,8 +1968,9 @@ When answering:
       let context: any = { goal, provider };
 
       if (includeContext) {
-        // Get current cost data
         const providerFilter = provider || 'all';
+
+        // Get current cost data
         const sampleData = loadMultiCloudSampleData();
         const filteredData = providerFilter === 'all' 
           ? sampleData.allCostData 
@@ -1990,6 +1991,20 @@ When answering:
             }, {})
           ).map(([name, cost]) => ({ name, cost })).slice(0, 5)
         };
+
+        // Fetch real AWS resource inventory if provider is AWS or all
+        if (providerFilter === 'aws' || providerFilter === 'all') {
+          try {
+            const { getAWSResourceInventory } = await import('./aws-resource-inventory');
+            const awsInventory = await getAWSResourceInventory();
+            
+            console.log('[Agent Planner] Including real AWS resource inventory in context');
+            context.awsResources = awsInventory;
+          } catch (error) {
+            console.error('[Agent Planner] Error fetching AWS resources:', error);
+            context.awsResources = null;
+          }
+        }
 
         // Get recent anomalies (with defensive error handling)
         try {
