@@ -185,6 +185,11 @@ Dependencies: Array of stepIndex values that must complete first.`
       
       prompt += `=== ACTUAL AWS RESOURCE INVENTORY ===\n\n`;
       
+      // Include warning about inventory errors if present
+      if (context.awsInventoryWarning) {
+        prompt += `${context.awsInventoryWarning}\n\n`;
+      }
+      
       // EC2 Instances
       if (aws.ec2Instances && aws.ec2Instances.length > 0) {
         prompt += `EC2 Instances (${aws.ec2Instances.length} total):\n`;

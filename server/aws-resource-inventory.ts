@@ -20,10 +20,8 @@ import {
   ListBucketsCommand,
   GetBucketLocationCommand
 } from "@aws-sdk/client-s3";
-import { 
-  CloudWatchClient, 
-  GetMetricStatisticsCommand 
-} from "@aws-sdk/client-cloudwatch";
+// CloudWatch metrics intentionally NOT imported - see note below about why metrics
+// should be fetched separately via background jobs instead of in the hot path
 import { 
   CloudWatchLogsClient, 
   DescribeLogGroupsCommand 
@@ -37,13 +35,33 @@ export function isAWSResourceInventoryConfigured(): boolean {
   return !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
 }
 
-// Initialize AWS clients
-const ec2Client = new EC2Client({ region: AWS_REGION });
-const lambdaClient = new LambdaClient({ region: AWS_REGION });
-const rdsClient = new RDSClient({ region: AWS_REGION });
-const s3Client = new S3Client({ region: AWS_REGION });
-const cloudwatchClient = new CloudWatchClient({ region: AWS_REGION });
-const cloudwatchLogsClient = new CloudWatchLogsClient({ region: AWS_REGION });
+// AWS SDK retry configuration to prevent throttling in large accounts
+const awsRetryConfig = {
+  maxAttempts: 5,
+  retryMode: 'adaptive' as const,
+};
+
+// Initialize AWS clients with retry configuration
+const ec2Client = new EC2Client({ 
+  region: AWS_REGION,
+  ...awsRetryConfig 
+});
+const lambdaClient = new LambdaClient({ 
+  region: AWS_REGION,
+  ...awsRetryConfig 
+});
+const rdsClient = new RDSClient({ 
+  region: AWS_REGION,
+  ...awsRetryConfig 
+});
+const s3Client = new S3Client({ 
+  region: AWS_REGION,
+  ...awsRetryConfig 
+});
+const cloudwatchLogsClient = new CloudWatchLogsClient({ 
+  region: AWS_REGION,
+  ...awsRetryConfig 
+});
 
 export interface EC2Instance {
   instanceId: string;
@@ -54,12 +72,6 @@ export interface EC2Instance {
   vCpus?: number;
   memory?: number;
   tags?: Record<string, string>;
-  utilizationMetrics?: {
-    avgCpuUtilization?: number;
-    maxCpuUtilization?: number;
-    networkIn?: number;
-    networkOut?: number;
-  };
 }
 
 export interface LambdaFunction {
@@ -70,12 +82,6 @@ export interface LambdaFunction {
   timeout: number;
   lastModified?: string;
   codeSize?: number;
-  metrics?: {
-    invocations?: number;
-    avgDuration?: number;
-    errors?: number;
-    throttles?: number;
-  };
 }
 
 export interface RDSInstance {
@@ -88,12 +94,6 @@ export interface RDSInstance {
   multiAZ?: boolean;
   storageType?: string;
   iops?: number;
-  metrics?: {
-    avgCpuUtilization?: number;
-    connections?: number;
-    readLatency?: number;
-    writeLatency?: number;
-  };
 }
 
 export interface S3Bucket {
@@ -134,99 +134,128 @@ export interface AWSResourceInventory {
 }
 
 /**
- * Fetch EC2 instances with utilization metrics
+ * Fetch EC2 instances with pagination
  */
 export async function fetchEC2Instances(): Promise<EC2Instance[]> {
   try {
-    const command = new DescribeInstancesCommand({});
-    const response = await ec2Client.send(command);
-    
     const instances: EC2Instance[] = [];
+    let nextToken: string | undefined;
     
-    for (const reservation of response.Reservations || []) {
-      for (const instance of reservation.Instances || []) {
-        const tags: Record<string, string> = {};
-        instance.Tags?.forEach(tag => {
-          if (tag.Key && tag.Value) {
-            tags[tag.Key] = tag.Value;
-          }
-        });
+    do {
+      const command = new DescribeInstancesCommand({
+        NextToken: nextToken,
+      });
+      const response = await ec2Client.send(command);
+      
+      for (const reservation of response.Reservations || []) {
+        for (const instance of reservation.Instances || []) {
+          const tags: Record<string, string> = {};
+          instance.Tags?.forEach(tag => {
+            if (tag.Key && tag.Value) {
+              tags[tag.Key] = tag.Value;
+            }
+          });
 
-        instances.push({
-          instanceId: instance.InstanceId || '',
-          instanceType: instance.InstanceType || '',
-          state: instance.State?.Name || 'unknown',
-          launchTime: instance.LaunchTime,
-          platform: instance.Platform,
-          tags,
-        });
+          instances.push({
+            instanceId: instance.InstanceId || '',
+            instanceType: instance.InstanceType || '',
+            state: instance.State?.Name || 'unknown',
+            launchTime: instance.LaunchTime,
+            platform: instance.Platform,
+            tags,
+          });
+        }
       }
-    }
+      
+      nextToken = response.NextToken;
+    } while (nextToken);
     
     console.log(`[AWS Inventory] Fetched ${instances.length} EC2 instances`);
     return instances;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching EC2 instances:', error);
-    return [];
+    throw new Error(`Failed to fetch EC2 instances: ${error}`);
   }
 }
 
 /**
- * Fetch Lambda functions with metrics
+ * Fetch Lambda functions with pagination
  */
 export async function fetchLambdaFunctions(): Promise<LambdaFunction[]> {
   try {
-    const command = new ListFunctionsCommand({});
-    const response = await lambdaClient.send(command);
+    const functions: LambdaFunction[] = [];
+    let nextMarker: string | undefined;
     
-    const functions: LambdaFunction[] = (response.Functions || []).map(fn => ({
-      functionName: fn.FunctionName || '',
-      functionArn: fn.FunctionArn || '',
-      runtime: fn.Runtime,
-      memorySize: fn.MemorySize || 128,
-      timeout: fn.Timeout || 3,
-      lastModified: fn.LastModified,
-      codeSize: fn.CodeSize,
-    }));
+    do {
+      const command = new ListFunctionsCommand({
+        Marker: nextMarker,
+      });
+      const response = await lambdaClient.send(command);
+      
+      for (const fn of response.Functions || []) {
+        functions.push({
+          functionName: fn.FunctionName || '',
+          functionArn: fn.FunctionArn || '',
+          runtime: fn.Runtime,
+          memorySize: fn.MemorySize || 128,
+          timeout: fn.Timeout || 3,
+          lastModified: fn.LastModified,
+          codeSize: fn.CodeSize,
+        });
+      }
+      
+      nextMarker = response.NextMarker;
+    } while (nextMarker);
     
     console.log(`[AWS Inventory] Fetched ${functions.length} Lambda functions`);
     return functions;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching Lambda functions:', error);
-    return [];
+    throw new Error(`Failed to fetch Lambda functions: ${error}`);
   }
 }
 
 /**
- * Fetch RDS instances with metrics
+ * Fetch RDS instances with pagination
  */
 export async function fetchRDSInstances(): Promise<RDSInstance[]> {
   try {
-    const command = new DescribeDBInstancesCommand({});
-    const response = await rdsClient.send(command);
+    const instances: RDSInstance[] = [];
+    let nextMarker: string | undefined;
     
-    const instances: RDSInstance[] = (response.DBInstances || []).map(db => ({
-      instanceId: db.DBInstanceIdentifier || '',
-      instanceClass: db.DBInstanceClass || '',
-      engine: db.Engine || '',
-      engineVersion: db.EngineVersion,
-      status: db.DBInstanceStatus || 'unknown',
-      allocatedStorage: db.AllocatedStorage,
-      multiAZ: db.MultiAZ,
-      storageType: db.StorageType,
-      iops: db.Iops,
-    }));
+    do {
+      const command = new DescribeDBInstancesCommand({
+        Marker: nextMarker,
+      });
+      const response = await rdsClient.send(command);
+      
+      for (const db of response.DBInstances || []) {
+        instances.push({
+          instanceId: db.DBInstanceIdentifier || '',
+          instanceClass: db.DBInstanceClass || '',
+          engine: db.Engine || '',
+          engineVersion: db.EngineVersion,
+          status: db.DBInstanceStatus || 'unknown',
+          allocatedStorage: db.AllocatedStorage,
+          multiAZ: db.MultiAZ,
+          storageType: db.StorageType,
+          iops: db.Iops,
+        });
+      }
+      
+      nextMarker = response.Marker;
+    } while (nextMarker);
     
     console.log(`[AWS Inventory] Fetched ${instances.length} RDS instances`);
     return instances;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching RDS instances:', error);
-    return [];
+    throw new Error(`Failed to fetch RDS instances: ${error}`);
   }
 }
 
 /**
- * Fetch S3 buckets
+ * Fetch S3 buckets (no pagination needed - ListBuckets returns all)
  */
 export async function fetchS3Buckets(): Promise<S3Bucket[]> {
   try {
@@ -242,80 +271,111 @@ export async function fetchS3Buckets(): Promise<S3Bucket[]> {
     return buckets;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching S3 buckets:', error);
-    return [];
+    throw new Error(`Failed to fetch S3 buckets: ${error}`);
   }
 }
 
 /**
- * Fetch EBS volumes
+ * Fetch EBS volumes with pagination
  */
 export async function fetchEBSVolumes(): Promise<EBSVolume[]> {
   try {
-    const command = new DescribeVolumesCommand({});
-    const response = await ec2Client.send(command);
+    const volumes: EBSVolume[] = [];
+    let nextToken: string | undefined;
     
-    const volumes: EBSVolume[] = (response.Volumes || []).map(vol => ({
-      volumeId: vol.VolumeId || '',
-      volumeType: vol.VolumeType || '',
-      size: vol.Size || 0,
-      state: vol.State || 'unknown',
-      iops: vol.Iops,
-      throughput: vol.Throughput,
-      attachedTo: vol.Attachments?.[0]?.InstanceId,
-      createTime: vol.CreateTime,
-    }));
+    do {
+      const command = new DescribeVolumesCommand({
+        NextToken: nextToken,
+      });
+      const response = await ec2Client.send(command);
+      
+      for (const vol of response.Volumes || []) {
+        volumes.push({
+          volumeId: vol.VolumeId || '',
+          volumeType: vol.VolumeType || '',
+          size: vol.Size || 0,
+          state: vol.State || 'unknown',
+          iops: vol.Iops,
+          throughput: vol.Throughput,
+          attachedTo: vol.Attachments?.[0]?.InstanceId,
+          createTime: vol.CreateTime,
+        });
+      }
+      
+      nextToken = response.NextToken;
+    } while (nextToken);
     
     console.log(`[AWS Inventory] Fetched ${volumes.length} EBS volumes`);
     return volumes;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching EBS volumes:', error);
-    return [];
+    throw new Error(`Failed to fetch EBS volumes: ${error}`);
   }
 }
 
 /**
- * Fetch CloudWatch Log Groups
+ * Fetch CloudWatch Log Groups with pagination
  */
 export async function fetchCloudWatchLogGroups(): Promise<CloudWatchLogGroup[]> {
   try {
-    const command = new DescribeLogGroupsCommand({});
-    const response = await cloudwatchLogsClient.send(command);
+    const logGroups: CloudWatchLogGroup[] = [];
+    let nextToken: string | undefined;
     
-    const logGroups: CloudWatchLogGroup[] = (response.logGroups || []).map(lg => ({
-      logGroupName: lg.logGroupName || '',
-      retentionInDays: lg.retentionInDays,
-      storedBytes: lg.storedBytes,
-      creationTime: lg.creationTime,
-    }));
+    do {
+      const command = new DescribeLogGroupsCommand({
+        nextToken,
+      });
+      const response = await cloudwatchLogsClient.send(command);
+      
+      for (const lg of response.logGroups || []) {
+        logGroups.push({
+          logGroupName: lg.logGroupName || '',
+          retentionInDays: lg.retentionInDays,
+          storedBytes: lg.storedBytes,
+          creationTime: lg.creationTime,
+        });
+      }
+      
+      nextToken = response.nextToken;
+    } while (nextToken);
     
     console.log(`[AWS Inventory] Fetched ${logGroups.length} CloudWatch log groups`);
     return logGroups;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching CloudWatch log groups:', error);
-    return [];
+    throw new Error(`Failed to fetch CloudWatch log groups: ${error}`);
   }
 }
 
 /**
- * Fetch EBS Snapshots
+ * Fetch EBS Snapshots with pagination
  */
 export async function fetchEBSSnapshots(): Promise<any[]> {
   try {
-    const command = new DescribeSnapshotsCommand({
-      OwnerIds: ['self'],
-    });
-    const response = await ec2Client.send(command);
+    const snapshots: any[] = [];
+    let nextToken: string | undefined;
     
-    console.log(`[AWS Inventory] Fetched ${response.Snapshots?.length || 0} EBS snapshots`);
-    return response.Snapshots || [];
+    do {
+      const command = new DescribeSnapshotsCommand({
+        OwnerIds: ['self'],
+        NextToken: nextToken,
+      });
+      const response = await ec2Client.send(command);
+      
+      snapshots.push(...(response.Snapshots || []));
+      nextToken = response.NextToken;
+    } while (nextToken);
+    
+    console.log(`[AWS Inventory] Fetched ${snapshots.length} EBS snapshots`);
+    return snapshots;
   } catch (error) {
     console.error('[AWS Inventory] Error fetching EBS snapshots:', error);
-    return [];
+    throw new Error(`Failed to fetch EBS snapshots: ${error}`);
   }
 }
 
 /**
- * Fetch Elastic IPs
+ * Fetch Elastic IPs (no pagination needed - DescribeAddresses returns all)
  */
 export async function fetchElasticIPs(): Promise<any[]> {
   try {
@@ -326,102 +386,37 @@ export async function fetchElasticIPs(): Promise<any[]> {
     return response.Addresses || [];
   } catch (error) {
     console.error('[AWS Inventory] Error fetching Elastic IPs:', error);
-    return [];
+    throw new Error(`Failed to fetch Elastic IPs: ${error}`);
   }
 }
 
 /**
- * Get CloudWatch metrics for an EC2 instance
+ * NOTE: CloudWatch metrics are intentionally NOT fetched during inventory collection
+ * to avoid expensive API calls, throttling, and latency issues.
+ * 
+ * Metrics should be fetched:
+ * 1. On-demand for specific resources when needed
+ * 2. Via background jobs with proper rate limiting
+ * 3. From CloudWatch Logs Insights or cost data analysis instead
+ * 
+ * The AI planner can make recommendations based on resource configurations
+ * (instance types, memory allocations, etc.) without real-time utilization data.
  */
-export async function getEC2Metrics(instanceId: string, days: number = 7): Promise<any> {
-  try {
-    const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
-    
-    const cpuCommand = new GetMetricStatisticsCommand({
-      Namespace: 'AWS/EC2',
-      MetricName: 'CPUUtilization',
-      Dimensions: [{ Name: 'InstanceId', Value: instanceId }],
-      StartTime: startTime,
-      EndTime: endTime,
-      Period: 3600, // 1 hour
-      Statistics: ['Average', 'Maximum'],
-    });
-    
-    const cpuResponse = await cloudwatchClient.send(cpuCommand);
-    
-    const datapoints = cpuResponse.Datapoints || [];
-    const avgCpu = datapoints.length > 0 
-      ? datapoints.reduce((sum, dp) => sum + (dp.Average || 0), 0) / datapoints.length 
-      : 0;
-    const maxCpu = datapoints.length > 0
-      ? Math.max(...datapoints.map(dp => dp.Maximum || 0))
-      : 0;
-    
-    return {
-      avgCpuUtilization: avgCpu,
-      maxCpuUtilization: maxCpu,
-    };
-  } catch (error) {
-    console.error(`[AWS Inventory] Error fetching metrics for instance ${instanceId}:`, error);
-    return {};
-  }
+
+export interface InventoryFetchError {
+  resourceType: string;
+  error: string;
+}
+
+export interface AWSResourceInventoryWithErrors extends AWSResourceInventory {
+  errors?: InventoryFetchError[];
+  hasErrors?: boolean;
 }
 
 /**
- * Get CloudWatch metrics for a Lambda function
+ * Fetch complete AWS resource inventory with proper error handling
  */
-export async function getLambdaMetrics(functionName: string, days: number = 7): Promise<any> {
-  try {
-    const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
-    
-    // Get invocations
-    const invocationsCommand = new GetMetricStatisticsCommand({
-      Namespace: 'AWS/Lambda',
-      MetricName: 'Invocations',
-      Dimensions: [{ Name: 'FunctionName', Value: functionName }],
-      StartTime: startTime,
-      EndTime: endTime,
-      Period: 86400, // 1 day
-      Statistics: ['Sum'],
-    });
-    
-    const invocationsResponse = await cloudwatchClient.send(invocationsCommand);
-    const totalInvocations = (invocationsResponse.Datapoints || [])
-      .reduce((sum, dp) => sum + (dp.Sum || 0), 0);
-    
-    // Get duration
-    const durationCommand = new GetMetricStatisticsCommand({
-      Namespace: 'AWS/Lambda',
-      MetricName: 'Duration',
-      Dimensions: [{ Name: 'FunctionName', Value: functionName }],
-      StartTime: startTime,
-      EndTime: endTime,
-      Period: 86400,
-      Statistics: ['Average'],
-    });
-    
-    const durationResponse = await cloudwatchClient.send(durationCommand);
-    const datapoints = durationResponse.Datapoints || [];
-    const avgDuration = datapoints.length > 0
-      ? datapoints.reduce((sum, dp) => sum + (dp.Average || 0), 0) / datapoints.length
-      : 0;
-    
-    return {
-      invocations: totalInvocations,
-      avgDuration,
-    };
-  } catch (error) {
-    console.error(`[AWS Inventory] Error fetching metrics for Lambda ${functionName}:`, error);
-    return {};
-  }
-}
-
-/**
- * Fetch complete AWS resource inventory
- */
-export async function fetchAWSResourceInventory(): Promise<AWSResourceInventory> {
+export async function fetchAWSResourceInventory(): Promise<AWSResourceInventoryWithErrors> {
   console.log('[AWS Inventory] Fetching AWS resource inventory...');
   
   if (!isAWSResourceInventoryConfigured()) {
@@ -435,19 +430,24 @@ export async function fetchAWSResourceInventory(): Promise<AWSResourceInventory>
       cloudwatchLogGroups: [],
       ebsSnapshots: [],
       elasticIPs: [],
+      errors: [{ resourceType: 'all', error: 'AWS credentials not configured' }],
+      hasErrors: true,
     };
   }
 
+  const errors: InventoryFetchError[] = [];
+  
+  // Fetch all resources with individual error handling
   const [
-    ec2Instances,
-    lambdaFunctions,
-    rdsInstances,
-    s3Buckets,
-    ebsVolumes,
-    cloudwatchLogGroups,
-    ebsSnapshots,
-    elasticIPs,
-  ] = await Promise.all([
+    ec2Result,
+    lambdaResult,
+    rdsResult,
+    s3Result,
+    ebsResult,
+    logsResult,
+    snapshotsResult,
+    eipsResult,
+  ] = await Promise.allSettled([
     fetchEC2Instances(),
     fetchLambdaFunctions(),
     fetchRDSInstances(),
@@ -458,16 +458,63 @@ export async function fetchAWSResourceInventory(): Promise<AWSResourceInventory>
     fetchElasticIPs(),
   ]);
 
-  console.log('[AWS Inventory] Resource inventory complete:', {
-    ec2: ec2Instances.length,
-    lambda: lambdaFunctions.length,
-    rds: rdsInstances.length,
-    s3: s3Buckets.length,
-    ebs: ebsVolumes.length,
-    logs: cloudwatchLogGroups.length,
-    snapshots: ebsSnapshots.length,
-    eips: elasticIPs.length,
-  });
+  // Extract results or capture errors
+  const ec2Instances = ec2Result.status === 'fulfilled' ? ec2Result.value : [];
+  if (ec2Result.status === 'rejected') {
+    errors.push({ resourceType: 'EC2', error: ec2Result.reason.message });
+  }
+
+  const lambdaFunctions = lambdaResult.status === 'fulfilled' ? lambdaResult.value : [];
+  if (lambdaResult.status === 'rejected') {
+    errors.push({ resourceType: 'Lambda', error: lambdaResult.reason.message });
+  }
+
+  const rdsInstances = rdsResult.status === 'fulfilled' ? rdsResult.value : [];
+  if (rdsResult.status === 'rejected') {
+    errors.push({ resourceType: 'RDS', error: rdsResult.reason.message });
+  }
+
+  const s3Buckets = s3Result.status === 'fulfilled' ? s3Result.value : [];
+  if (s3Result.status === 'rejected') {
+    errors.push({ resourceType: 'S3', error: s3Result.reason.message });
+  }
+
+  const ebsVolumes = ebsResult.status === 'fulfilled' ? ebsResult.value : [];
+  if (ebsResult.status === 'rejected') {
+    errors.push({ resourceType: 'EBS Volumes', error: ebsResult.reason.message });
+  }
+
+  const cloudwatchLogGroups = logsResult.status === 'fulfilled' ? logsResult.value : [];
+  if (logsResult.status === 'rejected') {
+    errors.push({ resourceType: 'CloudWatch Logs', error: logsResult.reason.message });
+  }
+
+  const ebsSnapshots = snapshotsResult.status === 'fulfilled' ? snapshotsResult.value : [];
+  if (snapshotsResult.status === 'rejected') {
+    errors.push({ resourceType: 'EBS Snapshots', error: snapshotsResult.reason.message });
+  }
+
+  const elasticIPs = eipsResult.status === 'fulfilled' ? eipsResult.value : [];
+  if (eipsResult.status === 'rejected') {
+    errors.push({ resourceType: 'Elastic IPs', error: eipsResult.reason.message });
+  }
+
+  const hasErrors = errors.length > 0;
+  
+  if (hasErrors) {
+    console.warn('[AWS Inventory] Completed with errors:', errors);
+  } else {
+    console.log('[AWS Inventory] Resource inventory complete successfully:', {
+      ec2: ec2Instances.length,
+      lambda: lambdaFunctions.length,
+      rds: rdsInstances.length,
+      s3: s3Buckets.length,
+      ebs: ebsVolumes.length,
+      logs: cloudwatchLogGroups.length,
+      snapshots: ebsSnapshots.length,
+      eips: elasticIPs.length,
+    });
+  }
 
   return {
     ec2Instances,
@@ -478,18 +525,20 @@ export async function fetchAWSResourceInventory(): Promise<AWSResourceInventory>
     cloudwatchLogGroups,
     ebsSnapshots,
     elasticIPs,
+    errors,
+    hasErrors,
   };
 }
 
 // Cache for resource inventory (refresh every 5 minutes)
-let cachedInventory: AWSResourceInventory | null = null;
+let cachedInventory: AWSResourceInventoryWithErrors | null = null;
 let lastFetchTime: number = 0;
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Get AWS resource inventory (cached)
  */
-export async function getAWSResourceInventory(forceRefresh: boolean = false): Promise<AWSResourceInventory> {
+export async function getAWSResourceInventory(forceRefresh: boolean = false): Promise<AWSResourceInventoryWithErrors> {
   const now = Date.now();
   
   if (!forceRefresh && cachedInventory && (now - lastFetchTime) < CACHE_TTL) {

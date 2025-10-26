@@ -4,7 +4,7 @@
 
 This AI-powered multi-cloud FinOps dashboard provides comprehensive cost optimization across Azure, AWS, and GCP. It delivers interactive visualizations, natural language querying, ML-based anomaly detection, and automated cost optimization recommendations. The project enables businesses to track spending, optimize resources, and make data-driven financial decisions across all major cloud providers.
 
-A key feature is the **Agentic AI System**, which provides autonomous cost optimization. This system uses multi-step planning, autonomous decision-making, self-correction, and learning capabilities to generate optimization plans, execute approved actions on cloud resources (currently AWS only), automatically retry failed operations, and learn from historical outcomes to improve future recommendations.
+A key feature is the **Agentic AI System**, which provides autonomous cost optimization. This system uses multi-step planning, autonomous decision-making, self-correction, and learning capabilities to generate optimization plans, execute approved actions on cloud resources (currently AWS only), automatically retry failed operations, and learn from historical outcomes to improve future recommendations. The agent analyzes **real AWS infrastructure data** (fetched via AWS SDK with full pagination and retry configuration) including EC2 instances, Lambda functions, RDS databases, S3 buckets, EBS volumes, and CloudWatch log groups, enabling personalized recommendations based on actual resource configurations and IDs rather than generic suggestions.
 
 Key capabilities include:
 -   **Multi-Cloud Cost Tracking**: Daily/weekly/monthly spending across Azure, AWS, and GCP with a unified dashboard.
@@ -58,6 +58,7 @@ Preferred communication style: Simple, everyday language.
 -   **Multi-Cloud Cost Data Sources**:
     -   **Azure Cost Management Query API**
     -   **AWS Cost Explorer API**: Real-time AWS cost data via `@aws-sdk/client-cost-explorer`.
+    -   **AWS Resource Inventory**: Real AWS infrastructure data via AWS SDK (EC2, Lambda, RDS, S3, EBS, CloudWatch Logs) with full pagination and retry configuration.
     -   **GCP BigQuery Billing Export**: Real-time GCP cost data via `@google-cloud/bigquery`.
 -   **Python ML Stack**: scikit-learn, pandas, numpy for ML computations.
 -   **Email Services**: Resend or SendGrid for alerts and reports (currently uses a mock provider).

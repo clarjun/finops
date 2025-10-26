@@ -1998,11 +1998,18 @@ When answering:
             const { getAWSResourceInventory } = await import('./aws-resource-inventory');
             const awsInventory = await getAWSResourceInventory();
             
+            if (awsInventory.hasErrors) {
+              console.warn('[Agent Planner] AWS resource inventory has errors:', awsInventory.errors);
+              context.awsInventoryErrors = awsInventory.errors;
+              context.awsInventoryWarning = `⚠️ Some AWS resources could not be fetched: ${awsInventory.errors?.map(e => e.resourceType).join(', ')}. Recommendations may be incomplete.`;
+            }
+            
             console.log('[Agent Planner] Including real AWS resource inventory in context');
             context.awsResources = awsInventory;
           } catch (error) {
             console.error('[Agent Planner] Error fetching AWS resources:', error);
             context.awsResources = null;
+            context.awsInventoryWarning = '⚠️ Could not fetch AWS resource inventory. Recommendations will be based on cost data only.';
           }
         }
 
