@@ -130,7 +130,41 @@ async function fetchComputeInstances(projectId: string): Promise<GCPComputeInsta
 }
 
 /**
+ * Fetch all available Cloud Functions locations
+ */
+async function fetchCloudFunctionsLocations(projectId: string): Promise<string[]> {
+  const credentials = getGCPCredentials();
+  const functionsClient = new CloudFunctionsServiceClient({
+    credentials,
+  });
+
+  const locations: string[] = [];
+
+  try {
+    const parent = `projects/${projectId}`;
+    const [locationsList] = await functionsClient.listLocations({
+      name: parent,
+    });
+
+    for (const location of locationsList) {
+      if (location.locationId) {
+        locations.push(location.locationId);
+      }
+    }
+
+    console.log(`[GCP] Discovered ${locations.length} Cloud Functions locations`);
+  } catch (error: any) {
+    console.warn('Error fetching GCP locations, using fallback regions:', error.message);
+    // Fallback to common regions if API call fails
+    return ['us-central1', 'us-east1', 'us-west1', 'europe-west1', 'asia-east1'];
+  }
+
+  return locations.length > 0 ? locations : ['us-central1', 'us-east1', 'us-west1', 'europe-west1', 'asia-east1'];
+}
+
+/**
  * Fetch all Cloud Functions with pagination
+ * Dynamically discovers all available regions to ensure complete coverage
  */
 async function fetchCloudFunctions(projectId: string): Promise<GCPCloudFunction[]> {
   const credentials = getGCPCredentials();
@@ -141,9 +175,8 @@ async function fetchCloudFunctions(projectId: string): Promise<GCPCloudFunction[
   const functions: GCPCloudFunction[] = [];
 
   try {
-    // List all functions across all regions
-    // Note: Cloud Functions v1 API requires listing by location
-    const locations = ['us-central1', 'us-east1', 'us-west1', 'europe-west1', 'asia-east1'];
+    // Dynamically fetch all available locations
+    const locations = await fetchCloudFunctionsLocations(projectId);
 
     for (const location of locations) {
       try {
