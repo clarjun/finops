@@ -2130,6 +2130,54 @@ When answering:
     }
   });
 
+  // DELETE /api/agent/plans/:id - Delete a plan and its associated actions
+  app.delete("/api/agent/plans/:id", async (req, res) => {
+    try {
+      const planId = parseInt(req.params.id);
+
+      // Check if plan exists
+      const plan = await db.select().from(schema.optimizationPlans).where(eq(schema.optimizationPlans.id, planId)).limit(1);
+
+      if (plan.length === 0) {
+        return res.status(404).json({ error: "Plan not found" });
+      }
+
+      // Delete associated actions first
+      await db.delete(schema.optimizationActions).where(eq(schema.optimizationActions.planId, planId));
+
+      // Delete the plan
+      await db.delete(schema.optimizationPlans).where(eq(schema.optimizationPlans.id, planId));
+
+      res.json({ success: true, message: "Plan and associated actions deleted successfully" });
+    } catch (error: any) {
+      console.error("Error deleting plan:", error);
+      res.status(500).json({ error: error.message || "Failed to delete plan" });
+    }
+  });
+
+  // PATCH /api/agent/plans/reorder - Update positions of multiple plans
+  app.patch("/api/agent/plans/reorder", async (req, res) => {
+    try {
+      const { planIds } = req.body;
+
+      if (!Array.isArray(planIds) || planIds.length === 0) {
+        return res.status(400).json({ error: "Invalid request: planIds must be a non-empty array" });
+      }
+
+      // Update position for each plan
+      for (let i = 0; i < planIds.length; i++) {
+        await db.update(schema.optimizationPlans)
+          .set({ position: i })
+          .where(eq(schema.optimizationPlans.id, planIds[i]));
+      }
+
+      res.json({ success: true, message: "Plan positions updated successfully" });
+    } catch (error: any) {
+      console.error("Error reordering plans:", error);
+      res.status(500).json({ error: error.message || "Failed to reorder plans" });
+    }
+  });
+
   // GET /api/agent/actions - List all optimization actions
   app.get("/api/agent/actions", async (req, res) => {
     try {
