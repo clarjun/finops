@@ -2275,6 +2275,49 @@ When answering:
     }
   });
 
+  // DELETE /api/agent/actions/:id - Delete an optimization action
+  app.delete("/api/agent/actions/:id", async (req, res) => {
+    try {
+      const actionId = parseInt(req.params.id);
+      
+      // Get the action first to retrieve planId
+      const [action] = await db.select()
+        .from(schema.optimizationActions)
+        .where(eq(schema.optimizationActions.id, actionId))
+        .limit(1);
+      
+      if (!action) {
+        return res.status(404).json({ error: "Action not found" });
+      }
+
+      // Delete the action
+      await db.delete(schema.optimizationActions)
+        .where(eq(schema.optimizationActions.id, actionId));
+
+      // Update the plan's total steps and completed steps
+      const planId = action.planId;
+      if (planId) {
+        const planActions = await db.select()
+          .from(schema.optimizationActions)
+          .where(eq(schema.optimizationActions.planId, planId));
+        
+        const completedCount = planActions.filter((a: any) => a.status === 'completed').length;
+        
+        await db.update(schema.optimizationPlans)
+          .set({
+            totalSteps: planActions.length,
+            completedSteps: completedCount,
+          })
+          .where(eq(schema.optimizationPlans.id, planId));
+      }
+
+      res.json({ success: true, deletedAction: action });
+    } catch (error: any) {
+      console.error("Error deleting action:", error);
+      res.status(500).json({ error: error.message || "Failed to delete action" });
+    }
+  });
+
   const httpServer = createServer(app);
 
   return httpServer;

@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Brain, CheckCircle2, XCircle, PlayCircle, AlertCircle, TrendingUp, Settings, Sparkles } from "lucide-react";
+import { Brain, CheckCircle2, XCircle, PlayCircle, AlertCircle, TrendingUp, Settings, Sparkles, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -24,14 +24,27 @@ export default function AgentDashboard() {
   const [showCreatePlan, setShowCreatePlan] = useState(false);
   const [planGoal, setPlanGoal] = useState("Reduce AWS costs by 20%");
   const [planProvider, setPlanProvider] = useState("aws");
+  const [expandedPlanId, setExpandedPlanId] = useState<number | null>(null);
 
   // Fetch optimization plans
   const { data: plans = [], isLoading: plansLoading } = useQuery<any[]>({
     queryKey: ["/api/agent/plans"],
   });
 
-  // Fetch optimization actions
-  const { data: actions = [], isLoading: actionsLoading } = useQuery<any[]>({
+  // Fetch actions for expanded plan
+  const { data: planActions = [], isLoading: planActionsLoading } = useQuery<any[]>({
+    queryKey: ["/api/agent/actions", expandedPlanId],
+    queryFn: async () => {
+      if (!expandedPlanId) return [];
+      const response = await fetch(`/api/agent/actions?planId=${expandedPlanId}`);
+      if (!response.ok) throw new Error("Failed to fetch plan actions");
+      return response.json();
+    },
+    enabled: expandedPlanId !== null,
+  });
+
+  // Fetch optimization actions for stats
+  const { data: allActions = [] } = useQuery<any[]>({
     queryKey: ["/api/agent/actions"],
   });
 
@@ -125,10 +138,33 @@ export default function AgentDashboard() {
     },
   });
 
-  const pendingActions = actions.filter((a: any) => a.status === 'proposed');
-  const approvedActions = actions.filter((a: any) => a.status === 'approved');
-  const failedActions = actions.filter((a: any) => a.status === 'failed');
-  const completedActions = actions.filter((a: any) => a.status === 'completed');
+  // Delete action
+  const deleteActionMutation = useMutation({
+    mutationFn: async (actionId: number) => {
+      return apiRequest("DELETE", `/api/agent/actions/${actionId}`, {});
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/agent/actions"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agent/actions", expandedPlanId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/agent/plans"] });
+      toast({
+        title: "Action Deleted",
+        description: "The optimization action has been removed",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to Delete Action",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const pendingActions = allActions.filter((a: any) => a.status === 'proposed');
+  const approvedActions = allActions.filter((a: any) => a.status === 'approved');
+  const failedActions = allActions.filter((a: any) => a.status === 'failed');
+  const completedActions = allActions.filter((a: any) => a.status === 'completed');
 
   const activePlans = plans.filter((p: any) => ['planning', 'approved', 'executing'].includes(p.status));
   const completedPlans = plans.filter((p: any) => p.status === 'completed');
@@ -232,112 +268,11 @@ export default function AgentDashboard() {
         </div>
 
         {/* Main Content Tabs */}
-        <Tabs defaultValue="actions" className="space-y-4">
+        <Tabs defaultValue="plans" className="space-y-4">
           <TabsList>
-            <TabsTrigger value="actions">Actions</TabsTrigger>
             <TabsTrigger value="plans">Plans</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
-
-          <TabsContent value="actions" className="space-y-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Optimization Actions</CardTitle>
-                <CardDescription>
-                  Review and approve AI-proposed cost optimizations
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {actionsLoading ? (
-                  <p className="text-center text-muted-foreground py-8">Loading actions...</p>
-                ) : actions.length === 0 ? (
-                  <p className="text-center text-muted-foreground py-8">
-                    No optimization actions yet. Create a plan to get started!
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {actions.map((action: any) => (
-                      <Card key={action.id} className="hover-elevate">
-                        <CardContent className="pt-6">
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex-1 space-y-2">
-                              <div className="flex items-center gap-2">
-                                <h3 className="font-semibold">{action.actionType}</h3>
-                                {getStatusBadge(action.status)}
-                              </div>
-                              <p className="text-sm text-muted-foreground">
-                                {action.aiReasoning}
-                              </p>
-                              <div className="flex items-center gap-4 text-sm">
-                                <span className="text-muted-foreground">
-                                  Provider: <strong>{action.provider}</strong>
-                                </span>
-                                <span className="text-muted-foreground">
-                                  Resource: <strong>{action.resourceId || 'N/A'}</strong>
-                                </span>
-                                <span className="text-green-600 font-semibold">
-                                  Saves: ${parseFloat(action.estimatedSavings || '0').toFixed(2)}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex gap-2">
-                              {action.status === 'proposed' && (
-                                <>
-                                  <Button
-                                    size="sm"
-                                    onClick={() => approveMutation.mutate(action.id)}
-                                    disabled={approveMutation.isPending}
-                                    data-testid={`button-approve-${action.id}`}
-                                  >
-                                    <CheckCircle2 className="h-4 w-4 mr-1" />
-                                    Approve
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => rejectMutation.mutate({ actionId: action.id, reason: 'User rejected' })}
-                                    disabled={rejectMutation.isPending}
-                                    data-testid={`button-reject-${action.id}`}
-                                  >
-                                    <XCircle className="h-4 w-4 mr-1" />
-                                    Reject
-                                  </Button>
-                                </>
-                              )}
-                              {action.status === 'approved' && (
-                                <Button
-                                  size="sm"
-                                  onClick={() => executeMutation.mutate(action.id)}
-                                  disabled={executeMutation.isPending}
-                                  data-testid={`button-execute-${action.id}`}
-                                >
-                                  <PlayCircle className="h-4 w-4 mr-1" />
-                                  Execute
-                                </Button>
-                              )}
-                              {action.status === 'failed' && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => retryMutation.mutate(action.id)}
-                                  disabled={retryMutation.isPending}
-                                  data-testid={`button-retry-${action.id}`}
-                                >
-                                  <PlayCircle className="h-4 w-4 mr-1" />
-                                  Retry
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
 
           <TabsContent value="plans" className="space-y-4">
             <Card>
@@ -356,28 +291,153 @@ export default function AgentDashboard() {
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {plans.map((plan: any) => (
+                    {[...plans].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((plan: any) => (
                       <Card key={plan.id} className="hover-elevate">
                         <CardContent className="pt-6">
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <h3 className="font-semibold">{plan.goal}</h3>
-                              {getStatusBadge(plan.status)}
+                          <div className="space-y-3">
+                            <div 
+                              className="cursor-pointer"
+                              onClick={() => setExpandedPlanId(expandedPlanId === plan.id ? null : plan.id)}
+                              data-testid={`card-plan-${plan.id}`}
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-start gap-2 flex-1">
+                                  {expandedPlanId === plan.id ? (
+                                    <ChevronDown className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
+                                  ) : (
+                                    <ChevronRight className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
+                                  )}
+                                  <div className="flex-1 space-y-2">
+                                    <div className="flex items-center gap-2">
+                                      <h3 className="font-semibold">{plan.goal}</h3>
+                                      {getStatusBadge(plan.status)}
+                                    </div>
+                                    <p className="text-sm text-muted-foreground">
+                                      {plan.aiStrategy}
+                                    </p>
+                                    <div className="flex items-center gap-4 text-sm">
+                                      <span className="text-muted-foreground">
+                                        Steps: <strong>{plan.totalSteps || 0}</strong>
+                                      </span>
+                                      <span className="text-muted-foreground">
+                                        Completed: <strong>{plan.completedSteps || 0}</strong>
+                                      </span>
+                                      <span className="text-green-600 font-semibold">
+                                        Target Savings: ${parseFloat(plan.targetSavings || '0').toFixed(2)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
                             </div>
-                            <p className="text-sm text-muted-foreground">
-                              {plan.aiStrategy}
-                            </p>
-                            <div className="flex items-center gap-4 text-sm">
-                              <span className="text-muted-foreground">
-                                Steps: <strong>{plan.totalSteps || 0}</strong>
-                              </span>
-                              <span className="text-muted-foreground">
-                                Completed: <strong>{plan.completedSteps || 0}</strong>
-                              </span>
-                              <span className="text-green-600 font-semibold">
-                                Target Savings: ${parseFloat(plan.targetSavings || '0').toFixed(2)}
-                              </span>
-                            </div>
+
+                            {/* Expanded Actions */}
+                            {expandedPlanId === plan.id && (
+                              <div className="ml-7 mt-4 space-y-2 border-l-2 border-primary/20 pl-4">
+                                <h4 className="text-sm font-semibold text-muted-foreground">Actions ({planActions.length})</h4>
+                                {planActionsLoading ? (
+                                  <p className="text-sm text-muted-foreground py-4">Loading actions...</p>
+                                ) : planActions.length === 0 ? (
+                                  <p className="text-sm text-muted-foreground py-4">No actions in this plan</p>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {planActions.map((action: any) => (
+                                      <div key={action.id} className="bg-muted/30 rounded-md p-3 space-y-2">
+                                        <div className="flex items-start justify-between gap-2">
+                                          <div className="flex-1 space-y-1">
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-sm font-medium">{action.actionType}</span>
+                                              {getStatusBadge(action.status)}
+                                            </div>
+                                            <p className="text-sm text-muted-foreground">
+                                              {action.aiReasoning}
+                                            </p>
+                                            <div className="flex items-center gap-3 text-xs">
+                                              <span className="text-muted-foreground">
+                                                Resource: <strong>{action.resourceId || 'N/A'}</strong>
+                                              </span>
+                                              <span className="text-green-600 font-semibold">
+                                                ${parseFloat(action.estimatedSavings || '0').toFixed(2)}
+                                              </span>
+                                            </div>
+                                          </div>
+                                          <div className="flex gap-2">
+                                            {action.status === 'proposed' && (
+                                              <>
+                                                <Button
+                                                  size="sm"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    approveMutation.mutate(action.id);
+                                                  }}
+                                                  disabled={approveMutation.isPending}
+                                                  data-testid={`button-approve-${action.id}`}
+                                                >
+                                                  <CheckCircle2 className="h-3 w-3" />
+                                                </Button>
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    rejectMutation.mutate({ actionId: action.id, reason: 'User rejected' });
+                                                  }}
+                                                  disabled={rejectMutation.isPending}
+                                                  data-testid={`button-reject-${action.id}`}
+                                                >
+                                                  <XCircle className="h-3 w-3" />
+                                                </Button>
+                                              </>
+                                            )}
+                                            {action.status === 'approved' && (
+                                              <Button
+                                                size="sm"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  executeMutation.mutate(action.id);
+                                                }}
+                                                disabled={executeMutation.isPending}
+                                                data-testid={`button-execute-${action.id}`}
+                                              >
+                                                <PlayCircle className="h-3 w-3" />
+                                              </Button>
+                                            )}
+                                            {action.status === 'failed' && (
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  retryMutation.mutate(action.id);
+                                                }}
+                                                disabled={retryMutation.isPending}
+                                                data-testid={`button-retry-${action.id}`}
+                                              >
+                                                <PlayCircle className="h-3 w-3" />
+                                              </Button>
+                                            )}
+                                            <Button
+                                              size="sm"
+                                              variant="ghost"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (confirm('Are you sure you want to delete this action?')) {
+                                                  deleteActionMutation.mutate(action.id);
+                                                }
+                                              }}
+                                              disabled={deleteActionMutation.isPending}
+                                              data-testid={`button-delete-action-${action.id}`}
+                                            >
+                                              <Trash2 className="h-3 w-3 text-destructive" />
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </CardContent>
                       </Card>
