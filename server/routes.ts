@@ -2013,6 +2013,48 @@ When answering:
           }
         }
 
+        // Fetch real Azure resource inventory if provider is Azure or all
+        if (providerFilter === 'azure' || providerFilter === 'all') {
+          try {
+            const { fetchAzureResourceInventory } = await import('./azure-resource-inventory');
+            const azureInventory = await fetchAzureResourceInventory();
+            
+            if (azureInventory.hasErrors) {
+              console.warn('[Agent Planner] Azure resource inventory has errors:', azureInventory.errors);
+              context.azureInventoryErrors = azureInventory.errors;
+              context.azureInventoryWarning = `⚠️ Some Azure resources could not be fetched: ${azureInventory.errors?.map(e => e.service).join(', ')}. Recommendations may be incomplete.`;
+            }
+            
+            console.log('[Agent Planner] Including real Azure resource inventory in context');
+            context.azureResources = azureInventory;
+          } catch (error) {
+            console.error('[Agent Planner] Error fetching Azure resources:', error);
+            context.azureResources = null;
+            context.azureInventoryWarning = '⚠️ Could not fetch Azure resource inventory. Recommendations will be based on cost data only.';
+          }
+        }
+
+        // Fetch real GCP resource inventory if provider is GCP or all
+        if (providerFilter === 'gcp' || providerFilter === 'all') {
+          try {
+            const { fetchGCPResourceInventory } = await import('./gcp-resource-inventory');
+            const gcpInventory = await fetchGCPResourceInventory();
+            
+            if (gcpInventory.hasErrors) {
+              console.warn('[Agent Planner] GCP resource inventory has errors:', gcpInventory.errors);
+              context.gcpInventoryErrors = gcpInventory.errors;
+              context.gcpInventoryWarning = `⚠️ Some GCP resources could not be fetched: ${gcpInventory.errors?.map(e => e.service).join(', ')}. Recommendations may be incomplete.`;
+            }
+            
+            console.log('[Agent Planner] Including real GCP resource inventory in context');
+            context.gcpResources = gcpInventory;
+          } catch (error) {
+            console.error('[Agent Planner] Error fetching GCP resources:', error);
+            context.gcpResources = null;
+            context.gcpInventoryWarning = '⚠️ Could not fetch GCP resource inventory. Recommendations will be based on cost data only.';
+          }
+        }
+
         // Get recent anomalies (with defensive error handling)
         try {
           const anomalies = await storage.getAnomalyEvents(providerFilter === 'all' ? undefined : providerFilter as CloudProvider);

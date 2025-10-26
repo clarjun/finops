@@ -1,5 +1,5 @@
-import { Compute, InstancesClient } from "@google-cloud/compute";
-import { FunctionsServiceClient } from "@google-cloud/functions";
+import { InstancesClient } from "@google-cloud/compute";
+import { CloudFunctionsServiceClient } from "@google-cloud/functions";
 import { Storage } from "@google-cloud/storage";
 
 /**
@@ -115,9 +115,9 @@ async function fetchComputeInstances(projectId: string): Promise<GCPComputeInsta
           name: instance.name || '',
           zone: zone.replace('zones/', ''),
           machineType,
-          status: instance.status,
-          labels: instance.labels,
-          creationTimestamp: instance.creationTimestamp,
+          status: instance.status || undefined,
+          labels: instance.labels || undefined,
+          creationTimestamp: instance.creationTimestamp || undefined,
         });
       }
     }
@@ -134,7 +134,7 @@ async function fetchComputeInstances(projectId: string): Promise<GCPComputeInsta
  */
 async function fetchCloudFunctions(projectId: string): Promise<GCPCloudFunction[]> {
   const credentials = getGCPCredentials();
-  const functionsClient = new FunctionsServiceClient({
+  const functionsClient = new CloudFunctionsServiceClient({
     credentials,
   });
 
@@ -155,11 +155,11 @@ async function fetchCloudFunctions(projectId: string): Promise<GCPCloudFunction[
         for (const func of functionsList) {
           functions.push({
             name: func.name || '',
-            runtime: func.runtime,
-            availableMemoryMb: func.availableMemoryMb,
-            entryPoint: func.entryPoint,
-            status: func.status,
-            labels: func.labels,
+            runtime: func.runtime || undefined,
+            availableMemoryMb: func.availableMemoryMb || undefined,
+            entryPoint: func.entryPoint || undefined,
+            status: func.status ? String(func.status) : undefined,
+            labels: func.labels || undefined,
             region: location,
           });
         }
@@ -194,12 +194,21 @@ async function fetchStorageBuckets(projectId: string): Promise<GCPStorageBucket[
     const [bucketsList] = await storage.getBuckets();
 
     for (const bucket of bucketsList) {
+      const labels: Record<string, string> = {};
+      if (bucket.metadata.labels) {
+        for (const [key, value] of Object.entries(bucket.metadata.labels)) {
+          if (value !== null) {
+            labels[key] = value;
+          }
+        }
+      }
+
       buckets.push({
         name: bucket.name,
         location: bucket.metadata.location || '',
-        storageClass: bucket.metadata.storageClass,
-        labels: bucket.metadata.labels,
-        timeCreated: bucket.metadata.timeCreated,
+        storageClass: bucket.metadata.storageClass || undefined,
+        labels: Object.keys(labels).length > 0 ? labels : undefined,
+        timeCreated: bucket.metadata.timeCreated ? new Date(bucket.metadata.timeCreated) : undefined,
       });
     }
   } catch (error) {

@@ -21,6 +21,12 @@ interface PlanningContext {
   anomalies?: any[]; // Recent anomalies
   recommendations?: any[]; // Existing optimization recommendations
   budgets?: any[]; // Current budgets
+  awsResources?: any; // AWS resource inventory
+  awsInventoryWarning?: string; // Warning if AWS inventory fetch had errors
+  azureResources?: any; // Azure resource inventory
+  azureInventoryWarning?: string; // Warning if Azure inventory fetch had errors
+  gcpResources?: any; // GCP resource inventory
+  gcpInventoryWarning?: string; // Warning if GCP inventory fetch had errors
 }
 
 interface PlanStep {
@@ -313,6 +319,136 @@ Dependencies: Array of stepIndex values that must complete first.`
       prompt += `IMPORTANT: Use the ACTUAL resource IDs and details from the inventory above in your recommendations. `;
       prompt += `For example, if recommending EC2 rightsizing, reference specific instance IDs like "${aws.ec2Instances[0]?.instanceId || 'i-xxxxx'}". `;
       prompt += `If recommending Lambda optimization, use actual function names like "${aws.lambdaFunctions[0]?.functionName || 'my-function'}". \n\n`;
+    }
+
+    // Include Azure resource inventory if available
+    if (context.azureResources) {
+      const azure = context.azureResources;
+      
+      prompt += `=== ACTUAL AZURE RESOURCE INVENTORY ===\n\n`;
+      
+      // Include warning about inventory errors if present
+      if (context.azureInventoryWarning) {
+        prompt += `${context.azureInventoryWarning}\n\n`;
+      }
+      
+      // Virtual Machines
+      if (azure.virtualMachines && azure.virtualMachines.length > 0) {
+        prompt += `Virtual Machines (${azure.virtualMachines.length} total):\n`;
+        azure.virtualMachines.slice(0, 10).forEach((vm: any) => {
+          prompt += `- ${vm.name}: ${vm.vmSize}, Location: ${vm.location}, State: ${vm.provisioningState || 'unknown'}`;
+          if (vm.resourceGroup) {
+            prompt += `, RG: ${vm.resourceGroup}`;
+          }
+          prompt += '\n';
+        });
+        if (azure.virtualMachines.length > 10) {
+          prompt += `... and ${azure.virtualMachines.length - 10} more VMs\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // SQL Databases
+      if (azure.sqlDatabases && azure.sqlDatabases.length > 0) {
+        prompt += `SQL Databases (${azure.sqlDatabases.length} total):\n`;
+        azure.sqlDatabases.slice(0, 10).forEach((db: any) => {
+          prompt += `- ${db.name} (Server: ${db.serverName}): `;
+          if (db.sku) {
+            prompt += `${db.sku.name} ${db.sku.tier || ''}`;
+          }
+          prompt += `, Location: ${db.location}`;
+          prompt += '\n';
+        });
+        if (azure.sqlDatabases.length > 10) {
+          prompt += `... and ${azure.sqlDatabases.length - 10} more databases\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // Storage Accounts
+      if (azure.storageAccounts && azure.storageAccounts.length > 0) {
+        prompt += `Storage Accounts (${azure.storageAccounts.length} total):\n`;
+        azure.storageAccounts.slice(0, 10).forEach((sa: any) => {
+          prompt += `- ${sa.name}: ${sa.kind || 'Storage'}, SKU: ${sa.sku?.name || 'unknown'}`;
+          prompt += `, Location: ${sa.location}`;
+          prompt += '\n';
+        });
+        if (azure.storageAccounts.length > 10) {
+          prompt += `... and ${azure.storageAccounts.length - 10} more storage accounts\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // Resource Groups
+      if (azure.resourceGroups && azure.resourceGroups.length > 0) {
+        prompt += `Resource Groups: ${azure.resourceGroups.length} total\n`;
+        prompt += `Consider consolidating underutilized resource groups.\n\n`;
+      }
+      
+      prompt += `=== END AZURE INVENTORY ===\n\n`;
+      
+      prompt += `IMPORTANT: Use the ACTUAL resource names and details from the Azure inventory above in your recommendations. `;
+      prompt += `For example, if recommending VM rightsizing, reference specific VM names like "${azure.virtualMachines[0]?.name || 'my-vm'}". \n\n`;
+    }
+
+    // Include GCP resource inventory if available
+    if (context.gcpResources) {
+      const gcp = context.gcpResources;
+      
+      prompt += `=== ACTUAL GCP RESOURCE INVENTORY ===\n\n`;
+      
+      // Include warning about inventory errors if present
+      if (context.gcpInventoryWarning) {
+        prompt += `${context.gcpInventoryWarning}\n\n`;
+      }
+      
+      // Compute Instances
+      if (gcp.computeInstances && gcp.computeInstances.length > 0) {
+        prompt += `Compute Engine Instances (${gcp.computeInstances.length} total):\n`;
+        gcp.computeInstances.slice(0, 10).forEach((inst: any) => {
+          prompt += `- ${inst.name}: ${inst.machineType}, Zone: ${inst.zone}, Status: ${inst.status || 'unknown'}`;
+          prompt += '\n';
+        });
+        if (gcp.computeInstances.length > 10) {
+          prompt += `... and ${gcp.computeInstances.length - 10} more instances\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // Cloud Functions
+      if (gcp.cloudFunctions && gcp.cloudFunctions.length > 0) {
+        prompt += `Cloud Functions (${gcp.cloudFunctions.length} total):\n`;
+        gcp.cloudFunctions.slice(0, 10).forEach((fn: any) => {
+          prompt += `- ${fn.name.split('/').pop()}: ${fn.availableMemoryMb || 256}MB`;
+          if (fn.runtime) {
+            prompt += `, Runtime: ${fn.runtime}`;
+          }
+          prompt += `, Region: ${fn.region}`;
+          prompt += '\n';
+        });
+        if (gcp.cloudFunctions.length > 10) {
+          prompt += `... and ${gcp.cloudFunctions.length - 10} more functions\n`;
+        }
+        prompt += '\n';
+      }
+      
+      // Storage Buckets
+      if (gcp.storageBuckets && gcp.storageBuckets.length > 0) {
+        prompt += `Cloud Storage Buckets (${gcp.storageBuckets.length} total):\n`;
+        gcp.storageBuckets.slice(0, 10).forEach((bucket: any) => {
+          prompt += `- ${bucket.name}: ${bucket.storageClass || 'STANDARD'}, Location: ${bucket.location}`;
+          prompt += '\n';
+        });
+        if (gcp.storageBuckets.length > 10) {
+          prompt += `... and ${gcp.storageBuckets.length - 10} more buckets\n`;
+        }
+        prompt += '\n';
+      }
+      
+      prompt += `=== END GCP INVENTORY ===\n\n`;
+      
+      prompt += `IMPORTANT: Use the ACTUAL resource names and details from the GCP inventory above in your recommendations. `;
+      prompt += `For example, if recommending Compute Engine rightsizing, reference specific instance names like "${gcp.computeInstances[0]?.name || 'my-instance'}". \n\n`;
     }
 
     prompt += `Create a detailed, multi-step optimization plan to achieve the goal. `;
