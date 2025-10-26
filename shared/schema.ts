@@ -472,6 +472,7 @@ export const optimizationPlans = pgTable("optimization_plans", {
   totalSteps: integer("total_steps"),
   completedSteps: integer("completed_steps").default(0),
   failedSteps: integer("failed_steps").default(0),
+  position: integer("position").default(999), // Display order (lower = first)
   createdAt: timestamp("created_at").notNull().defaultNow(),
   approvedAt: timestamp("approved_at"),
   startedAt: timestamp("started_at"),
