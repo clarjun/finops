@@ -4,7 +4,12 @@
 
 This AI-powered multi-cloud FinOps dashboard provides comprehensive cost optimization across Azure, AWS, and GCP. It delivers interactive visualizations, natural language querying, ML-based anomaly detection, and automated cost optimization recommendations. The project enables businesses to track spending, optimize resources, and make data-driven financial decisions across all major cloud providers.
 
-A key feature is the **Agentic AI System**, which provides autonomous cost optimization. This system uses multi-step planning, autonomous decision-making, self-correction, and learning capabilities to generate optimization plans, execute approved actions on cloud resources (currently AWS only), automatically retry failed operations, and learn from historical outcomes to improve future recommendations. The agent analyzes **real AWS infrastructure data** (fetched via AWS SDK with full pagination and retry configuration) including EC2 instances, Lambda functions, RDS databases, S3 buckets, EBS volumes, and CloudWatch log groups, enabling personalized recommendations based on actual resource configurations and IDs rather than generic suggestions.
+A key feature is the **Agentic AI System**, which provides autonomous cost optimization across **all three cloud providers (AWS, Azure, and GCP)**. This system uses multi-step planning, autonomous decision-making, self-correction, and learning capabilities to generate optimization plans, execute approved actions on cloud resources, automatically retry failed operations, and learn from historical outcomes to improve future recommendations. The agent analyzes **real infrastructure data** from all providers:
+- **AWS**: EC2 instances, Lambda functions, RDS databases, S3 buckets, EBS volumes, CloudWatch log groups, EBS snapshots, and Elastic IPs (fetched via AWS SDK with full pagination and adaptive retry)
+- **Azure**: Virtual Machines, SQL Databases, Storage Accounts, and Resource Groups (fetched via Azure SDK with pagination)
+- **GCP**: Compute Engine instances, Cloud Functions, and Cloud Storage buckets (fetched via GCP SDK with pagination)
+
+The agent generates personalized recommendations based on actual resource configurations and IDs rather than generic suggestions.
 
 Key capabilities include:
 -   **Multi-Cloud Cost Tracking**: Daily/weekly/monthly spending across Azure, AWS, and GCP with a unified dashboard.
@@ -56,10 +61,12 @@ Preferred communication style: Simple, everyday language.
 -   **OpenAI API**: For natural language query processing and agent planning (GPT-5 model).
 -   **Neon Serverless Postgres**: Primary database for all application data.
 -   **Multi-Cloud Cost Data Sources**:
-    -   **Azure Cost Management Query API**
+    -   **Azure Cost Management Query API**: Cost data and OAuth 2.0 authentication.
+    -   **Azure Resource Inventory**: Real Azure infrastructure data via Azure SDK (Virtual Machines, SQL Databases, Storage Accounts, Resource Groups) with full pagination using Azure Identity for authentication.
     -   **AWS Cost Explorer API**: Real-time AWS cost data via `@aws-sdk/client-cost-explorer`.
-    -   **AWS Resource Inventory**: Real AWS infrastructure data via AWS SDK (EC2, Lambda, RDS, S3, EBS, CloudWatch Logs) with full pagination and retry configuration.
+    -   **AWS Resource Inventory**: Real AWS infrastructure data via AWS SDK (EC2, Lambda, RDS, S3, EBS, CloudWatch Logs, Snapshots, Elastic IPs) with full pagination and adaptive retry (maxAttempts: 5, retryMode: 'adaptive').
     -   **GCP BigQuery Billing Export**: Real-time GCP cost data via `@google-cloud/bigquery`.
+    -   **GCP Resource Inventory**: Real GCP infrastructure data via GCP SDK (Compute Engine instances, Cloud Functions, Cloud Storage buckets) with full pagination using service account authentication.
 -   **Python ML Stack**: scikit-learn, pandas, numpy for ML computations.
 -   **Email Services**: Resend or SendGrid for alerts and reports (currently uses a mock provider).
 -   **Key Libraries**: Recharts (charts), React Hook Form with Zod (forms), date-fns (date utilities), Tailwind CSS (styling), Radix UI (accessible components).

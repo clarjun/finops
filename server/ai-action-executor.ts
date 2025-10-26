@@ -70,6 +70,7 @@ export class AIActionExecutor {
       let result: ExecutionResult;
 
       switch (action.actionType) {
+        // AWS Actions
         case 'ec2_downsize':
           result = await this.executeEC2Downsize(action);
           break;
@@ -85,6 +86,35 @@ export class AIActionExecutor {
         case 'idle_resource_alert':
           result = await this.executeIdleResourceAlert(action);
           break;
+        
+        // Azure Actions
+        case 'azure_vm_downsize':
+          result = await this.executeAzureVMDownsize(action);
+          break;
+        case 'azure_sql_downgrade':
+          result = await this.executeAzureSQLDowngrade(action);
+          break;
+        case 'azure_storage_lifecycle':
+          result = await this.executeAzureStorageLifecycle(action);
+          break;
+        case 'azure_stop_idle_vm':
+          result = await this.executeAzureStopVM(action);
+          break;
+        
+        // GCP Actions
+        case 'gcp_instance_downsize':
+          result = await this.executeGCPInstanceDownsize(action);
+          break;
+        case 'gcp_function_memory_reduce':
+          result = await this.executeGCPFunctionMemoryReduce(action);
+          break;
+        case 'gcp_storage_lifecycle':
+          result = await this.executeGCPStorageLifecycle(action);
+          break;
+        case 'gcp_stop_idle_instance':
+          result = await this.executeGCPStopInstance(action);
+          break;
+        
         default:
           result = {
             success: false,
@@ -399,6 +429,177 @@ export class AIActionExecutor {
     return {
       success: true,
       message: 'Action rolled back successfully'
+    };
+  }
+
+  // ========== Azure Action Execution Methods ==========
+
+  private async executeAzureVMDownsize(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would downsize Azure VM ${action.resourceId} from ${action.currentState?.vmSize} to ${action.proposedState?.vmSize}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'azure_vm_downsize',
+          resourceId: action.resourceId,
+          change: `${action.currentState?.vmSize} → ${action.proposedState?.vmSize}`
+        }
+      };
+    }
+
+    // In production, this would use Azure SDK to resize VM
+    return {
+      success: false,
+      message: 'Azure VM downsizing requires full Azure SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  private async executeAzureSQLDowngrade(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would downgrade Azure SQL Database ${action.resourceId} from ${action.currentState?.sku} to ${action.proposedState?.sku}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'azure_sql_downgrade',
+          resourceId: action.resourceId,
+          change: `${action.currentState?.sku} → ${action.proposedState?.sku}`
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'Azure SQL downgrade requires full Azure SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  private async executeAzureStorageLifecycle(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would apply lifecycle policy to Azure Storage Account ${action.resourceId}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'azure_storage_lifecycle',
+          resourceId: action.resourceId,
+          policy: action.proposedState
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'Azure Storage lifecycle requires full Azure SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  private async executeAzureStopVM(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would stop idle Azure VM ${action.resourceId}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'azure_stop_idle_vm',
+          resourceId: action.resourceId
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'Azure VM stop requires full Azure SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  // ========== GCP Action Execution Methods ==========
+
+  private async executeGCPInstanceDownsize(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would downsize GCP Compute Instance ${action.resourceId} from ${action.currentState?.machineType} to ${action.proposedState?.machineType}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'gcp_instance_downsize',
+          resourceId: action.resourceId,
+          change: `${action.currentState?.machineType} → ${action.proposedState?.machineType}`
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'GCP instance downsizing requires full GCP SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  private async executeGCPFunctionMemoryReduce(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would reduce GCP Cloud Function ${action.resourceId} memory from ${action.currentState?.memory}MB to ${action.proposedState?.memory}MB`,
+        executionDetails: {
+          dryRun: true,
+          action: 'gcp_function_memory_reduce',
+          resourceId: action.resourceId,
+          change: `${action.currentState?.memory}MB → ${action.proposedState?.memory}MB`
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'GCP function optimization requires full GCP SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  private async executeGCPStorageLifecycle(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would apply lifecycle policy to GCP Cloud Storage bucket ${action.resourceId}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'gcp_storage_lifecycle',
+          resourceId: action.resourceId,
+          policy: action.proposedState
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'GCP Storage lifecycle requires full GCP SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
+    };
+  }
+
+  private async executeGCPStopInstance(action: any): Promise<ExecutionResult> {
+    if (this.dryRunMode) {
+      return {
+        success: true,
+        message: `DRY RUN: Would stop idle GCP Compute Instance ${action.resourceId}`,
+        executionDetails: {
+          dryRun: true,
+          action: 'gcp_stop_idle_instance',
+          resourceId: action.resourceId
+        }
+      };
+    }
+
+    return {
+      success: false,
+      message: 'GCP instance stop requires full GCP SDK integration',
+      error: 'Not implemented in dry-run mode disabled environment'
     };
   }
 }
