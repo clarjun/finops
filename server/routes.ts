@@ -947,7 +947,7 @@ When answering:
         Date.now() - fetchedAtMs > REFRESH_THRESHOLD_MS;
 
       // Fetches fresh data from APIs, saves to memory cache + DB
-      async function fetchAndRefresh(): Promise<any> {
+      const fetchAndRefresh = async (): Promise<any> => {
         console.log(`[FinOps Report] Fetching fresh data from APIs for ${provider} (${startDateStr} to ${endDateStr})`);
         const { generateFinOpsReport } = await import('./reports/report-engine');
         const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');

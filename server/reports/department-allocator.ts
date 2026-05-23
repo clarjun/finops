@@ -30,7 +30,7 @@ export async function allocateCostsByDepartment(
     }> = [];
     
     // Fetch resources for each service (simplified - in production, batch this)
-    const services = [...new Set(costData.map(c => c.service))]; // Get all services
+    const services = Array.from(new Set(costData.map(c => c.service))); // Get all services
     
     for (const service of services) {
       const resources = await getResourceOwnersByService(service);
@@ -166,8 +166,8 @@ export function generateHeatmapData(
   const nonZeroCostData = costData.filter(c => c.cost > 0);
   
   // Get unique services and departments (all with cost > 0, no limit)
-  const services = [...new Set(nonZeroCostData.map(c => c.service))];
-  const departments = [...new Set(nonZeroCostData.map(c => c.department))];
+  const services = Array.from(new Set(nonZeroCostData.map(c => c.service)));
+  const departments = Array.from(new Set(nonZeroCostData.map(c => c.department)));
   
   console.log(`[Heatmap Generator] Found ${services.length} services and ${departments.length} departments with costs > 0`);
   

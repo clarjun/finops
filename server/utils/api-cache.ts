@@ -104,7 +104,7 @@ class APICache {
   clearProvider(provider: string): void {
     const keysToDelete: string[] = [];
     
-    for (const key of this.cache.keys()) {
+    for (const key of Array.from(this.cache.keys())) {
       if (key.includes(provider)) {
         keysToDelete.push(key);
       }
@@ -122,7 +122,7 @@ class APICache {
     let validEntries = 0;
     let expiredEntries = 0;
     
-    for (const entry of this.cache.values()) {
+    for (const entry of Array.from(this.cache.values())) {
       if (now > entry.expiresAt) {
         expiredEntries++;
       } else {
@@ -145,7 +145,7 @@ class APICache {
     const now = Date.now();
     const keysToDelete: string[] = [];
     
-    for (const [key, entry] of this.cache.entries()) {
+    for (const [key, entry] of Array.from(this.cache.entries())) {
       if (now > entry.expiresAt) {
         keysToDelete.push(key);
       }

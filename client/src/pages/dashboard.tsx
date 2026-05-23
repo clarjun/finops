@@ -242,6 +242,7 @@ export default function Dashboard() {
     dataSource: string;
     awsConfigured: boolean;
     gcpConfigured: boolean;
+    azureConfigured: boolean;
     warnings?: string[];
   } | undefined;
 
@@ -346,7 +347,7 @@ export default function Dashboard() {
             peakDay={costData?.peakDay}
             topServicePercentage={costData?.serviceBreakdown[0]?.percentage}
             serviceCount={costData?.serviceCount}
-            anomalies={anomalyData?.anomalies}
+            anomalies={anomalyData?.anomalies as any}
             loading={costLoading || anomalyLoading}
           />
           

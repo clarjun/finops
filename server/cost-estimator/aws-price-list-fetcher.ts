@@ -3,7 +3,7 @@
  * Fetches real-time pricing data from AWS Price List API
  */
 
-import { PricingClient, GetProductsCommand } from "@aws-sdk/client-pricing";
+import { PricingClient, GetProductsCommand, type Filter as PricingFilterType } from "@aws-sdk/client-pricing";
 import { getProviderCredentials } from "../cloud-config-manager";
 
 // Cache pricing data for 24 hours to reduce API calls
@@ -65,7 +65,7 @@ export async function fetchEC2Pricing(instanceType: string, region: string = 'us
 
     const command = new GetProductsCommand({
       ServiceCode: 'AmazonEC2',
-      Filters: filters,
+      Filters: filters as PricingFilterType[],
       MaxResults: 1,
     });
 
@@ -118,7 +118,7 @@ export async function fetchRDSPricing(instanceType: string, engine: string = 'Po
 
     const command = new GetProductsCommand({
       ServiceCode: 'AmazonRDS',
-      Filters: filters,
+      Filters: filters as PricingFilterType[],
       MaxResults: 1,
     });
 
@@ -168,7 +168,7 @@ export async function fetchElastiCachePricing(instanceType: string, engine: stri
 
     const command = new GetProductsCommand({
       ServiceCode: 'AmazonElastiCache',
-      Filters: filters,
+      Filters: filters as PricingFilterType[],
       MaxResults: 1,
     });
 

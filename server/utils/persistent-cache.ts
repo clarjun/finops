@@ -177,7 +177,7 @@ class PersistentCache {
   clearProvider(provider: string): void {
     const keysToDelete: string[] = [];
     
-    for (const key of this.memoryCache.keys()) {
+    for (const key of Array.from(this.memoryCache.keys())) {
       if (key.includes(provider)) {
         keysToDelete.push(key);
       }
@@ -195,7 +195,7 @@ class PersistentCache {
     let validEntries = 0;
     let expiredEntries = 0;
     
-    for (const entry of this.memoryCache.values()) {
+    for (const entry of Array.from(this.memoryCache.values())) {
       if (now > entry.expiresAt) {
         expiredEntries++;
       } else {
@@ -217,7 +217,7 @@ class PersistentCache {
     const now = Date.now();
     const keysToDelete: string[] = [];
     
-    for (const [key, entry] of this.memoryCache.entries()) {
+    for (const [key, entry] of Array.from(this.memoryCache.entries())) {
       if (now > entry.expiresAt) {
         keysToDelete.push(key);
       }

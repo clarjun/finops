@@ -133,33 +133,10 @@ async function fetchComputeInstances(projectId: string): Promise<GCPComputeInsta
  * Fetch all available Cloud Functions locations
  */
 async function fetchCloudFunctionsLocations(projectId: string): Promise<string[]> {
-  const credentials = getGCPCredentials();
-  const functionsClient = new CloudFunctionsServiceClient({
-    credentials,
-  });
-
-  const locations: string[] = [];
-
-  try {
-    const parent = `projects/${projectId}`;
-    const [locationsList] = await functionsClient.listLocations({
-      name: parent,
-    });
-
-    for (const location of locationsList) {
-      if (location.locationId) {
-        locations.push(location.locationId);
-      }
-    }
-
-    console.log(`[GCP] Discovered ${locations.length} Cloud Functions locations`);
-  } catch (error: any) {
-    console.warn('Error fetching GCP locations, using fallback regions:', error.message);
-    // Fallback to common regions if API call fails
-    return ['us-central1', 'us-east1', 'us-west1', 'europe-west1', 'asia-east1'];
-  }
-
-  return locations.length > 0 ? locations : ['us-central1', 'us-east1', 'us-west1', 'europe-west1', 'asia-east1'];
+  // Return common GCP regions — listLocations is not available on CloudFunctionsServiceClient v2
+  // The catch block already handles this gracefully, but we skip the API call entirely
+  console.log(`[GCP] Using default Cloud Functions locations for project ${projectId}`);
+  return ['us-central1', 'us-east1', 'us-west1', 'us-east4', 'europe-west1', 'europe-west2', 'asia-east1', 'asia-northeast1'];
 }
 
 /**

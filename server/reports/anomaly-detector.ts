@@ -27,12 +27,8 @@ export function detectAnomalies(
   }
   
   // Get unique services
-  const services = new Set<string>();
-  for (const record of dailyCosts) {
-    services.add(record.service);
-  }
+  const services = Array.from(new Set<string>(dailyCosts.map(r => r.service)));
   
-  // Analyze each service for anomalies
   for (const service of services) {
     const serviceCosts: Array<{ date: string; cost: number }> = [];
     
