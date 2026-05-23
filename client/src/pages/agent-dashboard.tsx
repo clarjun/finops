@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,10 @@ export default function AgentDashboard() {
   const { data: config } = useQuery<any>({
     queryKey: ["/api/agent/config"],
   });
+
+  useEffect(()=>{
+    console.log("configggggggggggggg ", config)
+  },[])
 
   // Create optimization plan
   const createPlanMutation = useMutation({
@@ -457,38 +461,39 @@ export default function AgentDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                {config ? (
+                {/* {config ? ( */}
                   <div className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <Label>Dry-Run Mode</Label>
                         <p className="text-sm text-muted-foreground">
-                          {config.dry_run_mode ? 'Enabled (Simulated execution only)' : 'Disabled (Real execution)'}
+                          {config?.dry_run_mode ? 'Enabled (Simulated execution only)' : 'Disabled (Real execution)'}
                         </p>
                       </div>
                       <div>
                         <Label>Safety Mode</Label>
                         <p className="text-sm text-muted-foreground">
-                          {config.safety_mode ? 'Enabled (Prevents destructive actions)' : 'Disabled'}
+                          {config?.safety_mode ? 'Enabled (Prevents destructive actions)' : 'Disabled'}
                         </p>
                       </div>
                       <div>
                         <Label>Auto-Execute</Label>
                         <p className="text-sm text-muted-foreground">
-                          {config.auto_execute_enabled ? 'Enabled (Autonomous execution)' : 'Disabled (Manual approval required)'}
+                          {config?.auto_execute_enabled ? 'Enabled (Autonomous execution)' : 'Disabled (Manual approval required)'}
                         </p>
                       </div>
                       <div>
                         <Label>Aggressiveness</Label>
                         <p className="text-sm text-muted-foreground capitalize">
-                          {config.aggressiveness}
+                          {config?.aggressiveness}
                         </p>
                       </div>
                     </div>
                   </div>
-                ) : (
-                  <p className="text-center text-muted-foreground py-8">Loading configuration...</p>
-                )}
+                {/* ) 
+                 : (
+                   <p className="text-center text-muted-foreground py-8">Loading configuration...</p>
+                )} */}
               </CardContent>
             </Card>
           </TabsContent>

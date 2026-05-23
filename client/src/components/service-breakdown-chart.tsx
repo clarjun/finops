@@ -11,6 +11,7 @@ interface ServiceBreakdownChartProps {
   loading?: boolean;
   limit?: number;
   title?: string;
+  onServiceClick?: (serviceName: string) => void;
 }
 
 const COLORS = [
@@ -21,7 +22,7 @@ const COLORS = [
   "hsl(var(--chart-5))",
 ];
 
-export function ServiceBreakdownChart({ data, loading, limit = 10, title = "Service Breakdown" }: ServiceBreakdownChartProps) {
+export function ServiceBreakdownChart({ data, loading, limit = 10, title = "Service Breakdown", onServiceClick }: ServiceBreakdownChartProps) {
   if (loading) {
     return (
       <Card>
@@ -77,7 +78,12 @@ export function ServiceBreakdownChart({ data, loading, limit = 10, title = "Serv
                 ]}
                 labelStyle={{ color: "hsl(var(--muted-foreground))" }}
               />
-              <Bar dataKey="cost" radius={[0, 4, 4, 0]}>
+              <Bar 
+                dataKey="cost" 
+                radius={[0, 4, 4, 0]}
+                onClick={(data) => onServiceClick && onServiceClick(data.name)}
+                cursor={onServiceClick ? "pointer" : "default"}
+              >
                 {displayData.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                 ))}

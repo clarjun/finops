@@ -103,5 +103,79 @@ export default {
       },
     },
   },
-  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
+  plugins: [
+    require("tailwindcss-animate"), 
+    require("@tailwindcss/typography"),
+    // Custom scrollbar plugin
+    function({ addUtilities }: any) {
+      const newUtilities = {
+        '.scrollbar-thin': {
+          'scrollbar-width': 'thin',
+          '&::-webkit-scrollbar': {
+            width: '6px',
+            height: '6px',
+          },
+        },
+        '.scrollbar-thumb-gray-300': {
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: 'rgb(209 213 219)',
+            borderRadius: '3px',
+            transition: 'background-color 0.2s ease',
+          },
+        },
+        '.scrollbar-thumb-gray-400': {
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: 'rgb(156 163 175)',
+            transition: 'background-color 0.2s ease',
+          },
+        },
+        '.scrollbar-thumb-gray-700': {
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: 'rgb(55 65 81)',
+            borderRadius: '3px',
+            transition: 'background-color 0.2s ease',
+          },
+        },
+        '.scrollbar-thumb-gray-600': {
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: 'rgb(75 85 99)',
+            transition: 'background-color 0.2s ease',
+          },
+        },
+        '.scrollbar-track-transparent': {
+          '&::-webkit-scrollbar-track': {
+            backgroundColor: 'rgb(249 250 251)',
+            borderRadius: '3px',
+          },
+          '&::-webkit-scrollbar-track:hover': {
+            backgroundColor: 'rgb(243 244 246)',
+          },
+        },
+        '.dark .scrollbar-track-transparent': {
+          '&::-webkit-scrollbar-track': {
+            backgroundColor: 'rgb(31 41 55)',
+            borderRadius: '3px',
+          },
+          '&::-webkit-scrollbar-track:hover': {
+            backgroundColor: 'rgb(55 65 81)',
+          },
+        },
+        '.hover\\:scrollbar-thumb-gray-400:hover': {
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: 'rgb(156 163 175)',
+          },
+        },
+        '.hover\\:scrollbar-thumb-gray-600:hover': {
+          '&::-webkit-scrollbar-thumb': {
+            backgroundColor: 'rgb(75 85 99)',
+          },
+        },
+        // Smooth scrolling
+        '.scroll-smooth': {
+          'scroll-behavior': 'smooth',
+        },
+      };
+      addUtilities(newUtilities, ['responsive', 'hover', 'dark']);
+    },
+  ],
 } satisfies Config;

@@ -23,7 +23,7 @@ import {
   generateMultiCloudSampleData, 
   getSampleDataByProvider 
 } from "./utils/sample-data-generator";
-import { checkBudgetAlerts } from "./utils/budget-alert-checker";
+import { checkBudgetAlerts } from "./utils/budget-alert-checker-new";
 import type { CloudProvider } from "@shared/schema";
 import { fetchAWSCostData, isAWSConfigured } from "./aws-client";
 import { fetchGCPCostData, isGCPConfigured } from "./gcp-client";
@@ -113,15 +113,14 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
   }
 }
 
-async function fetchRealAWSData(): Promise<{ success: boolean; data: any[]; error?: string }> {
+async function fetchRealAWSData(startDate?: Date, endDate?: Date): Promise<{ success: boolean; data: any[]; error?: string }> {
   try {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 30);
-    
+    const end = endDate || new Date();
+    const start = startDate || (() => { const d = new Date(); d.setDate(1); return d; })();
+
     const awsData = await fetchAWSCostData(
-      startDate.toISOString().split('T')[0],
-      endDate.toISOString().split('T')[0]
+      start.toISOString().split('T')[0],
+      end.toISOString().split('T')[0]
     );
     
     const transformedData = awsData.map(record => ({
@@ -185,136 +184,64 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Check cloud provider configuration status on startup (informational only, will re-check on each request)
   const initialAwsCheck = await isAWSConfigured();
   const initialGcpCheck = await isGCPConfigured();
-  console.log(`AWS Cost Explorer: ${initialAwsCheck ? 'CONFIGURED ✓' : 'Not configured - using sample data'}`);
-  console.log(`GCP BigQuery Billing: ${initialGcpCheck ? 'CONFIGURED ✓' : 'Not configured - using sample data'}`);
+  console.log(`AWS Cost Explorer: ${initialAwsCheck ? 'CONFIGURED Ô£ô' : 'Not configured - using sample data'}`);
+  console.log(`GCP BigQuery Billing: ${initialGcpCheck ? 'CONFIGURED Ô£ô' : 'Not configured - using sample data'}`);
 
   // Get processed cost data with optional provider filtering
   app.get("/api/cost-data", async (req, res) => {
     try {
       const provider = (req.query.provider as CloudProvider | 'all') || 'all';
-      
-      // Load sample data as baseline
-      const sampleData = loadMultiCloudSampleData();
-      
-      // Track data sources and warnings
-      let dataSource = 'sample';
-      let warnings: string[] = [];
-      
-      // Check if AWS is configured (re-check on each request to support dynamic credentials)
-      let awsConfigured = false;
-      if (provider === 'aws' || provider === 'all') {
-        awsConfigured = await isAWSConfigured();
-        if (!awsConfigured && process.env.AWS_ACCESS_KEY_ID) {
-          warnings.push('AWS Cost Explorer connectivity test failed. Showing sample data.');
-        }
-      }
-      
-      // Check if GCP is configured
-      let gcpConfigured = false;
-      if (provider === 'gcp' || provider === 'all') {
-        gcpConfigured = await isGCPConfigured();
-        if (!gcpConfigured && process.env.GCP_SERVICE_ACCOUNT_KEY) {
-          warnings.push('GCP BigQuery connectivity test failed. Showing sample data.');
-        }
-      }
-      
-      // Try to fetch real AWS data if configured
-      let awsResult = null;
-      if (awsConfigured && (provider === 'aws' || provider === 'all')) {
-        awsResult = await fetchRealAWSData();
-        
-        if (!awsResult.success) {
-          console.error(`AWS Cost Explorer fetch failed: ${awsResult.error}`);
-          warnings.push(`Failed to fetch AWS data: ${awsResult.error}. Showing sample data instead.`);
-          awsResult = null;
-        } else if (awsResult.data.length === 0) {
-          console.log('AWS Cost Explorer returned zero cost records (valid empty response)');
-          dataSource = 'real-aws-zero-cost';
-        } else {
-          dataSource = provider === 'all' ? 'real-aws' : 'real-aws';
-          console.log(`Using real AWS data: ${awsResult.data.length} records`);
-        }
-      }
-      
-      // Try to fetch real GCP data if configured
-      let gcpResult = null;
-      if (gcpConfigured && (provider === 'gcp' || provider === 'all')) {
-        gcpResult = await fetchRealGCPData();
-        
-        if (!gcpResult.success) {
-          console.error(`GCP BigQuery fetch failed: ${gcpResult.error}`);
-          warnings.push(`Failed to fetch GCP data: ${gcpResult.error}. Showing sample data instead.`);
-          gcpResult = null;
-        } else if (gcpResult.data.length === 0) {
-          console.log('GCP BigQuery returned zero cost records (valid empty response)');
-          dataSource = dataSource === 'real-aws' ? 'real-aws-gcp-zero-cost' : 'real-gcp-zero-cost';
-        } else {
-          if (dataSource === 'real-aws') {
-            dataSource = 'real-aws-gcp';
-          } else {
-            dataSource = 'real-gcp';
-          }
-          console.log(`Using real GCP data: ${gcpResult.data.length} records`);
-        }
-      }
-      
-      // Build final dataset based on real data availability and provider selection
+
+      // Parse date range — default to month-to-date
+      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
+      const startDate = req.query.startDate
+        ? new Date(req.query.startDate as string)
+        : new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+
+      const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+      const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+      const { isAzureConfigured } = await import('./azure-client');
+
+      const awsConfigured = await isAWSConfigured();
+      const gcpConfigured = await isGCPConfigured();
+      const azureConfigured = await isAzureConfigured();
+
+      // Determine which providers to fetch real data for
+      const realProviders: CloudProvider[] = [];
+      if (provider === 'aws' || provider === 'all') { if (awsConfigured) realProviders.push('aws'); }
+      if (provider === 'gcp' || provider === 'all') { if (gcpConfigured) realProviders.push('gcp'); }
+      if (provider === 'azure' || provider === 'all') { if (azureConfigured) realProviders.push('azure'); }
+
       let processedData;
-      switch (provider) {
-        case 'aws':
-          if (awsResult?.success) {
-            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-            processedData = processMultiCloudCosts(awsResult.data);
-          } else {
-            processedData = sampleData.awsOnly;
-          }
-          break;
-        case 'gcp':
-          if (gcpResult?.success) {
-            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-            processedData = processMultiCloudCosts(gcpResult.data);
-          } else {
-            processedData = sampleData.gcpOnly;
-          }
-          break;
-        case 'azure':
-          processedData = sampleData.azureOnly;
-          dataSource = 'sample';
-          break;
-        case 'all':
-        default:
-          // Merge all available real data with sample data for unconfigured providers
-          const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-          const allData = [
-            ...(awsResult?.success ? awsResult.data : sampleData.awsData),
-            ...(gcpResult?.success ? gcpResult.data : sampleData.gcpData),
-            ...sampleData.azureData
-          ];
-          processedData = processMultiCloudCosts(allData);
-          
-          // Update data source based on what's real
-          if (awsResult?.success && gcpResult?.success) {
-            dataSource = 'real-aws-gcp-sample-azure';
-          } else if (awsResult?.success) {
-            dataSource = 'real-aws-sample-others';
-          } else if (gcpResult?.success) {
-            dataSource = 'real-gcp-sample-others';
-          }
+      let dataSource = 'not-configured';
+
+      if (realProviders.length > 0) {
+        const providersToFetch = provider === 'all' ? realProviders : [provider as CloudProvider];
+        const records = await fetchLiveCosts(startDate, endDate, providersToFetch);
+        console.log(`[/api/cost-data] Fetched ${records.length} real records for ${providersToFetch.join(',')} (${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]})`);
+        processedData = processMultiCloudCosts(records);
+        dataSource = `real-${providersToFetch.join('-')}`;
+      } else {
+        processedData = {
+          totalCost: 0, avgDailyCost: 0, topService: { name: 'N/A', cost: 0 },
+          serviceCount: 0, dailyTrends: [], serviceBreakdown: [],
+          subscriptionBreakdown: [], subscriptions: [], services: [],
+          peakDay: { date: '', cost: 0 }
+        };
       }
-      
-      // Add metadata to response
-      const response = {
+
+      res.json({
         ...processedData,
         _metadata: {
           dataSource,
-          warnings: warnings.length > 0 ? warnings : undefined,
-          awsConfigured: awsConfigured || false,
-          gcpConfigured: gcpConfigured || false,
-          timestamp: new Date().toISOString()
+          awsConfigured,
+          gcpConfigured,
+          azureConfigured,
+          startDate: startDate.toISOString().split('T')[0],
+          endDate: endDate.toISOString().split('T')[0],
+          timestamp: new Date().toISOString(),
         }
-      };
-      
-      res.json(response);
+      });
     } catch (error) {
       console.error('Error loading cost data:', error);
       res.status(500).json({ error: "Failed to process cost data" });
@@ -339,67 +266,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const provider = (req.query.provider as string) || 'all';
       console.log(`Anomaly detection requested for provider: ${provider}`);
       
-      // Load appropriate provider's data (same logic as /api/cost-data)
-      const sampleData = loadMultiCloudSampleData();
-      const awsConfigured = await isAWSConfigured();
-      let rawCostData: any[] = [];
-      
-      if (provider === 'aws') {
-        if (awsConfigured) {
-          const awsResult = await fetchRealAWSData();
-          if (awsResult?.success && awsResult.data.length > 0) {
-            rawCostData = awsResult.data;
-            console.log(`Using real AWS data for anomaly detection: ${rawCostData.length} records`);
-          } else {
-            rawCostData = sampleData.awsData;
-            console.log(`Using sample AWS data for anomaly detection`);
-          }
-        } else {
-          rawCostData = sampleData.awsData;
-          console.log(`Using sample AWS data for anomaly detection (no credentials)`);
-        }
-      } else if (provider === 'gcp') {
-        rawCostData = sampleData.gcpData;
-        console.log(`Using sample GCP data for anomaly detection`);
-      } else if (provider === 'azure') {
-        rawCostData = sampleData.azureData;
-        console.log(`Using sample Azure data for anomaly detection`);
-      } else {
-        // Multi-cloud: combine all providers
-        if (awsConfigured) {
-          const awsResult = await fetchRealAWSData();
-          if (awsResult?.success && awsResult.data.length > 0) {
-            rawCostData = [
-              ...awsResult.data,
-              ...sampleData.gcpData,
-              ...sampleData.azureData
-            ];
-            console.log(`Using real AWS + sample GCP/Azure for anomaly detection: ${rawCostData.length} records`);
-          } else {
-            rawCostData = [
-              ...sampleData.awsData,
-              ...sampleData.gcpData,
-              ...sampleData.azureData
-            ];
-            console.log(`Using all sample data for anomaly detection`);
-          }
-        } else {
-          rawCostData = [
-            ...sampleData.awsData,
-            ...sampleData.gcpData,
-            ...sampleData.azureData
-          ];
-          console.log(`Using all sample data for anomaly detection (no AWS credentials)`);
-        }
-      }
-      
-      // Process the raw data to get it in the correct format for Python script
-      // The Python script expects the full processed cost data object
+      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
+      const startDate = req.query.startDate
+        ? new Date(req.query.startDate as string)
+        : new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+
+      const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
       const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-      const processedData = processMultiCloudCosts(rawCostData);
-      
-      // Pass the full processed data to Python (it needs dailyTrends, services, topService, etc.)
-      const anomalyResult = await runPythonScript("anomaly_detection.py", processedData);
+
+      const providersToFetch: CloudProvider[] = provider === 'all'
+        ? ['aws', 'gcp', 'azure']
+        : [provider as CloudProvider];
+
+      const records = await fetchLiveCosts(startDate, endDate, providersToFetch);
+      console.log(`[Anomalies] ${records.length} records for ${provider}`);
+      const processedData = processMultiCloudCosts(records as any);
+
+      const { detectAnomaliesTS } = await import('./utils/anomaly-detector');
+      const anomalyResult = detectAnomaliesTS(processedData);
       res.json(anomalyResult);
     } catch (error) {
       console.error("Anomaly detection error:", error);
@@ -456,60 +340,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log(`AI query - no specific provider detected, using multi-cloud data from query: "${query}"`);
       }
       
-      // Fetch appropriate provider's data using same logic as /api/cost-data
-      const sampleData = loadMultiCloudSampleData();
-      const awsConfigured = await isAWSConfigured();
-      let costData;
-      
-      if (detectedProvider === 'aws') {
-        // Fetch AWS data (real or sample)
-        if (awsConfigured) {
-          const awsResult = await fetchRealAWSData();
-          if (awsResult?.success && awsResult.data.length > 0) {
-            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-            costData = processMultiCloudCosts(awsResult.data);
-            console.log('Using real AWS data for AI analysis');
-          } else {
-            costData = sampleData.awsOnly;
-            console.log('Using sample AWS data for AI analysis');
-          }
-        } else {
-          costData = sampleData.awsOnly;
-          console.log('Using sample AWS data for AI analysis (no credentials)');
-        }
-      } else if (detectedProvider === 'gcp') {
-        costData = sampleData.gcpOnly;
-        console.log('Using sample GCP data for AI analysis');
-      } else if (detectedProvider === 'azure') {
-        costData = sampleData.azureOnly;
-        console.log('Using sample Azure data for AI analysis');
-      } else {
-        // Multi-cloud or unspecified - use all providers
-        if (awsConfigured) {
-          const awsResult = await fetchRealAWSData();
-          if (awsResult?.success && awsResult.data.length > 0) {
-            const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
-            const allData = [
-              ...awsResult.data,
-              ...sampleData.gcpData,
-              ...sampleData.azureData
-            ];
-            costData = processMultiCloudCosts(allData);
-            console.log('Using real AWS + sample GCP/Azure for AI analysis');
-          } else {
-            costData = sampleData.allProviders;
-            console.log('Using sample multi-cloud data for AI analysis');
-          }
-        } else {
-          costData = sampleData.allProviders;
-          console.log('Using sample multi-cloud data for AI analysis');
-        }
-      }
+      const endDate2 = new Date();
+      const startDate2 = new Date(endDate2.getFullYear(), endDate2.getMonth(), 1);
+      const { fetchLiveCosts: fetchLiveCosts2 } = await import('./utils/live-cost-fetcher');
+      const { processMultiCloudCosts: processMultiCloudCosts2 } = await import('./utils/multi-cloud-processor');
+
+      const analyzeProviders: CloudProvider[] = detectedProvider === 'all'
+        ? ['aws', 'gcp', 'azure']
+        : [detectedProvider as CloudProvider];
+
+      const analyzeRecords = await fetchLiveCosts2(startDate2, endDate2, analyzeProviders);
+      let costData = processMultiCloudCosts2(analyzeRecords as any);
+      console.log(`[AI Analyze] ${analyzeRecords.length} records for ${detectedProvider}`);
 
       // Get anomaly data for comprehensive analysis
       let anomalyData: any = null;
       try {
-        anomalyData = await runPythonScript("anomaly_detection.py", costData);
+        const { detectAnomaliesTS } = await import('./utils/anomaly-detector');
+        anomalyData = detectAnomaliesTS(costData);
       } catch {
         // Continue without anomaly data if detection fails
       }
@@ -617,9 +465,9 @@ When answering:
           if (anomalyData?.anomalies?.length > 0) {
             answer = `I detected ${anomalyData.anomalies.length} spending anomalies:\n\n` +
               anomalyData.anomalies.slice(0, 5).map((a: any) => 
-                `• ${a.date}: $${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)`
+                `ÔÇó ${a.date}: $${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)`
               ).join('\n') +
-              (anomalyData.insights?.length > 0 ? `\n\nKey insights:\n${anomalyData.insights.slice(0, 3).map((i: any) => `• ${i}`).join('\n')}` : '');
+              (anomalyData.insights?.length > 0 ? `\n\nKey insights:\n${anomalyData.insights.slice(0, 3).map((i: any) => `ÔÇó ${i}`).join('\n')}` : '');
           } else {
             answer = 'No significant spending anomalies were detected in your cost data.';
           }
@@ -1064,7 +912,385 @@ When answering:
     }
   });
   
-  // ==================== REPORT SCHEDULES MANAGEMENT ====================
+  // ==================== FINOPS REPORT ====================
+
+  app.get("/api/reports/finops", async (req, res) => {
+    try {
+      const { provider = 'aws' } = req.query;
+
+      if (provider !== 'aws' && provider !== 'azure' && provider !== 'gcp') {
+        return res.status(400).json({ success: false, error: 'Invalid provider. Must be aws, azure, or gcp' });
+      }
+
+      let startDate: Date;
+      let endDate: Date;
+
+      if (req.query.startDate && req.query.endDate) {
+        startDate = new Date(req.query.startDate as string);
+        endDate = new Date(req.query.endDate as string);
+      } else {
+        endDate = new Date();
+        startDate = new Date();
+        startDate.setDate(1);
+      }
+
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = endDate.toISOString().split('T')[0];
+      const cacheKey = `finops-report:${provider}:${startDateStr}:${endDateStr}`;
+
+      const { persistentCache } = await import('./utils/persistent-cache');
+
+      // Only trigger background refresh if data is older than this threshold
+      const REFRESH_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
+
+      const shouldRefresh = (fetchedAtMs: number) =>
+        Date.now() - fetchedAtMs > REFRESH_THRESHOLD_MS;
+
+      // Fetches fresh data from APIs, saves to memory cache + DB
+      async function fetchAndRefresh(): Promise<any> {
+        console.log(`[FinOps Report] Fetching fresh data from APIs for ${provider} (${startDateStr} to ${endDateStr})`);
+        const { generateFinOpsReport } = await import('./reports/report-engine');
+        const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+        const { fetchExpensiveResources } = await import('./reports/expensive-resources-fetcher');
+
+        const sixMonthsAgo = new Date(startDate);
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
+
+        const accounts = await storage.getAllCloudAccounts();
+        const account = accounts.find((acc: any) => acc.provider === provider);
+        const accountId = account?.accountId;
+
+        const [currentPeriodRecords, historicalRecords, expensiveResourcesList] = await Promise.all([
+          fetchLiveCosts(startDate, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+          fetchLiveCosts(sixMonthsAgo, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+          fetchExpensiveResources(provider as 'aws' | 'azure' | 'gcp', startDateStr, endDateStr, 10),
+        ]);
+
+        const formattedCurrent = currentPeriodRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+        const formattedHistorical = historicalRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+
+        const serviceAggregation: Record<string, number> = {};
+        for (const record of formattedCurrent) {
+          serviceAggregation[record.service] = (serviceAggregation[record.service] || 0) + record.cost;
+        }
+        const resourceCosts = Object.entries(serviceAggregation).map(([service, cost]) => ({
+          resourceId: `${service}-aggregate`, service, cost, resourceName: service, region: 'us-east-1', owner: 'Unknown',
+        }));
+
+        const uniqueData = Array.from(
+          new Map([...formattedCurrent, ...formattedHistorical].map(item => [`${item.date}-${item.service}`, item])).values()
+        );
+
+        const report = await generateFinOpsReport(
+          provider as 'aws' | 'azure' | 'gcp',
+          uniqueData,
+          resourceCosts,
+          { startDate, endDate },
+          expensiveResourcesList,
+          accountId
+        );
+
+        // Save to memory cache (1 hour TTL)
+        persistentCache.set(cacheKey, report, 60 * 60 * 1000);
+
+        // Save to DB — survives server restarts, works even after days without visits
+        await storage.upsertReportCache({
+          cacheKey,
+          provider: provider as string,
+          startDate: startDateStr,
+          endDate: endDateStr,
+          reportData: report,
+          fetchedAt: new Date(),
+        });
+
+        console.log(`[FinOps Report] Report refreshed and saved to DB`);
+        return report;
+      }
+
+      // 1. Memory cache — fastest path
+      const memCached = persistentCache.get(cacheKey);
+      if (memCached) {
+        const cachedAt = persistentCache.getTimestamp(cacheKey) ?? 0;
+        if (shouldRefresh(cachedAt)) {
+          console.log(`[FinOps Report] Memory cache hit (stale ${Math.round((Date.now() - cachedAt) / 60000)}min) — triggering background refresh`);
+          setImmediate(() => fetchAndRefresh().catch(err => console.error('[FinOps Report] Background refresh error:', err)));
+        } else {
+          console.log(`[FinOps Report] Memory cache hit (fresh ${Math.round((Date.now() - cachedAt) / 60000)}min) — skipping refresh`);
+        }
+        return res.json({ success: true, report: memCached, cached: true, source: 'memory' });
+      }
+
+      // 2. DB cache — works after restarts or days without visits
+      const dbCached = await storage.getReportCache(cacheKey);
+      if (dbCached) {
+        persistentCache.set(cacheKey, dbCached.reportData, 60 * 60 * 1000);
+        const fetchedAtMs = dbCached.fetchedAt ? new Date(dbCached.fetchedAt).getTime() : 0;
+        if (shouldRefresh(fetchedAtMs)) {
+          console.log(`[FinOps Report] DB cache hit (stale ${Math.round((Date.now() - fetchedAtMs) / 60000)}min) — triggering background refresh`);
+          setImmediate(() => fetchAndRefresh().catch(err => console.error('[FinOps Report] Background refresh error:', err)));
+        } else {
+          console.log(`[FinOps Report] DB cache hit (fresh ${Math.round((Date.now() - fetchedAtMs) / 60000)}min) — skipping refresh`);
+        }
+        return res.json({ success: true, report: dbCached.reportData, cached: true, source: 'db' });
+      }
+
+      // 3. No cache — tell frontend to use the stream endpoint instead
+      console.log(`[FinOps Report] No cache — client should use /stream`);
+      res.json({ success: true, report: null, cached: false, source: 'none' });
+
+    } catch (error: any) {
+      console.error("[FinOps Report] Error:", error);
+      res.status(500).json({ success: false, error: error.message || "Failed to generate FinOps report" });
+    }
+  });
+
+  // ==================== FINOPS REPORT STREAMING (SSE) ====================
+  // Streams each report section as it completes — no waiting for full report
+
+  app.get("/api/reports/finops/stream", async (req, res) => {
+    const { provider = 'aws' } = req.query;
+
+    if (provider !== 'aws' && provider !== 'azure' && provider !== 'gcp') {
+      return res.status(400).json({ error: 'Invalid provider' });
+    }
+
+    let startDate: Date;
+    let endDate: Date;
+    if (req.query.startDate && req.query.endDate) {
+      startDate = new Date(req.query.startDate as string);
+      endDate = new Date(req.query.endDate as string);
+    } else {
+      endDate = new Date();
+      startDate = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+    }
+
+    const startDateStr = startDate.toISOString().split('T')[0];
+    const endDateStr = endDate.toISOString().split('T')[0];
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const send = (section: string, data: any) => {
+      res.write(`data: ${JSON.stringify({ section, data })}\n\n`);
+    };
+
+    const sendError = (section: string, error: string) => {
+      res.write(`data: ${JSON.stringify({ section, error })}\n\n`);
+    };
+
+    try {
+      const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+      const { fetchExpensiveResources } = await import('./reports/expensive-resources-fetcher');
+
+      // ── Step 1: Fetch data (the slow part) ──────────────────────────────
+      send('status', { message: 'Fetching cost data from AWS...', step: 1, total: 11 });
+
+      const sixMonthsAgo = new Date(startDate);
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
+
+      const accounts = await storage.getAllCloudAccounts();
+      const account = accounts.find((acc: any) => acc.provider === provider);
+      const accountId = account?.accountId;
+
+      // Fetch current period + historical + expensive resources in parallel
+      const [currentPeriodRecords, historicalRecords, expensiveResourcesList] = await Promise.all([
+        fetchLiveCosts(startDate, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+        fetchLiveCosts(sixMonthsAgo, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+        fetchExpensiveResources(provider as 'aws' | 'azure' | 'gcp', startDateStr, endDateStr, 10),
+      ]);
+
+      send('status', { message: 'Data fetched. Computing sections...', step: 2, total: 11 });
+
+      const formattedCurrent = currentPeriodRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+      const formattedHistorical = historicalRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+
+      const serviceAggregation: Record<string, number> = {};
+      for (const r of formattedCurrent) {
+        serviceAggregation[r.service] = (serviceAggregation[r.service] || 0) + r.cost;
+      }
+      const resourceCosts = Object.entries(serviceAggregation).map(([service, cost]) => ({
+        resourceId: `${service}-aggregate`, service, cost, resourceName: service, region: 'us-east-1', owner: 'Unknown',
+      }));
+
+      const uniqueData = Array.from(
+        new Map([...formattedCurrent, ...formattedHistorical].map(item => [`${item.date}-${item.service}`, item])).values()
+      );
+
+      // ── Step 2-11: Run each section and stream as it completes ───────────
+      const now = endDate;
+      const periodStart = startDate;
+      const periodStartStr = periodStart.toISOString().split('T')[0];
+      const periodEndStr = now.toISOString().split('T')[0];
+
+      const currentMonthData = uniqueData.filter(d => d.date >= periodStartStr && d.date <= periodEndStr);
+      const previousMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const previousMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+      const previousMonthData = uniqueData.filter(d =>
+        d.date >= previousMonthStart.toISOString().split('T')[0] &&
+        d.date <= previousMonthEnd.toISOString().split('T')[0]
+      );
+
+      // Section: topCostDrivers
+      let _topCostDrivers: any = [];
+      try {
+        send('status', { message: 'Analyzing top cost drivers...', step: 3, total: 11 });
+        const { analyzeTopCostDrivers } = await import('./reports/cost-trend-analyzer');
+        _topCostDrivers = analyzeTopCostDrivers(currentMonthData, previousMonthData, 5);
+        send('topCostDrivers', _topCostDrivers);
+      } catch (e: any) { sendError('topCostDrivers', e.message); }
+
+      // Section: wasteDetection (needed for spendOverview)
+      let wasteDetection: any = { potentialSaving: 0, idleResources: [], rightsizingOpportunities: [] };
+      try {
+        send('status', { message: 'Detecting waste...', step: 4, total: 11 });
+        const { detectWaste } = await import('./reports/waste-detector');
+        wasteDetection = await detectWaste(provider as any, resourceCosts);
+        send('wasteDetection', wasteDetection);
+      } catch (e: any) { sendError('wasteDetection', e.message); }
+
+      // Section: spendOverview
+      let _spendOverview: any = null;
+      try {
+        send('status', { message: 'Calculating spend overview...', step: 5, total: 11 });
+        const { calculateSpendOverview } = await import('./reports/spend-calculator');
+        _spendOverview = await calculateSpendOverview(
+          provider as any,
+          currentMonthData.map(d => ({ date: d.date, cost: d.cost })),
+          wasteDetection.potentialSaving,
+          { startDate: periodStart, endDate: now }
+        );
+        send('spendOverview', _spendOverview);
+      } catch (e: any) { sendError('spendOverview', e.message); }
+
+      // Section: expensiveResources — use API result if available, else fall back to service aggregation
+      const _expensiveResources = expensiveResourcesList.length > 0
+        ? expensiveResourcesList
+        : resourceCosts
+            .sort((a, b) => b.cost - a.cost)
+            .slice(0, 10)
+            .map(r => ({
+              resourceId: r.resourceId,
+              resourceName: r.resourceName,
+              service: r.service,
+              cost: r.cost,
+              region: r.region,
+              owner: r.owner,
+            }));
+      send('expensiveResources', _expensiveResources);
+
+      // Section: costTrend
+      let _costTrend: any = [];
+      try {
+        send('status', { message: 'Analyzing cost trend...', step: 6, total: 11 });
+        const { analyzeCostTrend } = await import('./reports/cost-trend-analyzer');
+        _costTrend = await analyzeCostTrend(uniqueData, 6);
+        send('costTrend', _costTrend);
+      } catch (e: any) { sendError('costTrend', e.message); }
+
+      // Section: anomalies
+      let _anomalies: any = [];
+      try {
+        send('status', { message: 'Detecting anomalies...', step: 7, total: 11 });
+        const { detectAnomalies } = await import('./reports/anomaly-detector');
+        const thirtyDaysAgo = new Date(now);
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const last30 = uniqueData.filter(d => d.date >= thirtyDaysAgo.toISOString().split('T')[0]);
+        _anomalies = detectAnomalies(last30, 30);
+        send('anomalies', _anomalies);
+      } catch (e: any) { sendError('anomalies', e.message); }
+
+      // Section: utilizationData + optimizationOpportunities
+      let _utilizationData: any = [];
+      let _optimizationOpportunities: any = [];
+      try {
+        send('status', { message: 'Calculating optimization opportunities...', step: 8, total: 11 });
+        const { getResourceUtilization } = await import('./reports/waste-detector');
+        const { calculateOptimizationOpportunities } = await import('./reports/optimization-calculator');
+        _utilizationData = await getResourceUtilization(provider as any, resourceCosts);
+        send('utilizationData', _utilizationData);
+        const totalCost = currentMonthData.reduce((s, d) => s + d.cost, 0);
+        const storageCost = currentMonthData.filter(d => d.service.toLowerCase().includes('storage') || d.service.toLowerCase().includes('s3')).reduce((s, d) => s + d.cost, 0);
+        _optimizationOpportunities = calculateOptimizationOpportunities(
+          wasteDetection,
+          { onDemandPercent: 70, onDemandCost: totalCost * 0.7 },
+          { totalStorageCost: storageCost, tieringOpportunity: storageCost * 0.2 }
+        );
+        send('optimizationOpportunities', _optimizationOpportunities);
+      } catch (e: any) { sendError('optimizationOpportunities', e.message); }
+
+      // Section: departmentAllocation + heatmapData
+      let _departmentAllocation: any = [];
+      let _heatmapData: any = [];
+      try {
+        send('status', { message: 'Allocating costs by department...', step: 9, total: 11 });
+        const { allocateCostsByDepartment, generateHeatmapData } = await import('./reports/department-allocator');
+        const serviceCostMap = new Map<string, number>();
+        for (const r of currentMonthData) serviceCostMap.set(r.service, (serviceCostMap.get(r.service) || 0) + r.cost);
+        const aggregatedServiceCosts = Array.from(serviceCostMap.entries()).map(([service, cost]) => ({ service, cost }));
+        const deptResult = await allocateCostsByDepartment(provider as any, aggregatedServiceCosts);
+        _departmentAllocation = deptResult.allocations;
+        _heatmapData = generateHeatmapData(deptResult.fullServiceData);
+        send('departmentAllocation', _departmentAllocation);
+        send('heatmapData', _heatmapData);
+      } catch (e: any) { sendError('departmentAllocation', e.message); }
+
+      // Section: aiSpendAnalysis
+      let _aiSpendAnalysis: any = { totalAISpend: 0, aiServices: [], aiPercentageOfTotal: 0, topAIService: 'None', monthOverMonthChange: 0 };
+      try {
+        send('status', { message: 'Analyzing AI service costs...', step: 10, total: 11 });
+        const { analyzeAICosts } = await import('./reports/ai-cost-analyzer');
+        _aiSpendAnalysis = accountId
+          ? await analyzeAICosts(provider as any, accountId, periodStartStr, periodEndStr)
+          : { totalAISpend: 0, aiServices: [], aiPercentageOfTotal: 0, topAIService: 'None', monthOverMonthChange: 0 };
+        send('aiSpendAnalysis', _aiSpendAnalysis);
+      } catch (e: any) { sendError('aiSpendAnalysis', e.message); }
+
+      // Assemble full report from already-computed sections and save to cache+DB
+      // Do this BEFORE sending 'done' so next visit is instant — no re-running anything
+      send('status', { message: 'Saving to cache...', step: 11, total: 11 });
+      try {
+        const { persistentCache } = await import('./utils/persistent-cache');
+        const cacheKey = `finops-report:${provider}:${startDateStr}:${endDateStr}`;
+        const builtReport = {
+          provider,
+          generatedAt: new Date().toISOString(),
+          dateRange: { start: periodStartStr, end: periodEndStr },
+          spendOverview: _spendOverview,
+          topCostDrivers: _topCostDrivers,
+          expensiveResources: _expensiveResources,
+          costTrend: _costTrend,
+          anomalies: _anomalies,
+          wasteDetection: wasteDetection,
+          utilizationData: _utilizationData,
+          optimizationOpportunities: _optimizationOpportunities,
+          departmentAllocation: _departmentAllocation,
+          heatmapData: _heatmapData,
+          aiSpendAnalysis: _aiSpendAnalysis,
+        };
+        persistentCache.set(cacheKey, builtReport, 60 * 60 * 1000);
+        await storage.upsertReportCache({
+          cacheKey, provider: provider as string,
+          startDate: startDateStr, endDate: endDateStr,
+          reportData: builtReport, fetchedAt: new Date(),
+        });
+        console.log(`[FinOps Stream] Report saved to cache+DB`);
+      } catch (e: any) {
+        console.error('[FinOps Stream] Failed to save to cache:', e.message);
+      }
+
+      send('done', { message: 'Report complete' });
+    } catch (error: any) {
+      send('error', { message: error.message || 'Failed to generate report' });
+    } finally {
+      res.end();
+    }
+  });
+
+        // ==================== REPORT SCHEDULES MANAGEMENT ====================
   
   // Get all report schedules
   app.get("/api/reports/schedules", async (_req, res) => {
@@ -1168,11 +1394,10 @@ When answering:
       const costData = cachedCostData || loadSampleData();
       
       // Run anomaly detection
-      const anomalyResult = await runPythonScript("anomaly_detection.py", {
-        costData,
-      });
-      
-      if (!anomalyResult.success || !anomalyResult.anomalies) {
+      const { detectAnomaliesTS: detectAnomaliesForExport } = await import('./utils/anomaly-detector');
+      const anomalyResult = detectAnomaliesForExport(costData);
+
+      if (!anomalyResult.anomalies) {
         return res.status(400).json({ error: "Failed to detect anomalies" });
       }
       
@@ -1221,8 +1446,9 @@ When answering:
       const costData = cachedCostData || loadSampleData();
       
       // Get anomalies
-      const anomalyResult = await runPythonScript("anomaly_detection.py", { costData });
-      const anomalies = anomalyResult.success ? anomalyResult.anomalies : [];
+      const { detectAnomaliesTS: detectAnomaliesForReport } = await import('./utils/anomaly-detector');
+      const anomalyResult = detectAnomaliesForReport(costData);
+      const anomalies = anomalyResult.anomalies || [];
       
       // Get forecast
       const forecastResult = await runPythonScript("cost_forecasting.py", {
@@ -2001,7 +2227,7 @@ When answering:
             if (awsInventory.hasErrors) {
               console.warn('[Agent Planner] AWS resource inventory has errors:', awsInventory.errors);
               context.awsInventoryErrors = awsInventory.errors;
-              context.awsInventoryWarning = `⚠️ Some AWS resources could not be fetched: ${awsInventory.errors?.map(e => e.resourceType).join(', ')}. Recommendations may be incomplete.`;
+              context.awsInventoryWarning = `ÔÜá´©Å Some AWS resources could not be fetched: ${awsInventory.errors?.map(e => e.resourceType).join(', ')}. Recommendations may be incomplete.`;
             }
             
             console.log('[Agent Planner] Including real AWS resource inventory in context');
@@ -2009,7 +2235,7 @@ When answering:
           } catch (error) {
             console.error('[Agent Planner] Error fetching AWS resources:', error);
             context.awsResources = null;
-            context.awsInventoryWarning = '⚠️ Could not fetch AWS resource inventory. Recommendations will be based on cost data only.';
+            context.awsInventoryWarning = 'ÔÜá´©Å Could not fetch AWS resource inventory. Recommendations will be based on cost data only.';
           }
         }
 
@@ -2022,7 +2248,7 @@ When answering:
             if (azureInventory.hasErrors) {
               console.warn('[Agent Planner] Azure resource inventory has errors:', azureInventory.errors);
               context.azureInventoryErrors = azureInventory.errors;
-              context.azureInventoryWarning = `⚠️ Some Azure resources could not be fetched: ${azureInventory.errors?.map(e => e.service).join(', ')}. Recommendations may be incomplete.`;
+              context.azureInventoryWarning = `ÔÜá´©Å Some Azure resources could not be fetched: ${azureInventory.errors?.map(e => e.service).join(', ')}. Recommendations may be incomplete.`;
             }
             
             console.log('[Agent Planner] Including real Azure resource inventory in context');
@@ -2030,7 +2256,7 @@ When answering:
           } catch (error) {
             console.error('[Agent Planner] Error fetching Azure resources:', error);
             context.azureResources = null;
-            context.azureInventoryWarning = '⚠️ Could not fetch Azure resource inventory. Recommendations will be based on cost data only.';
+            context.azureInventoryWarning = 'ÔÜá´©Å Could not fetch Azure resource inventory. Recommendations will be based on cost data only.';
           }
         }
 
@@ -2043,7 +2269,7 @@ When answering:
             if (gcpInventory.hasErrors) {
               console.warn('[Agent Planner] GCP resource inventory has errors:', gcpInventory.errors);
               context.gcpInventoryErrors = gcpInventory.errors;
-              context.gcpInventoryWarning = `⚠️ Some GCP resources could not be fetched: ${gcpInventory.errors?.map(e => e.service).join(', ')}. Recommendations may be incomplete.`;
+              context.gcpInventoryWarning = `ÔÜá´©Å Some GCP resources could not be fetched: ${gcpInventory.errors?.map(e => e.service).join(', ')}. Recommendations may be incomplete.`;
             }
             
             console.log('[Agent Planner] Including real GCP resource inventory in context');
@@ -2051,7 +2277,7 @@ When answering:
           } catch (error) {
             console.error('[Agent Planner] Error fetching GCP resources:', error);
             context.gcpResources = null;
-            context.gcpInventoryWarning = '⚠️ Could not fetch GCP resource inventory. Recommendations will be based on cost data only.';
+            context.gcpInventoryWarning = 'ÔÜá´©Å Could not fetch GCP resource inventory. Recommendations will be based on cost data only.';
           }
         }
 

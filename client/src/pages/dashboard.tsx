@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { DollarSign, TrendingUp, Server, Calendar, RefreshCw, Download, Cloud, Zap } from "lucide-react";
+import { DollarSign, TrendingUp, Server, Calendar, RefreshCw, Download, Cloud, Zap, Database, CloudCog, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -19,6 +19,9 @@ import { SubscriptionChart } from "@/components/subscription-chart";
 import { CostDistributionTable } from "@/components/cost-distribution-table";
 import { InsightsPanel } from "@/components/insights-panel";
 import { QuickWinsPanel } from "@/components/quick-wins-panel";
+import { ServiceAnalysisModal } from "@/components/service-analysis-modal";
+import { DateRangePicker } from "@/components/date-range-picker";
+import { useDateRange } from "@/contexts/date-range-context";
 import { useToast } from "@/hooks/use-toast";
 import type { ProcessedCostData, AnomalyDetectionResult } from "@shared/schema";
 
@@ -27,14 +30,24 @@ type CloudProvider = 'all' | 'aws' | 'gcp' | 'azure';
 export default function Dashboard() {
   const [selectedService, setSelectedService] = useState("all");
   const [selectedProvider, setSelectedProvider] = useState<CloudProvider>("all");
+  const [analysisModalOpen, setAnalysisModalOpen] = useState(false);
+  const [selectedServiceForAnalysis, setSelectedServiceForAnalysis] = useState<string | null>(null);
   const { toast } = useToast();
+  const { dateRange } = useDateRange();
 
   const { data: costData, isLoading: costLoading, refetch: refetchCostData } = useQuery<ProcessedCostData>({
-    queryKey: ["/api/cost-data", selectedProvider],
+    queryKey: ["/api/cost-data", selectedProvider, dateRange.startDate, dateRange.endDate],
     queryFn: async () => {
-      const url = selectedProvider === "all" 
-        ? '/api/cost-data'
-        : `/api/cost-data?provider=${selectedProvider}`;
+      const params = new URLSearchParams({
+        startDate: dateRange.startDate,
+        endDate: dateRange.endDate,
+      });
+      
+      if (selectedProvider !== "all") {
+        params.append('provider', selectedProvider);
+      }
+      
+      const url = `/api/cost-data?${params.toString()}`;
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) throw new Error('Failed to fetch cost data');
       return await response.json();
@@ -42,11 +55,18 @@ export default function Dashboard() {
   });
 
   const { data: anomalyData, isLoading: anomalyLoading } = useQuery<AnomalyDetectionResult>({
-    queryKey: ["/api/anomalies", selectedProvider],
+    queryKey: ["/api/anomalies", selectedProvider, dateRange.startDate, dateRange.endDate],
     queryFn: async () => {
-      const url = selectedProvider === "all" 
-        ? '/api/anomalies'
-        : `/api/anomalies?provider=${selectedProvider}`;
+      const params = new URLSearchParams({
+        startDate: dateRange.startDate,
+        endDate: dateRange.endDate,
+      });
+      
+      if (selectedProvider !== "all") {
+        params.append('provider', selectedProvider);
+      }
+      
+      const url = `/api/anomalies?${params.toString()}`;
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) throw new Error('Failed to fetch anomalies');
       return await response.json();
@@ -54,13 +74,72 @@ export default function Dashboard() {
     enabled: !!costData,
   });
 
+  // Service analysis query
+  const { data: analysisData, isLoading: analysisLoading } = useQuery({
+    queryKey: ['/api/service-analysis', selectedServiceForAnalysis, selectedProvider, dateRange.startDate, dateRange.endDate],
+    queryFn: async () => {
+      if (!selectedServiceForAnalysis) return null;
+      
+      // Determine provider - if "all" is selected, try to detect from service name
+      let provider = selectedProvider;
+      if (provider === 'all') {
+        // Fallback detection from service name
+        if (selectedServiceForAnalysis.startsWith('Amazon ') || selectedServiceForAnalysis.startsWith('AWS ')) {
+          provider = 'aws';
+        } else if (selectedServiceForAnalysis.startsWith('Azure ') || selectedServiceForAnalysis.startsWith('Microsoft ')) {
+          provider = 'azure';
+        } else if (selectedServiceForAnalysis.startsWith('Google ')) {
+          provider = 'gcp';
+        }
+      }
+      
+      const response = await fetch('/api/service-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service: selectedServiceForAnalysis,
+          provider: provider,
+          startDate: dateRange.startDate,
+          endDate: dateRange.endDate,
+        }),
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Analysis failed');
+      }
+      
+      const result = await response.json();
+      return result.data;
+    },
+    enabled: !!selectedServiceForAnalysis && analysisModalOpen,
+  });
+
+  // Handle service click for analysis
+  const handleServiceClick = (serviceName: string) => {
+    setSelectedServiceForAnalysis(serviceName);
+    setAnalysisModalOpen(true);
+  };
+
+  const handleCloseAnalysisModal = () => {
+    setAnalysisModalOpen(false);
+    setSelectedServiceForAnalysis(null);
+  };
+
   // Fetch optimization recommendations for savings card
   const { data: recommendationsData } = useQuery({
-    queryKey: ['/api/optimization/recommendations', selectedProvider],
+    queryKey: ['/api/optimization/recommendations', selectedProvider, dateRange.startDate, dateRange.endDate],
     queryFn: async () => {
-      const url = selectedProvider === "all" 
-        ? '/api/optimization/recommendations'
-        : `/api/optimization/recommendations?provider=${selectedProvider}`;
+      const params = new URLSearchParams({
+        startDate: dateRange.startDate,
+        endDate: dateRange.endDate,
+      });
+      
+      if (selectedProvider !== "all") {
+        params.append('provider', selectedProvider);
+      }
+      
+      const url = `/api/optimization/recommendations?${params.toString()}`;
       const response = await fetch(url, { credentials: 'include' });
       if (!response.ok) throw new Error('Failed to fetch recommendations');
       return await response.json();
@@ -158,9 +237,36 @@ export default function Dashboard() {
 
   const wowTrend = calculateWoWTrend();
 
+  // Extract metadata from API response to know if provider is real or sample data
+  const metadata = (costData as any)?._metadata as {
+    dataSource: string;
+    awsConfigured: boolean;
+    gcpConfigured: boolean;
+    warnings?: string[];
+  } | undefined;
+
+  const isProviderConfigured = (provider: CloudProvider) => {
+    if (provider === 'aws') return metadata?.awsConfigured ?? true;
+    if (provider === 'gcp') return metadata?.gcpConfigured ?? false;
+    if (provider === 'azure') return metadata?.azureConfigured ?? false;
+    return true; // 'all' always shows
+  };
+
+  const renderNotConfigured = (provider: string) => (
+    <div className="flex flex-col items-center justify-center py-24 gap-4 rounded-lg border border-yellow-300 bg-yellow-50 dark:bg-yellow-950/20 dark:border-yellow-700">
+      <AlertTriangle className="h-10 w-10 text-yellow-500" />
+      <div className="text-center">
+        <p className="text-lg font-semibold text-yellow-800 dark:text-yellow-300">{provider} Not Configured</p>
+        <p className="text-sm text-yellow-700 dark:text-yellow-400 mt-1">
+          Add your {provider} credentials in the Configuration page to see real cost data.
+        </p>
+      </div>
+    </div>
+  );
+
   const renderDashboardContent = () => (
     <>
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
         <CostSummaryCard
           title="Total Cost"
           value={costData ? `$${costData.totalCost.toFixed(2)}` : "$0.00"}
@@ -178,14 +284,14 @@ export default function Dashboard() {
           variant="green"
           data-testid={`card-avg-daily-${selectedProvider}`}
         />
-        <CostSummaryCard
+        {/* <CostSummaryCard
           title="Potential Savings"
           value={`$${totalSavings.toFixed(2)}`}
           icon={Zap}
           loading={costLoading}
           variant="purple"
           data-testid={`card-potential-savings-${selectedProvider}`}
-        />
+        /> */}
         <CostSummaryCard
           title="Top Service"
           value={costData ? costData.topService.name : "N/A"}
@@ -220,6 +326,7 @@ export default function Dashboard() {
               loading={costLoading}
               limit={10}
               title="Top 10 Services"
+              onServiceClick={handleServiceClick}
             />
             <SubscriptionChart
               data={costData?.subscriptionBreakdown || []}
@@ -230,6 +337,7 @@ export default function Dashboard() {
           <CostDistributionTable
             data={costData?.serviceBreakdown || []}
             loading={costLoading}
+            onServiceClick={handleServiceClick}
           />
         </div>
 
@@ -260,14 +368,15 @@ export default function Dashboard() {
             {getProviderDescription()}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <DateRangePicker />
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
+            {/* <DropdownMenuTrigger asChild>
               <Button variant="outline" data-testid="button-export">
                 <Download className="h-4 w-4 mr-2" />
                 Export Data
               </Button>
-            </DropdownMenuTrigger>
+            </DropdownMenuTrigger> */}
             <DropdownMenuContent align="end">
               <DropdownMenuLabel>Export Options</DropdownMenuLabel>
               <DropdownMenuSeparator />
@@ -299,20 +408,26 @@ export default function Dashboard() {
       <Tabs value={selectedProvider} onValueChange={(value) => setSelectedProvider(value as CloudProvider)} className="space-y-6">
         <TabsList className="grid w-full grid-cols-4" data-testid="tabs-provider-selector">
           <TabsTrigger value="all" data-testid="tab-all" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <CloudCog className="h-4 w-4 text-purple-600 dark:text-purple-400" />
             All Clouds
           </TabsTrigger>
           <TabsTrigger value="aws" data-testid="tab-aws" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <Database className="h-4 w-4 text-orange-600 dark:text-orange-400" />
             AWS
           </TabsTrigger>
           <TabsTrigger value="gcp" data-testid="tab-gcp" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <CloudCog className="h-4 w-4 text-green-600 dark:text-green-400" />
             GCP
+            {metadata && !metadata.gcpConfigured && (
+              <span className="text-[10px] font-medium bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 rounded px-1 py-0.5 leading-none">Not Configured</span>
+            )}
           </TabsTrigger>
           <TabsTrigger value="azure" data-testid="tab-azure" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <Cloud className="h-4 w-4 text-primary" />
             Azure
+            {metadata && !metadata.azureConfigured && (
+              <span className="text-[10px] font-medium bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 rounded px-1 py-0.5 leading-none">Not Configured</span>
+            )}
           </TabsTrigger>
         </TabsList>
 
@@ -325,13 +440,22 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="gcp" className="space-y-6">
-          {renderDashboardContent()}
+          {isProviderConfigured('gcp') ? renderDashboardContent() : renderNotConfigured('GCP')}
         </TabsContent>
 
         <TabsContent value="azure" className="space-y-6">
-          {renderDashboardContent()}
+          {isProviderConfigured('azure') ? renderDashboardContent() : renderNotConfigured('Azure')}
         </TabsContent>
       </Tabs>
+
+      {/* Service Analysis Modal */}
+      <ServiceAnalysisModal
+        open={analysisModalOpen}
+        onClose={handleCloseAnalysisModal}
+        serviceName={selectedServiceForAnalysis || ''}
+        analysisData={analysisData}
+        isLoading={analysisLoading}
+      />
     </div>
   );
 }

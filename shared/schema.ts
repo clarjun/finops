@@ -243,6 +243,10 @@ export const budgets = pgTable("budgets", {
   startDate: timestamp("start_date").notNull(),
   endDate: timestamp("end_date"),
   alertThresholds: jsonb("alert_thresholds"), // { 50: true, 75: true, 90: true, 100: true }
+  emailRecipients: text("email_recipients"), // Comma-separated email addresses for notifications
+  webhookUrl: text("webhook_url"), // Webhook URL for Teams/Slack notifications
+  lastAlertedAt: timestamp("last_alerted_at"), // Track when last alert was sent to prevent spam
+  lastAlertedThreshold: integer("last_alerted_threshold"), // Track which threshold triggered last alert
   isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
@@ -523,3 +527,20 @@ export const agentConfig = pgTable("agent_config", {
 export const insertAgentConfigSchema = createInsertSchema(agentConfig).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertAgentConfig = z.infer<typeof insertAgentConfigSchema>;
 export type AgentConfig = typeof agentConfig.$inferSelect;
+
+// Report Cache - persists generated FinOps reports in DB for fast retrieval
+export const reportCache = pgTable("report_cache", {
+  id: serial("id").primaryKey(),
+  cacheKey: varchar("cache_key", { length: 500 }).notNull().unique(), // e.g. finops-report:aws:2026-04-01:2026-04-09
+  provider: varchar("provider", { length: 20 }).notNull(),
+  startDate: varchar("start_date", { length: 20 }).notNull(),
+  endDate: varchar("end_date", { length: 20 }).notNull(),
+  reportData: jsonb("report_data").notNull(), // Full FinOps report JSON
+  fetchedAt: timestamp("fetched_at").notNull().defaultNow(), // When data was last fetched from APIs
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertReportCacheSchema = createInsertSchema(reportCache).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertReportCache = z.infer<typeof insertReportCacheSchema>;
+export type ReportCache = typeof reportCache.$inferSelect;

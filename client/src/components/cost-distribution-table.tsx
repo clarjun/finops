@@ -9,9 +9,10 @@ interface CostDistributionTableProps {
     percentage: number;
   }>;
   loading?: boolean;
+  onServiceClick?: (serviceName: string) => void;
 }
 
-export function CostDistributionTable({ data, loading }: CostDistributionTableProps) {
+export function CostDistributionTable({ data, loading, onServiceClick }: CostDistributionTableProps) {
   if (loading) {
     return (
       <Card>
@@ -47,8 +48,9 @@ export function CostDistributionTable({ data, loading }: CostDistributionTablePr
             return (
               <div
                 key={index}
-                className="flex items-center justify-between p-4 rounded-lg bg-muted/30 hover-elevate"
+                className={`flex items-center justify-between p-4 rounded-lg bg-muted/30 hover-elevate ${onServiceClick ? 'cursor-pointer hover:bg-muted/50 transition-colors' : ''}`}
                 data-testid={`item-service-${service.name.toLowerCase().replace(/\s+/g, '-')}`}
+                onClick={() => onServiceClick && onServiceClick(service.name)}
               >
                 <div className="flex-1 min-w-0">
                   <p className="font-medium truncate" data-testid={`text-service-name-${index}`}>{service.name}</p>

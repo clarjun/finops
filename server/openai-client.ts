@@ -1,9 +1,23 @@
-import OpenAI from "openai";
+// import OpenAI from "openai";
 
-// Reference: javascript_openai_ai_integrations blueprint
-// This is using Replit's AI Integrations service, which provides OpenAI-compatible API access without requiring your own OpenAI API key.
-// the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
+
+// export const openai = new OpenAI({
+//   baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+//   apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY
+// });
+
+
+
+import OpenAI from "openai";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+if (!process.env.OPENAI_API_KEY) {
+  throw new Error("Missing OPENAI_API_KEY in environment variables");
+}
+
 export const openai = new OpenAI({
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY
+  baseURL: process.env.OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
 });

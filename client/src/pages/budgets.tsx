@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, Trash2, Edit, TrendingUp, TrendingDown, AlertTriangle, DollarSign } from "lucide-react";
+import { Plus, Trash2, Edit, TrendingUp, TrendingDown, AlertTriangle, DollarSign, Mail, Webhook } from "lucide-react";
 import { ProviderSelector, type CloudProvider } from "@/components/provider-selector";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
@@ -32,6 +32,8 @@ const budgetFormSchema = insertBudgetSchema.extend({
   accountId: z.string().nullable().optional(),
   serviceName: z.string().nullable(),
   alertThresholds: z.record(z.boolean()).nullable().optional(),
+  emailRecipients: z.string().nullable().optional(),
+  webhookUrl: z.string().url().nullable().optional().or(z.literal('')),
 }).refine((data) => data.provider !== null && data.provider !== '', {
   message: "Provider is required",
   path: ["provider"],
@@ -78,6 +80,8 @@ export default function BudgetsPage() {
         return response.json() as Promise<{ success: boolean; currentSpending: number; percentage: number }>;
       },
       enabled: !!budget.id,
+      staleTime: 0, // Always refetch to get latest spending data
+      refetchOnMount: true, // Refetch when component mounts
     })),
   });
 
@@ -103,7 +107,7 @@ export default function BudgetsPage() {
   const calculateBudgetStatus = (budget: Budget) => {
     // Get spending data from the map
     const spendingData = spendingMap[budget.id];
-    
+    //console.log("spendingMap ", spendingMap);
     if (!spendingData) {
       // Loading state - return minimal data
       return { spent: 0, percentage: 0, status: 'success' as const };
@@ -246,6 +250,7 @@ export default function BudgetsPage() {
         ) : (
           budgets.map((budget) => {
             const { spent, percentage, status } = calculateBudgetStatus(budget);
+            console.log("spendingData budget ", budget);
             const progressColor = status === 'danger' ? 'bg-red-600' : status === 'warning' ? 'bg-orange-600' : 'bg-green-600';
 
             return (
@@ -332,6 +337,24 @@ export default function BudgetsPage() {
                     </div>
                   )}
 
+                  {(budget.emailRecipients || budget.webhookUrl) && (
+                    <div className="flex flex-wrap items-center gap-2" data-testid={`div-notifications-${budget.id}`}>
+                      <span className="text-sm text-muted-foreground">Notifications:</span>
+                      {budget.emailRecipients && (
+                        <Badge variant="outline" className="text-xs gap-1" data-testid={`badge-email-${budget.id}`}>
+                          <Mail className="h-3 w-3" />
+                          {budget.emailRecipients.split(',').length} email(s)
+                        </Badge>
+                      )}
+                      {budget.webhookUrl && (
+                        <Badge variant="outline" className="text-xs gap-1" data-testid={`badge-webhook-${budget.id}`}>
+                          <Webhook className="h-3 w-3" />
+                          Webhook
+                        </Badge>
+                      )}
+                    </div>
+                  )}
+
                   <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t text-xs text-muted-foreground">
                     <span>Start: {format(new Date(budget.startDate), 'MMM dd, yyyy')}</span>
                     {budget.endDate && (
@@ -364,6 +387,8 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
       startDate: budget.startDate ? format(new Date(budget.startDate), 'yyyy-MM-dd') : format(new Date(), 'yyyy-MM-dd'),
       endDate: budget.endDate ? format(new Date(budget.endDate), 'yyyy-MM-dd') : undefined,
       alertThresholds: budget.alertThresholds || { "50": true, "75": true, "90": true, "100": true },
+      emailRecipients: budget.emailRecipients || "",
+      webhookUrl: budget.webhookUrl || "",
       isActive: budget.isActive,
     } : {
       budgetName: "",
@@ -374,6 +399,8 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
       period: "monthly",
       startDate: format(new Date(), 'yyyy-MM-dd'),
       alertThresholds: { "50": true, "75": true, "90": true, "100": true },
+      emailRecipients: "",
+      webhookUrl: "",
       isActive: true,
     },
   });
@@ -608,6 +635,60 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
               />
             ))}
           </div>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <FormLabel>Notification Settings</FormLabel>
+            <p className="text-sm text-muted-foreground mt-1">
+              Configure how you want to be notified when thresholds are exceeded
+            </p>
+          </div>
+
+          <FormField
+            control={form.control}
+            name="emailRecipients"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Email Recipients</FormLabel>
+                <FormControl>
+                  <Input 
+                    placeholder="email1@example.com, email2@example.com" 
+                    {...field} 
+                    value={field.value || ''}
+                    data-testid="input-email-recipients" 
+                  />
+                </FormControl>
+                <FormDescription>
+                  Comma-separated email addresses to notify when thresholds are exceeded
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="webhookUrl"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Webhook URL (Teams/Slack)</FormLabel>
+                <FormControl>
+                  <Input 
+                    type="url"
+                    placeholder="https://hooks.slack.com/services/..." 
+                    {...field} 
+                    value={field.value || ''}
+                    data-testid="input-webhook-url" 
+                  />
+                </FormControl>
+                <FormDescription>
+                  Webhook URL for Microsoft Teams or Slack notifications
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
         </div>
 
         <FormField

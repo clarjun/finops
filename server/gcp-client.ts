@@ -1,36 +1,56 @@
 import { BigQuery } from "@google-cloud/bigquery";
+import { getProviderCredentials } from "./cloud-config-manager";
 
 let bigQueryClient: BigQuery | null = null;
+let currentCredentials: any = null;
 
-export function initializeGCPClient() {
-  const GCP_SERVICE_ACCOUNT_KEY = process.env.GCP_SERVICE_ACCOUNT_KEY;
-  const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID;
-
-  if (!GCP_SERVICE_ACCOUNT_KEY || !GCP_PROJECT_ID) {
-    console.log("GCP credentials not configured. Using sample data for GCP costs.");
+export async function initializeGCPClient() {
+  // Get credentials from database only
+  const accountConfig = await getProviderCredentials('gcp');
+  
+  if (!accountConfig) {
+    console.log("GCP credentials not configured. No GCP cost data available.");
     return null;
   }
 
-  try {
-    let credentials;
+  const credentials = accountConfig.credentials;
+  
+  // Parse service account key if it's a string
+  let serviceAccountKey;
+  if (typeof credentials.serviceAccountKey === 'string') {
     try {
-      credentials = JSON.parse(GCP_SERVICE_ACCOUNT_KEY);
-    } catch (parseError) {
-      console.error("Failed to parse GCP_SERVICE_ACCOUNT_KEY as JSON:", parseError);
+      serviceAccountKey = JSON.parse(credentials.serviceAccountKey);
+    } catch (error) {
+      console.error("Failed to parse GCP service account key:", error);
       return null;
     }
-
-    bigQueryClient = new BigQuery({
-      projectId: GCP_PROJECT_ID,
-      credentials,
-    });
-
-    console.log(`GCP BigQuery client initialized for project: ${GCP_PROJECT_ID}`);
-    return bigQueryClient;
-  } catch (error) {
-    console.error("Failed to initialize GCP BigQuery client:", error);
-    return null;
+  } else {
+    serviceAccountKey = credentials.serviceAccountKey || credentials;
   }
+
+  // Check if credentials have changed
+  const credentialsChanged = !currentCredentials || 
+    JSON.stringify(currentCredentials) !== JSON.stringify(serviceAccountKey);
+
+  if (credentialsChanged || !bigQueryClient) {
+    try {
+      const projectId = credentials.projectId || serviceAccountKey.project_id;
+      
+      bigQueryClient = new BigQuery({
+        projectId,
+        credentials: serviceAccountKey,
+      });
+
+      currentCredentials = serviceAccountKey;
+      console.log(`GCP BigQuery client initialized for account: ${accountConfig.accountName} (${projectId})`);
+      return bigQueryClient;
+    } catch (error) {
+      console.error("Failed to initialize GCP BigQuery client:", error);
+      return null;
+    }
+  }
+
+  return bigQueryClient;
 }
 
 export interface GCPCostData {
@@ -46,20 +66,27 @@ export async function fetchGCPCostData(
   startDate: string,
   endDate: string
 ): Promise<GCPCostData[]> {
-  if (!bigQueryClient) {
-    const client = initializeGCPClient();
-    if (!client) {
-      throw new Error("GCP BigQuery client not configured");
-    }
-    bigQueryClient = client;
+  const client = await initializeGCPClient();
+  if (!client) {
+    throw new Error("GCP BigQuery client not configured");
+  }
+  bigQueryClient = client;
+
+  // Get account config for billing table info
+  const accountConfig = await getProviderCredentials('gcp');
+  if (!accountConfig) {
+    throw new Error("GCP account configuration not found");
   }
 
-  const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID;
-  const GCP_BILLING_DATASET = process.env.GCP_BILLING_DATASET || "cloud_billing_data";
-  const GCP_BILLING_TABLE = process.env.GCP_BILLING_TABLE;
+  const credentials = accountConfig.credentials;
+  const projectId = credentials.projectId || (typeof credentials.serviceAccountKey === 'string' 
+    ? JSON.parse(credentials.serviceAccountKey).project_id 
+    : credentials.serviceAccountKey?.project_id);
+  const billingDataset = credentials.billingDataset || "cloud_billing_data";
+  const billingTable = credentials.billingTable;
 
-  if (!GCP_BILLING_TABLE) {
-    throw new Error("GCP_BILLING_TABLE environment variable not set");
+  if (!billingTable) {
+    throw new Error("GCP billing table not configured. Please set billingTable in account configuration.");
   }
 
   try {
@@ -71,7 +98,7 @@ export async function fetchGCPCostData(
         SUM(cost) as total_cost,
         TO_JSON_STRING(labels) as labels_json
       FROM 
-        \`${GCP_PROJECT_ID}.${GCP_BILLING_DATASET}.${GCP_BILLING_TABLE}\`
+        \`${projectId}.${billingDataset}.${billingTable}\`
       WHERE 
         DATE(usage_start_time) >= @startDate
         AND DATE(usage_start_time) < @endDate
@@ -133,30 +160,37 @@ export async function fetchGCPCostData(
 }
 
 export async function isGCPConfigured(): Promise<boolean> {
-  const GCP_SERVICE_ACCOUNT_KEY = process.env.GCP_SERVICE_ACCOUNT_KEY;
-  const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID;
-  const GCP_BILLING_TABLE = process.env.GCP_BILLING_TABLE;
-
-  if (!GCP_SERVICE_ACCOUNT_KEY || !GCP_PROJECT_ID || !GCP_BILLING_TABLE) {
+  // Check if credentials exist in database
+  const accountConfig = await getProviderCredentials('gcp');
+  
+  if (!accountConfig) {
     return false;
   }
 
   try {
-    if (!bigQueryClient) {
-      const client = initializeGCPClient();
-      if (!client) {
-        return false;
-      }
+    const client = await initializeGCPClient();
+    if (!client) {
+      return false;
     }
 
-    const GCP_BILLING_DATASET = process.env.GCP_BILLING_DATASET || "cloud_billing_data";
+    const credentials = accountConfig.credentials;
+    const projectId = credentials.projectId || (typeof credentials.serviceAccountKey === 'string' 
+      ? JSON.parse(credentials.serviceAccountKey).project_id 
+      : credentials.serviceAccountKey?.project_id);
+    const billingDataset = credentials.billingDataset || "cloud_billing_data";
+    const billingTable = credentials.billingTable;
+
+    if (!billingTable) {
+      console.error("GCP billing table not configured");
+      return false;
+    }
 
     const query = `
       SELECT 
         DATE(usage_start_time) as usage_date,
         SUM(cost) as total_cost
       FROM 
-        \`${GCP_PROJECT_ID}.${GCP_BILLING_DATASET}.${GCP_BILLING_TABLE}\`
+        \`${projectId}.${billingDataset}.${billingTable}\`
       WHERE 
         DATE(usage_start_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL 2 DAY)
       GROUP BY 
@@ -164,7 +198,7 @@ export async function isGCPConfigured(): Promise<boolean> {
       LIMIT 1
     `;
 
-    await bigQueryClient!.query(query);
+    await client.query(query);
     return true;
   } catch (error) {
     console.error("GCP BigQuery test query failed:", error);

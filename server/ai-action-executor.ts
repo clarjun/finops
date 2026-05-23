@@ -1,4 +1,8 @@
-import { EC2Client, DescribeInstancesCommand, ModifyInstanceAttributeCommand, StopInstancesCommand } from "@aws-sdk/client-ec2";
+import { EC2Client, 
+  DescribeInstancesCommand, 
+  ModifyInstanceAttributeCommand, 
+  StopInstancesCommand,
+  StartInstancesCommand } from "@aws-sdk/client-ec2";
 import { S3Client, PutBucketLifecycleConfigurationCommand } from "@aws-sdk/client-s3";
 import { db } from "./db";
 import { optimizationActions, actionFeedback, optimizationPlans } from "../shared/schema";
@@ -188,21 +192,51 @@ export class AIActionExecutor {
       // 2. Modify instance type
       // 3. Start the instance
       
-      const command = new ModifyInstanceAttributeCommand({
-        InstanceId: action.resourceId,
-        InstanceType: {
-          Value: action.proposedState.instanceType
-        }
-      });
+      // const command = new ModifyInstanceAttributeCommand({
+      //   InstanceId: action.resourceId,
+      //   InstanceType: {
+      //     Value: action.proposedState.instanceType
+      //   }
+      // });
 
-      await this.ec2Client.send(command);
+      // await this.ec2Client.send(command);
+
+      const instanceId = action.resourceId;
+      const newType = action.proposedState.instanceType;
+
+      console.log(`🔹 Stopping instance ${instanceId}...`);
+      await this.ec2Client.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
+
+      // Wait until instance is stopped
+      let stopped = false;
+      while (!stopped) {
+        const status = await this.ec2Client.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
+        const state = status.Reservations?.[0]?.Instances?.[0]?.State?.Name;
+        console.log(`   Current state: ${state}`);
+        if (state === "stopped") stopped = true;
+        else await new Promise((res) => setTimeout(res, 5000));
+      }
+
+      console.log(`🔹 Modifying instance type to ${newType}...`);
+      await this.ec2Client.send(
+        new ModifyInstanceAttributeCommand({
+          InstanceId: instanceId,
+          InstanceType: { Value: newType },
+        })
+      );
+
+      console.log(`🔹 Starting instance ${instanceId}...`);
+      await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [instanceId] }));
+
+      console.log(`✅ Instance ${instanceId} updated to type ${newType} and restarted.`);
+
 
       return {
         success: true,
-        message: `Successfully downsized EC2 instance ${action.resourceId}`,
+        message: `Successfully downsized EC2 instance ${instanceId}`,
         executionDetails: {
           action: 'ec2_downsize',
-          resourceId: action.resourceId,
+          resourceId: instanceId,
           oldType: action.currentState.instanceType,
           newType: action.proposedState.instanceType
         }

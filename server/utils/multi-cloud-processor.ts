@@ -38,6 +38,8 @@ export function processMultiCloudCosts(
     return getEmptyProcessedData();
   }
 
+  //console.log("filteredData ", filteredData);
+  // console.log("filteredData ", JSON.stringify(filteredData.slice(0,2000)));
   // Calculate total cost
   const totalCost = filteredData.reduce((sum, item) => sum + item.cost, 0);
 

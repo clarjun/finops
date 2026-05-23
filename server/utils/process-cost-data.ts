@@ -2,7 +2,7 @@ import type { AzureCostResponse, ProcessedCostData, AzureCostRow } from "@shared
 
 export function processAzureCostData(azureResponse: AzureCostResponse): ProcessedCostData {
   const rows: AzureCostRow[] = azureResponse.properties.rows;
-
+  
   // Aggregate data
   let totalCost = 0;
   const serviceMap = new Map<string, number>();

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import sys
 import json
 import numpy as np
@@ -8,137 +7,154 @@ from datetime import datetime
 
 def detect_anomalies(cost_data):
     """
-    Detect anomalies in Azure cost data using Isolation Forest algorithm
+    Enterprise-grade anomaly detection with:
+    - ML anomaly detection (Isolation Forest)
+    - Total delta calculation
+    - Service-level root cause analysis
+    - % contribution scoring
+    - Severity classification
+    - Confidence scoring
     """
+
     try:
-        # Convert daily trends to DataFrame
         df = pd.DataFrame(cost_data['dailyTrends'])
-        
+
         if len(df) < 3:
             return {
-                'anomalies': [],
-                'insights': ['Insufficient data for anomaly detection (need at least 3 days)'],
-                'recommendations': ['Collect more historical data for better analysis']
+                "anomalies": [],
+                "insights": ["Insufficient data (minimum 3 days required)"]
             }
-        
-        # Prepare features for anomaly detection
+
+        # ---------- PREPARE DATA ----------
+        df = df.sort_values("date").reset_index(drop=True)
         features = df[['cost']].values
-        
-        # Train Isolation Forest model
-        # contamination is the expected proportion of outliers
-        contamination = min(0.1, max(0.01, 2.0 / len(df)))  # adaptive contamination
-        iso_forest = IsolationForest(contamination=contamination, random_state=42)
-        predictions = iso_forest.fit_predict(features)
-        scores = iso_forest.score_samples(features)
-        
-        # Identify anomalies (prediction = -1 means anomaly)
+
+        contamination = min(0.1, max(0.02, 2.0 / len(df)))
+        model = IsolationForest(
+            contamination=contamination,
+            random_state=42
+        )
+
+        predictions = model.fit_predict(features)
+        scores = model.decision_function(features)  # confidence scores
+
         anomalies = []
-        for idx, (pred, score) in enumerate(zip(predictions, scores)):
+
+        for idx, pred in enumerate(predictions):
             if pred == -1:
+
                 row = df.iloc[idx]
-                cost = float(row['cost'])
-                date = row['date']
-                
-                # Determine severity based on anomaly score
-                # Lower scores (more negative) = more anomalous
-                if score < -0.5:
-                    severity = 'high'
-                elif score < -0.3:
-                    severity = 'medium'
-                else:
-                    severity = 'low'
-                
-                # Determine anomaly type
+                date = row["date"]
+                cost = float(row["cost"])
+                confidence_score = float(abs(scores[idx]))
+
+                anomaly_type = "unusual"
+                total_delta = 0
+                root_cause = None
+                service_delta = 0
+                contribution_percent = 0
+
                 if idx > 0:
-                    prev_cost = float(df.iloc[idx - 1]['cost'])
+                    prev_row = df.iloc[idx - 1]
+                    prev_cost = float(prev_row["cost"])
+                    total_delta = cost - prev_cost
+
+                    # ---- CLASSIFY SPIKE OR DROP ----
                     if cost > prev_cost * 1.5:
-                        anomaly_type = 'spike'
-                        description = f"Unusual cost spike detected: ${cost:.2f} (up from ${prev_cost:.2f})"
+                        anomaly_type = "spike"
                     elif cost < prev_cost * 0.5:
-                        anomaly_type = 'unusual'
-                        description = f"Unusual cost drop detected: ${cost:.2f} (down from ${prev_cost:.2f})"
-                    else:
-                        anomaly_type = 'trend_change'
-                        description = f"Anomalous spending pattern detected: ${cost:.2f}"
+                        anomaly_type = "drop"
+
+                    # ---- ROOT CAUSE (Improved Logic) ----
+                    today_services = row.get("services", {})
+                    prev_services = prev_row.get("services", {})
+
+                    all_services = set(today_services.keys()).union(prev_services.keys())
+
+                    max_delta = 0
+                    cause_service = None
+
+                    for service in all_services:
+                        today_value = today_services.get(service, 0)
+                        prev_value = prev_services.get(service, 0)
+                        delta = today_value - prev_value
+
+                        if abs(delta) > abs(max_delta):
+                            max_delta = delta
+                            cause_service = service
+
+                    if cause_service:
+                        root_cause = cause_service
+                        service_delta = round(max_delta, 2)
+
+                        if total_delta != 0:
+                            contribution_percent = round(
+                                (abs(service_delta) / abs(total_delta)) * 100,
+                                2
+                            )
+
+                # ---------- SEVERITY SCORING ----------
+                abs_delta = abs(total_delta)
+
+                if abs_delta > 1000:
+                    severity = "Critical"
+                elif abs_delta > 500:
+                    severity = "High"
+                elif abs_delta > 200:
+                    severity = "Medium"
                 else:
-                    anomaly_type = 'unusual'
-                    description = f"Anomalous spending detected: ${cost:.2f}"
-                
+                    severity = "Low"
+
+                # ---------- RECOMMENDATION ENGINE ----------
+                if anomaly_type == "spike":
+                    recommendation = f"Review scaling & workload increase for {root_cause}."
+                elif anomaly_type == "drop":
+                    recommendation = f"Verify if {root_cause} resources were stopped or resized."
+                else:
+                    recommendation = "Investigate unusual cost behavior."
+
                 anomalies.append({
-                    'date': date,
-                    'cost': cost,
-                    'type': anomaly_type,
-                    'severity': severity,
-                    'description': description
+                    "date": date,
+                    "type": anomaly_type,
+                    "cost": round(cost, 2),
+                    "totalDelta": round(total_delta, 2),
+                    "rootCause": root_cause,
+                    "serviceImpact": service_delta,
+                    "contributionPercent": contribution_percent,
+                    "severity": severity,
+                    "confidenceScore": round(confidence_score, 4),
+                    "recommendation": recommendation
                 })
-        
-        # Generate insights
+
+        # ---------- EXECUTIVE INSIGHTS ----------
+        costs = df["cost"].values
+        trend = float(np.polyfit(range(len(costs)), costs, 1)[0])
+
         insights = []
-        recommendations = []
-        
-        # Cost trend analysis
-        costs = df['cost'].values
-        mean_cost = float(np.mean(costs))
-        std_cost = float(np.std(costs))
-        trend = float(np.polyfit(range(len(costs)), costs, 1)[0])  # linear trend
-        
-        if trend > mean_cost * 0.05:
-            insights.append(f"Costs are trending upward at ${abs(trend):.2f} per day")
-            recommendations.append("Review new services or increased usage causing cost increases")
-        elif trend < -mean_cost * 0.05:
-            insights.append(f"Costs are trending downward at ${abs(trend):.2f} per day")
+
+        if trend > 0:
+            insights.append(f"Costs trending upward at ${abs(trend):.2f}/day")
+        elif trend < 0:
+            insights.append(f"Costs trending downward at ${abs(trend):.2f}/day")
         else:
-            insights.append("Costs are relatively stable")
-        
-        # Variability analysis
-        cv = (std_cost / mean_cost) if mean_cost > 0 else 0
-        if cv > 0.5:
-            insights.append("High cost variability detected across days")
-            recommendations.append("Investigate services with fluctuating usage patterns")
-        elif cv < 0.2:
-            insights.append("Low cost variability - spending is consistent")
-        
-        # Peak day analysis
-        max_cost_idx = int(np.argmax(costs))
-        max_cost_date = df.iloc[max_cost_idx]['date']
-        max_cost = float(costs[max_cost_idx])
-        insights.append(f"Peak spending of ${max_cost:.2f} occurred on {max_cost_date}")
-        
-        # Service diversity
-        service_count = len(cost_data.get('services', []))
-        if service_count > 20:
-            insights.append(f"High service diversity with {service_count} active services")
-            recommendations.append("Consider consolidating or optimizing service usage")
-        elif service_count < 5:
-            insights.append(f"Low service diversity with only {service_count} services")
-        
-        # Top service analysis
-        top_service = cost_data.get('topService', {})
-        if top_service and top_service.get('cost', 0) > mean_cost * 0.5:
-            insights.append(f"{top_service['name']} dominates your spending")
-            recommendations.append(f"Focus optimization efforts on {top_service['name']}")
-        
-        # Add anomaly summary
-        if len(anomalies) > 0:
-            insights.append(f"Detected {len(anomalies)} spending anomalies requiring attention")
-            high_severity = sum(1 for a in anomalies if a['severity'] == 'high')
-            if high_severity > 0:
-                recommendations.append(f"Investigate {high_severity} high-severity anomalies immediately")
+            insights.append("Costs stable")
+
+        if anomalies:
+            insights.append(f"{len(anomalies)} anomalies detected")
         else:
-            insights.append("No significant anomalies detected in spending patterns")
-        
+            insights.append("No anomalies detected")
+
         return {
-            'anomalies': anomalies,
-            'insights': insights,
-            'recommendations': recommendations
+            "anomalies": anomalies,
+            "insights": insights
         }
-    
+
     except Exception as e:
         return {
-            'anomalies': [],
-            'insights': [f'Error during anomaly detection: {str(e)}'],
-            'recommendations': ['Check data format and try again']
+            "anomalies": [],
+            "insights": [f"Error during anomaly detection: {str(e)}"]
         }
+
 
 if __name__ == '__main__':
     try:

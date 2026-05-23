@@ -2,10 +2,6 @@
 
 An AI-powered Azure cost analysis dashboard with interactive visualizations, natural language querying, ML-based anomaly detection, and cost forecasting.
 
-![Dashboard Preview](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)
-![Node.js](https://img.shields.io/badge/Node.js-v18+-blue)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)
-![React](https://img.shields.io/badge/React-18.3-blue)
 
 ## ✨ Features
 
@@ -21,14 +17,10 @@ An AI-powered Azure cost analysis dashboard with interactive visualizations, nat
 
 ## 🚀 Quick Start
 
-### Running on Replit
-This project is ready to run on Replit. Simply click "Run" to start the application.
-
 ### Running Locally
 Want to run this on your local machine? See the **[LOCAL_SETUP.md](LOCAL_SETUP.md)** guide for complete instructions.
 
 Quick steps:
-1. Download the project (zip or git clone)
 2. Install Node.js, Python, and PostgreSQL
 3. Copy `.env.example` to `.env` and configure
 4. Run `npm install`
@@ -65,7 +57,6 @@ Quick steps:
 ## 📚 Documentation
 
 - **[LOCAL_SETUP.md](LOCAL_SETUP.md)** - Complete local development setup guide
-- **[replit.md](replit.md)** - Project architecture and system design
 
 ## 🎨 Screenshots
 
@@ -109,10 +100,6 @@ npm run db:push    # Push database schema
 npm run check      # TypeScript type checking
 ```
 
-## 🌐 Deployment
-
-### Replit (Recommended)
-Click the "Publish" button in Replit for automatic deployment with SSL and custom domains.
 
 ### Local Production
 1. Set `NODE_ENV=production`
@@ -120,32 +107,3 @@ Click the "Publish" button in Replit for automatic deployment with SSL and custo
 3. Run `npm run build`
 4. Run `npm run start`
 
-## 🤝 Contributing
-
-This is a production-ready application. For local development:
-1. Follow the [LOCAL_SETUP.md](LOCAL_SETUP.md) guide
-2. Make your changes
-3. Test thoroughly
-4. Submit a pull request
-
-## 📄 License
-
-MIT License - feel free to use this project for your own purposes.
-
-## 🔗 Links
-
-- [Replit](https://replit.com)
-- [Documentation](./LOCAL_SETUP.md)
-- [OpenAI API](https://platform.openai.com)
-- [Neon Database](https://neon.tech)
-
-## 💡 Tips
-
-- Use the AI query feature to ask questions about your costs in natural language
-- Set up email alerts to monitor spending automatically
-- Export data to CSV for further analysis
-- Switch chart types to find the best visualization for your data
-
----
-
-Built with ❤️ using React, TypeScript, and OpenAI

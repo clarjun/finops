@@ -34,6 +34,8 @@ class ResendProvider implements EmailProvider {
 
   async send(message: EmailMessage): Promise<boolean> {
     try {
+      const fromEmail = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
+      
       const response = await fetch(this.apiUrl, {
         method: 'POST',
         headers: {
@@ -41,7 +43,7 @@ class ResendProvider implements EmailProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          from: message.from || 'Azure Cost Dashboard <noreply@resend.dev>',
+          from: message.from || `FinOps Dashboard <${fromEmail}>`,
           to: Array.isArray(message.to) ? message.to : [message.to],
           subject: message.subject,
           html: message.html,
@@ -55,6 +57,8 @@ class ResendProvider implements EmailProvider {
         return false;
       }
 
+      const result = await response.json();
+      console.log('Resend email sent successfully:', result);
       return true;
     } catch (error) {
       console.error('Error sending email via Resend:', error);
@@ -166,21 +170,25 @@ export class EmailService {
     currentCost: number;
     threshold: number;
     period: string;
+    percentage?: string;
+    thresholdPercentage?: number;
   }): Promise<boolean> {
     const html = `
-      <h2>⚠️ Azure Cost Alert</h2>
-      <p>Your Azure spending has exceeded the threshold for rule: <strong>${params.ruleName}</strong></p>
-      <p><strong>Current Cost:</strong> $${params.currentCost.toFixed(2)}</p>
-      <p><strong>Threshold:</strong> $${params.threshold.toFixed(2)}</p>
+      <h2>⚠️ Budget Alert</h2>
+      <p>Your cloud spending has ${params.thresholdPercentage ? `reached ${params.thresholdPercentage}% threshold` : 'exceeded the budget'} for: <strong>${params.ruleName}</strong></p>
+      <p><strong>Current Cost:</strong> ${params.currentCost.toFixed(2)}</p>
+      <p><strong>Budget Amount:</strong> ${params.threshold.toFixed(2)}</p>
+      ${params.percentage ? `<p><strong>Usage:</strong> ${params.percentage}%</p>` : ''}
+      ${params.thresholdPercentage ? `<p><strong>Threshold:</strong> ${params.thresholdPercentage}%</p>` : ''}
       <p><strong>Period:</strong> ${params.period}</p>
-      <p>Please review your Azure spending in the cost dashboard.</p>
+      <p>Please review your cloud spending in the cost dashboard.</p>
     `;
 
     return await this.sendEmail({
       to: params.to,
       subject: `Cost Alert: ${params.ruleName}`,
       html,
-      text: `Azure Cost Alert - ${params.ruleName}: Current cost $${params.currentCost.toFixed(2)} exceeds threshold $${params.threshold.toFixed(2)}`,
+      text: `Budget Alert - ${params.ruleName}: Current cost ${params.currentCost.toFixed(2)} ${params.thresholdPercentage ? `reached ${params.thresholdPercentage}% threshold` : `exceeds budget ${params.threshold.toFixed(2)}`}`,
     });
   }
 
@@ -193,7 +201,7 @@ export class EmailService {
   }): Promise<boolean> {
     const anomalyList = params.anomalies
       .slice(0, 5)
-      .map(a => `<li>${a.date}: $${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)</li>`)
+      .map(a => `<li>${a.date}: ${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)</li>`)
       .join('');
 
     const html = `
@@ -232,9 +240,9 @@ export class EmailService {
       
       <h3>Summary</h3>
       <ul>
-        <li><strong>Total Cost:</strong> $${params.summary.totalCost.toFixed(2)}</li>
-        <li><strong>Average Daily Cost:</strong> $${params.summary.avgDailyCost.toFixed(2)}</li>
-        <li><strong>Top Service:</strong> ${params.summary.topService} ($${params.summary.topServiceCost.toFixed(2)})</li>
+        <li><strong>Total Cost:</strong> ${params.summary.totalCost.toFixed(2)}</li>
+        <li><strong>Average Daily Cost:</strong> ${params.summary.avgDailyCost.toFixed(2)}</li>
+        <li><strong>Top Service:</strong> ${params.summary.topService} (${params.summary.topServiceCost.toFixed(2)})</li>
       </ul>
       
       <p>View the full report in your cost dashboard for detailed analytics and insights.</p>
@@ -245,7 +253,7 @@ export class EmailService {
       to: params.to,
       subject: `Azure Cost Report - ${params.reportType}`,
       html,
-      text: `Azure Cost Report - Total: $${params.summary.totalCost.toFixed(2)}, Avg Daily: $${params.summary.avgDailyCost.toFixed(2)}`,
+      text: `Azure Cost Report - Total: ${params.summary.totalCost.toFixed(2)}, Avg Daily: ${params.summary.avgDailyCost.toFixed(2)}`,
     });
   }
 

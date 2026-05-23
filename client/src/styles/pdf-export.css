@@ -1,0 +1,51 @@
+/* PDF Export Mode Styles */
+/* These styles are applied when generating PDF to show full content */
+
+.pdf-export-mode .max-h-\[400px\],
+.pdf-export-mode .max-h-\[200px\] {
+  max-height: none !important;
+}
+
+.pdf-export-mode .overflow-y-auto,
+.pdf-export-mode .overflow-x-auto {
+  overflow: visible !important;
+}
+
+/* Heatmap full width in PDF - make it span full width on new row */
+.pdf-export-mode .pdf-layout-section {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.pdf-export-mode .pdf-layout-section > * {
+  width: 100% !important;
+  max-width: 100% !important;
+  margin-bottom: 1.5rem;
+}
+
+/* Make heatmap table visible without horizontal scroll */
+.pdf-export-mode .overflow-x-auto {
+  overflow: visible !important;
+}
+
+.pdf-export-mode .overflow-x-auto table {
+  width: 100% !important;
+}
+
+/* Hide scrollbars in PDF */
+.pdf-export-mode ::-webkit-scrollbar {
+  display: none !important;
+}
+
+.pdf-export-mode {
+  scrollbar-width: none !important;
+}
+
+/* Ensure all scrollable content is fully visible */
+.pdf-export-mode [class*="scrollbar-"] {
+  scrollbar-width: none !important;
+}
+
+.pdf-export-mode [class*="scrollbar-"]::-webkit-scrollbar {
+  display: none !important;
+}

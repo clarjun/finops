@@ -167,7 +167,7 @@ export class DbStorage {
   async getEnabledAlertRules(): Promise<schema.AlertRule[]> {
     return await db.select()
       .from(schema.alertRules)
-      .where(eq(schema.alertRules.isEnabled, true));
+      .where(eq(schema.alertRules.isEnabled, 1));
   }
   
   async updateAlertRule(id: number, updates: Partial<schema.InsertAlertRule>): Promise<schema.AlertRule | undefined> {
@@ -306,12 +306,20 @@ export class DbStorage {
   // ==================== MULTI-CLOUD ACCOUNTS ====================
   
   async createCloudAccount(account: schema.InsertCloudAccount): Promise<schema.CloudAccount> {
+    console.log(`[Storage] Creating cloud account for provider: ${account.provider}`);
+    console.log(`[Storage] Credentials before encryption:`, Object.keys(account.credentials || {}));
+    
     // Encrypt credentials before storage
-    const encryptedCredentials = encrypt(JSON.stringify(account.credentials));
+    const credentialsJson = JSON.stringify(account.credentials);
+    const encryptedCredentials = encrypt(credentialsJson);
+    
+    console.log(`[Storage] Credentials encrypted, length: ${encryptedCredentials.length}`);
     
     const [created] = await db.insert(schema.cloudAccounts)
       .values({ ...account, credentials: encryptedCredentials as any })
       .returning();
+    
+    console.log(`[Storage] Cloud account created with ID: ${created.id}`);
     
     return created;
   }
@@ -564,6 +572,27 @@ export class DbStorage {
       .returning();
     
     return updated;
+  }
+
+  // ==================== REPORT CACHE ====================
+
+  async getReportCache(cacheKey: string): Promise<schema.ReportCache | undefined> {
+    return await db.query.reportCache.findFirst({
+      where: eq(schema.reportCache.cacheKey, cacheKey),
+    });
+  }
+
+  async upsertReportCache(entry: schema.InsertReportCache): Promise<void> {
+    await db.insert(schema.reportCache)
+      .values(entry)
+      .onConflictDoUpdate({
+        target: schema.reportCache.cacheKey,
+        set: {
+          reportData: entry.reportData,
+          fetchedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
   }
 }
 

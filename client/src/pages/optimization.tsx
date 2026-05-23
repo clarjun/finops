@@ -54,6 +54,31 @@ export default function OptimizationPage() {
     },
   });
 
+  const generateRecommendationsMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/optimization/recommendations/generate', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) throw new Error('Failed to generate recommendations');
+      return await response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/optimization/recommendations', selectedProvider] });
+      toast({
+        title: "Recommendations generated",
+        description: "New optimization recommendations have been generated successfully",
+      });
+    },
+    onError: () => {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Failed to generate recommendations",
+      });
+    },
+  });
+
   const totalSavings = recommendations.reduce((sum, rec) => sum + parseFloat(rec.potentialSavings.toString()), 0);
   const criticalCount = recommendations.filter(r => r.priority === 'critical').length;
   const highCount = recommendations.filter(r => r.priority === 'high').length;
@@ -97,17 +122,25 @@ export default function OptimizationPage() {
             ML-powered recommendations to reduce cloud spending
           </p>
         </div>
-        <Select value={selectedProvider} onValueChange={setSelectedProvider}>
-          <SelectTrigger className="w-48" data-testid="select-provider-filter">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Providers</SelectItem>
-            <SelectItem value="aws">AWS Only</SelectItem>
-            <SelectItem value="gcp">GCP Only</SelectItem>
-            <SelectItem value="azure">Azure Only</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex gap-2">
+          <Select value={selectedProvider} onValueChange={setSelectedProvider}>
+            <SelectTrigger className="w-48" data-testid="select-provider-filter">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Providers</SelectItem>
+              <SelectItem value="aws">AWS Only</SelectItem>
+              <SelectItem value="gcp">GCP Only</SelectItem>
+              <SelectItem value="azure">Azure Only</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button 
+            onClick={() => generateRecommendationsMutation.mutate()}
+            disabled={generateRecommendationsMutation.isPending}
+          >
+            {generateRecommendationsMutation.isPending ? 'Generating...' : 'Generate Recommendations'}
+          </Button>
+        </div>
       </div>
 
       {/* Summary Cards */}

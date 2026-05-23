@@ -67,9 +67,9 @@ gcloud iam service-accounts keys create finops-dashboard-key.json \
 
 This creates a JSON file `finops-dashboard-key.json` with your credentials.
 
-## Step 3: Configure Replit Environment Variables
+## Step 3: Configure Environment Variables
 
-Add the following environment variables to your Replit project:
+Add the following environment variables to your project:
 
 1. **GCP_SERVICE_ACCOUNT_KEY**: The entire contents of your `finops-dashboard-key.json` file as a JSON string
    ```json
@@ -161,7 +161,6 @@ The dashboard queries this data and groups it by date, service, and region for c
 1. **Rotate service account keys** regularly (every 90 days)
 2. **Use least-privilege permissions** - only grant necessary roles
 3. **Never commit** service account keys to version control
-4. **Store keys securely** in Replit Secrets
 5. **Monitor access** using Cloud Audit Logs
 
 ## Cost Considerations

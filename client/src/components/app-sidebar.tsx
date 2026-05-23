@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Bell, Lightbulb, Brain, Settings } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   Sidebar,
@@ -18,9 +18,19 @@ const menuItems = [
     icon: LayoutDashboard,
   },
   {
+    title: "Reports",
+    url: "/reports",
+    icon: FileText,
+  },
+  {
     title: "AI Query",
     url: "/ai-query",
     icon: MessageSquare,
+  },
+  {
+    title: "Cost Estimator",
+    url: "/cost-estimator",
+    icon: Calculator,
   },
   {
     title: "Forecast",
@@ -32,11 +42,12 @@ const menuItems = [
     url: "/budgets",
     icon: DollarSign,
   },
-  {
-    title: "Alerts",
-    url: "/alerts",
-    icon: Bell,
-  },
+  // Alerts menu hidden - functionality consolidated into Budgets
+  // {
+  //   title: "Alerts",
+  //   url: "/alerts",
+  //   icon: Bell,
+  // },
   {
     title: "Optimization",
     url: "/optimization",
@@ -48,9 +59,9 @@ const menuItems = [
     icon: Brain,
   },
   {
-    title: "Settings",
-    url: "/settings",
-    icon: Settings,
+    title: "Configuration",
+    url: "/configuration",
+    icon: Cloud,
   },
 ];
 
@@ -62,9 +73,22 @@ export function AppSidebar() {
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel className="text-xs font-semibold tracking-wide uppercase text-muted-foreground px-3">
-            Multi-Cloud FinOps
+            {/* Multi-Cloud FinOps */}
+            <div style={{ textAlign: "center", paddingTop: "100px", paddingLeft:"20px" }}>
+              <img
+                src="assets/logo.png" // ✅ Direct path from root
+                alt="Company Logo"
+                style={{
+                  width: "150px",
+                  height: "auto",
+                  borderRadius: "8px",
+                  boxShadow: "0 0 10px rgba(0,0,0,0.1)",
+                }}
+              />
+              {/* <h1>Welcome to Multi Cloud Visualizer</h1> */}
+            </div>
           </SidebarGroupLabel>
-          <SidebarGroupContent className="mt-4">
+          <SidebarGroupContent className="mt-28">
             <SidebarMenu>
               {menuItems.map((item) => {
                 const isActive = location === item.url;

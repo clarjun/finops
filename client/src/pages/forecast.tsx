@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from "recharts";
-import { TrendingUp, Loader2, AlertTriangle, CheckCircle2, DollarSign, Cloud } from "lucide-react";
+import { TrendingUp, Loader2, AlertTriangle, CheckCircle2, DollarSign, Cloud, CloudCog, Database } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -48,7 +48,7 @@ export default function Forecast() {
   const { toast } = useToast();
   const [forecastDays, setForecastDays] = useState(30);
   const [selectedProvider, setSelectedProvider] = useState<CloudProvider>("all");
-  
+
   // Store forecast data per provider
   const [providerForecasts, setProviderForecasts] = useState<Record<CloudProvider, ForecastResult | null>>({
     all: null,
@@ -60,7 +60,7 @@ export default function Forecast() {
   // Fetch forecast mutation
   const forecastMutation = useMutation({
     mutationFn: async ({ days, provider }: { days: number; provider: CloudProvider }) => {
-      return apiRequest<ForecastResult>("POST", "/api/forecast", { 
+      return apiRequest<ForecastResult>("POST", "/api/forecast", {
         forecastDays: days,
         provider: provider === "all" ? undefined : provider
       });
@@ -71,7 +71,7 @@ export default function Forecast() {
         ...prev,
         [variables.provider]: data
       }));
-      
+
       toast({
         title: "Forecast generated",
         description: "Cost forecast has been successfully generated using ML algorithms",
@@ -274,8 +274,8 @@ export default function Forecast() {
                 <AreaChart data={chartData}>
                   <defs>
                     <linearGradient id="colorPredicted" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
+                      <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -399,19 +399,19 @@ export default function Forecast() {
       <Tabs value={selectedProvider} onValueChange={(value) => setSelectedProvider(value as CloudProvider)} className="space-y-6">
         <TabsList className="grid w-full grid-cols-4" data-testid="tabs-provider-selector">
           <TabsTrigger value="all" data-testid="tab-all" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <CloudCog className="h-4 w-4 text-purple-600 dark:text-purple-400" />
             All Clouds
           </TabsTrigger>
           <TabsTrigger value="aws" data-testid="tab-aws" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <Database className="h-4 w-4 text-orange-600 dark:text-orange-400" />
             AWS
           </TabsTrigger>
           <TabsTrigger value="gcp" data-testid="tab-gcp" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <CloudCog className="h-4 w-4 text-green-600 dark:text-green-400" />
             GCP
           </TabsTrigger>
           <TabsTrigger value="azure" data-testid="tab-azure" className="gap-2">
-            <Cloud className="h-4 w-4" />
+            <Cloud className="h-4 w-4 text-primary" />
             Azure
           </TabsTrigger>
         </TabsList>

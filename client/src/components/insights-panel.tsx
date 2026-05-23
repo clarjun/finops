@@ -13,16 +13,36 @@ interface InsightsPanelProps {
   serviceCount?: number;
   anomalies?: Array<{
     date: string;
-    cost: number;
-    service?: string;
     type: string;
-    severity: 'low' | 'medium' | 'high';
-    description: string;
+    cost: number;
+
+    totalDelta: number;
+    rootCause: string;
+    serviceImpact: number;
+    contributionPercent: number;
+
+    severity: 'Low' | 'Medium' | 'High' | 'Critical';
+    confidenceScore: number;
+
+    recommendation: string;
   }>;
+
   loading?: boolean;
 }
 
 export function InsightsPanel({ peakDay, topServicePercentage, serviceCount, anomalies = [], loading }: InsightsPanelProps) {
+  console.log("anomalies ", anomalies)
+
+  const now = new Date();
+
+  const currentMonthAnomalies = anomalies.filter((anomaly) => {
+    const anomalyDate = new Date(anomaly.date);
+    return (
+      anomalyDate.getMonth() === now.getMonth() &&
+      anomalyDate.getFullYear() === now.getFullYear()
+    );
+  });
+
   if (loading) {
     return (
       <Card>
@@ -46,6 +66,21 @@ export function InsightsPanel({ peakDay, topServicePercentage, serviceCount, ano
       default: return 'secondary';
     }
   };
+
+  const getSeverityBorder = (severity: string) => {
+  switch (severity) {
+    case 'Critical':
+      return 'border-red-500';
+    case 'High':
+      return 'border-orange-500';
+    case 'Medium':
+      return 'border-yellow-500';
+    case 'Low':
+      return 'border-green-500';
+    default:
+      return 'border-gray-300';
+  }
+};
 
   return (
     <Card>
@@ -90,29 +125,85 @@ export function InsightsPanel({ peakDay, topServicePercentage, serviceCount, ano
           </div>
         )}
 
-        {anomalies.length > 0 && (
-          <div className="space-y-2">
-            <p className="text-sm font-semibold flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-chart-3" />
-              Anomalies Detected
-            </p>
-            {anomalies.slice(0, 3).map((anomaly, index) => (
-              <Alert key={index} className="py-3" data-testid={`alert-anomaly-${index}`}>
-                <AlertDescription className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{anomaly.description}</p>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {anomaly.date} {anomaly.service && `• ${anomaly.service}`}
-                    </p>
-                  </div>
-                  <Badge variant={getSeverityColor(anomaly.severity)} className="shrink-0">
-                    {anomaly.severity}
-                  </Badge>
-                </AlertDescription>
-              </Alert>
-            ))}
-          </div>
-        )}
+        {currentMonthAnomalies?.slice(0, 3).map((anomaly, index) => {
+            const confidencePercent = anomaly.confidenceScore
+              ? (anomaly.confidenceScore * 100).toFixed(0)
+              : "0";
+
+            const severityColor = getSeverityBorder(anomaly.severity);
+
+            const confidenceLabel =
+              Number(confidencePercent) >= 60
+                ? "High"
+                : Number(confidencePercent) >= 30
+                ? "Moderate"
+                : "Low";
+
+            return (
+              <div
+                key={index}
+                className={`border-l-4 ${severityColor} bg-muted/50 shadow-sm rounded-md p-5 space-y-4`}
+              >
+                {/* Header */}
+                <div>
+                  <p className="text-sm font-bold uppercase tracking-wide">
+                    🚨 {anomaly.severity} Severity — {anomaly.type.toUpperCase()}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {new Date(anomaly.date).toLocaleDateString()}
+                  </p>
+                </div>
+
+                {/* Financial Impact */}
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Financial Impact
+                  </p>
+                  <p className="text-xl font-semibold mt-1">
+                    {anomaly.totalDelta < 0 ? "↓" : "↑"} $
+                    {Math.abs(anomaly.totalDelta).toFixed(2)}{" "}
+                    <span className="text-sm font-normal text-muted-foreground">
+                      (vs previous day)
+                    </span>
+                  </p>
+                </div>
+
+                {/* Primary Driver */}
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Primary Driver
+                  </p>
+                  <p className="font-medium mt-1">{anomaly.rootCause || "N/A"}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {anomaly.serviceImpact < 0 ? "↓" : "↑"} $
+                    {Math.abs(anomaly.serviceImpact || 0).toFixed(2)} (
+                    {anomaly.contributionPercent || 0}% of total change)
+                  </p>
+                </div>
+
+                {/* AI Assessment */}
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                    AI Assessment
+                  </p>
+                  <p className="text-sm mt-1">
+                    {confidenceLabel} anomaly confidence ({confidencePercent}%)
+                  </p>
+                </div>
+
+                {/* Recommendation */}
+                <div className="bg-muted/50 p-3 rounded-md">
+                  <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                    Recommendation
+                  </p>
+                  <p className="text-sm mt-1">{anomaly.recommendation}</p>
+                </div>
+              </div>
+            );
+          })}
+
+
+
       </CardContent>
     </Card>
   );
