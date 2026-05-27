@@ -93,8 +93,15 @@ jobs:
 
       - name: Register providers
         run: |
-          az provider register -n Microsoft.App --wait
-          az provider register -n Microsoft.OperationalInsights --wait
+          for provider in Microsoft.App Microsoft.OperationalInsights; do
+            state=$(az provider show -n $provider --query "registrationState" -o tsv 2>/dev/null)
+            if [ "$state" != "Registered" ]; then
+              echo "Registering $provider..."
+              az provider register -n $provider --wait
+            else
+              echo "$provider already registered, skipping."
+            fi
+          done
 
       - name: Create Log Analytics workspace (if not exists)
         run: |
