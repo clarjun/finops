@@ -21,8 +21,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Only copy what's needed to run
-COPY package*.json ./
-RUN npm ci --omit=dev --ignore-scripts
+# COPY package*.json ./
+# RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
 
