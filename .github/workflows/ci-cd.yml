@@ -88,18 +88,87 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy to Azure Container Apps
-        uses: azure/container-apps-deploy-action@v1
-        with:
-          acrName: ${{ secrets.ACR_NAME }}
-          containerAppName: ${{ secrets.CONTAINER_APP_NAME }}
-          resourceGroup: ${{ secrets.RESOURCE_GROUP }}
-          imageToDeploy: ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          environmentVariables: |
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            SESSION_SECRET=${{ secrets.SESSION_SECRET }}
-            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
-            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
-            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
-            NODE_ENV=production
-            PORT=5173
+      - name: Install containerapp CLI extension
+        run: az extension add --name containerapp --upgrade -y
+
+      - name: Register providers
+        run: |
+          az provider register -n Microsoft.App --wait
+          az provider register -n Microsoft.OperationalInsights --wait
+
+      - name: Create Log Analytics workspace (if not exists)
+        run: |
+          az monitor log-analytics workspace create \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --workspace-name finops-logs \
+            --tags creator=arjun.rathod@cirruslabs.io \
+            --only-show-errors || true
+
+      - name: Create Container Apps environment (if not exists)
+        run: |
+          WORKSPACE_ID=$(az monitor log-analytics workspace show \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --workspace-name finops-logs \
+            --query customerId -o tsv)
+          WORKSPACE_KEY=$(az monitor log-analytics workspace get-shared-keys \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --workspace-name finops-logs \
+            --query primarySharedKey -o tsv)
+          az containerapp env create \
+            --name finops-env \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --location eastus \
+            --logs-workspace-id "$WORKSPACE_ID" \
+            --logs-workspace-key "$WORKSPACE_KEY" \
+            --tags creator=arjun.rathod@cirruslabs.io \
+            --only-show-errors || true
+
+      - name: Create or update Container App
+        run: |
+          IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          ENV_VARS="DATABASE_URL=${{ secrets.DATABASE_URL }} \
+            SESSION_SECRET=${{ secrets.SESSION_SECRET }} \
+            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
+            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }} \
+            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }} \
+            NODE_ENV=production \
+            PORT=5173"
+
+          # Check if app exists
+          if az containerapp show \
+              --name ${{ secrets.CONTAINER_APP_NAME }} \
+              --resource-group ${{ secrets.RESOURCE_GROUP }} \
+              --only-show-errors &>/dev/null; then
+            echo "Updating existing Container App..."
+            az containerapp update \
+              --name ${{ secrets.CONTAINER_APP_NAME }} \
+              --resource-group ${{ secrets.RESOURCE_GROUP }} \
+              --image "$IMAGE" \
+              --set-env-vars $ENV_VARS \
+              --only-show-errors
+          else
+            echo "Creating new Container App..."
+            az containerapp create \
+              --name ${{ secrets.CONTAINER_APP_NAME }} \
+              --resource-group ${{ secrets.RESOURCE_GROUP }} \
+              --environment finops-env \
+              --image "$IMAGE" \
+              --registry-server ${{ secrets.ACR_LOGIN_SERVER }} \
+              --registry-username ${{ secrets.ACR_USERNAME }} \
+              --registry-password ${{ secrets.ACR_PASSWORD }} \
+              --target-port 5173 \
+              --ingress external \
+              --min-replicas 1 \
+              --max-replicas 3 \
+              --env-vars $ENV_VARS \
+              --tags creator=arjun.rathod@cirruslabs.io \
+              --only-show-errors
+          fi
+
+      - name: Get app URL
+        run: |
+          URL=$(az containerapp show \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "✅ App deployed at: https://$URL"
