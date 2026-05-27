@@ -9,6 +9,7 @@ on:
 env:
   REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
   IMAGE_NAME: finops-dashboard
+  # ACR name is set via GitHub secret ACR_NAME
 
 jobs:
   # ── Job 1: Build & Test ──────────────────────────────────────────────────────
