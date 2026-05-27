@@ -8,6 +8,7 @@ let currentCredentials: any = null;
 
 export async function initializeAWSClient() {
   // Get credentials from database or environment
+  // test
   const accountConfig = await getProviderCredentials('aws');
   
   if (!accountConfig) {
