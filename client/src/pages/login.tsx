@@ -1,131 +1,91 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState } from "react";
+import { useLogin } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Building2, Shield, TrendingUp, Cloud, AlertTriangle } from "lucide-react";
-import { useAuth } from "@/hooks/use-auth";
-import { useMsal, useAccount } from "@azure/msal-react";
-import { loginRequest } from "@/lib/msalConfig";
-import { useLocation } from "wouter";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Cloud, Loader2, AlertTriangle } from "lucide-react";
 
 export default function Login() {
-  const { isLoading } = useAuth();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const login = useLogin();
 
-  const clientId = import.meta.env.VITE_AZURE_CLIENT_ID || "";
-  const tenantId = import.meta.env.VITE_AZURE_TENANT_ID || "";
-  const redirectUri = import.meta.env.VITE_AZURE_REDIRECT_URI || window.location.origin;
-  const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const [_, navigate] = useLocation();
-
-  const { instance, accounts } = useMsal();
-  const account = accounts[0];
-
-  const handleLogin = async () => {
-    try {
-        const response = await instance.loginPopup(loginRequest);
-        if (response && response.account) {
-        // Store the active account
-        instance.setActiveAccount(response.account);
-
-        // Optional: Refresh /auth/status query to update auth state
-        //refetch();
-
-        // Navigate to dashboard
-        navigate("/");
-        }
-    } catch (err) {
-        console.error("Login failed:", err);
-    }
-    };
-
-  if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-center">
-          <div className="h-12 w-12 mx-auto mb-4 border-4 border-primary border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    );
-  }
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    login.mutate({ username, password });
+  };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-white to-cyan-50 dark:from-background dark:via-background dark:to-background p-4">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="flex justify-center mb-4">
-            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-600 shadow-lg">
-              <TrendingUp className="h-8 w-8 text-white" />
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 p-4">
+      <div className="w-full max-w-md space-y-6">
+        {/* Logo / Brand */}
+        <div className="text-center space-y-2">
+          <div className="flex justify-center">
+            <div className="h-14 w-14 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg">
+              <Cloud className="h-8 w-8 text-white" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold tracking-tight mb-2">
-            Azure Cost Analysis
-          </h1>
-          <p className="text-muted-foreground">
-            AI-powered insights for your cloud spending
-          </p>
+          <h1 className="text-2xl font-bold text-white">CloudWise FinOps</h1>
+          <p className="text-slate-400 text-sm">Multi-Cloud Cost Intelligence Platform</p>
         </div>
 
-        <Card className="shadow-xl border-2">
-          <CardHeader className="space-y-1 pb-4">
-            <CardTitle className="text-2xl text-center">Welcome Back</CardTitle>
-            <CardDescription className="text-center">
-              Sign in with your Microsoft account to continue
+        <Card className="border-slate-700 bg-slate-800/60 backdrop-blur shadow-2xl">
+          <CardHeader className="pb-4">
+            <CardTitle className="text-white text-lg">Sign in</CardTitle>
+            <CardDescription className="text-slate-400">
+              Enter your credentials to access the dashboard
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
-            {/* {!isConfigured && (
-              <Alert variant="destructive">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Configuration Required</AlertTitle>
-                <AlertDescription>
-                  Azure AD authentication is not configured. Please set up Azure AD credentials in the environment variables.
-                  See AZURE_AD_SETUP.md for instructions.
-                </AlertDescription>
-              </Alert>
-            )} */}
-
-            <Button
-              onClick={handleLogin}
-              size="lg"
-              className="w-full bg-[#0078d4] hover:bg-[#106ebe] text-white"
-              data-testid="button-azure-login"
-            //   disabled={!isConfigured}
-            >
-              <Cloud className="mr-2 h-5 w-5" />
-              {/* {isConfigured ? 'Sign in with Microsoft' : 'Authentication Not Configured'} */}
-              Sign in with Microsoft
-            </Button>
-
-            <div className="space-y-4 pt-4 border-t">
-              <div className="flex items-start gap-3 text-sm">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-100 dark:bg-blue-900/20">
-                  <Shield className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <p className="font-medium">Secure Authentication</p>
-                  <p className="text-muted-foreground">
-                    OAuth 2.0 with Azure Active Directory
-                  </p>
-                </div>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="username" className="text-slate-300">Username</Label>
+                <Input
+                  id="username"
+                  type="text"
+                  autoComplete="username"
+                  placeholder="Enter username"
+                  value={username}
+                  onChange={e => setUsername(e.target.value)}
+                  className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-500 focus:border-blue-500"
+                  required
+                />
               </div>
-              <div className="flex items-start gap-3 text-sm">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-green-100 dark:bg-green-900/20">
-                  <Building2 className="h-4 w-4 text-green-600 dark:text-green-400" />
-                </div>
-                <div>
-                  <p className="font-medium">Enterprise Ready</p>
-                  <p className="text-muted-foreground">
-                    Single Sign-On for your organization
-                  </p>
-                </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="password" className="text-slate-300">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  placeholder="Enter password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  className="bg-slate-700 border-slate-600 text-white placeholder:text-slate-500 focus:border-blue-500"
+                  required
+                />
               </div>
-            </div>
+
+              {login.isError && (
+                <Alert variant="destructive" className="border-red-800 bg-red-950/50">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>{(login.error as Error).message}</AlertDescription>
+                </Alert>
+              )}
+
+              <Button
+                type="submit"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                disabled={login.isPending}
+              >
+                {login.isPending ? (
+                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Signing in...</>
+                ) : 'Sign in'}
+              </Button>
+            </form>
           </CardContent>
         </Card>
-
-        <p className="text-center text-xs text-muted-foreground mt-6">
-          By signing in, you agree to our Terms of Service and Privacy Policy
-        </p>
       </div>
     </div>
   );

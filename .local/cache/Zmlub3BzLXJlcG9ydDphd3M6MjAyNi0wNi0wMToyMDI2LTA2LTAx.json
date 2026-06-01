@@ -1,0 +1,365 @@
+{
+  "key": "finops-report:aws:2026-06-01:2026-06-01",
+  "data": {
+    "provider": "aws",
+    "generatedAt": "2026-06-01T07:02:43.561Z",
+    "dateRange": {
+      "start": "2026-06-01",
+      "end": "2026-06-01"
+    },
+    "spendOverview": {
+      "totalSpendMTD": 0,
+      "forecastMonthEnd": 8923.44772792658,
+      "budget": 152.14,
+      "potentialSavings": 955,
+      "budgetUtilization": 0,
+      "daysIntoMonth": 1,
+      "daysInMonth": 30
+    },
+    "topCostDrivers": [],
+    "expensiveResources": [],
+    "costTrend": [
+      {
+        "month": "Jan 2026",
+        "cost": 10464.009998460706
+      },
+      {
+        "month": "Feb 2026",
+        "cost": 14199.729025598728
+      },
+      {
+        "month": "Mar 2026",
+        "cost": 76394.52836699638
+      },
+      {
+        "month": "Apr 2026",
+        "cost": 11204.220974654405
+      },
+      {
+        "month": "May 2026",
+        "cost": 4731.4512002761985
+      },
+      {
+        "month": "Jun 2026",
+        "cost": 0
+      }
+    ],
+    "anomalies": [
+      {
+        "date": "2026-05-12",
+        "service": "Claude Opus 4.7 (Amazon Bedrock Edition)",
+        "type": "spike",
+        "changePercent": 952.5020763891055,
+        "previousCost": 5.194861378571429,
+        "currentCost": 54.676023875,
+        "severity": "critical"
+      },
+      {
+        "date": "2026-05-11",
+        "service": "Claude Opus 4.7 (Amazon Bedrock Edition)",
+        "type": "spike",
+        "changePercent": 701.9655422731731,
+        "previousCost": 5.194861378571429,
+        "currentCost": 41.660998225,
+        "severity": "critical"
+      },
+      {
+        "date": "2026-05-12",
+        "service": "Amazon Elastic Container Service",
+        "type": "drop",
+        "changePercent": 3.770057472525122,
+        "previousCost": 40.1243963686,
+        "currentCost": 38.611683565,
+        "severity": "low"
+      },
+      {
+        "date": "2026-05-12",
+        "service": "Amazon Elastic Container Service for Kubernetes",
+        "type": "spike",
+        "changePercent": 16.14013961842104,
+        "previousCost": 45.60000000000001,
+        "currentCost": 52.959903666,
+        "severity": "low"
+      },
+      {
+        "date": "2026-05-11",
+        "service": "Amazon Elastic Compute Cloud - Compute",
+        "type": "spike",
+        "changePercent": 12.25357619449722,
+        "previousCost": 41.965954721814285,
+        "currentCost": 47.1082849594,
+        "severity": "low"
+      },
+      {
+        "date": "2026-05-11",
+        "service": "Amazon Elastic Container Service",
+        "type": "drop",
+        "changePercent": 3.5325337955967857,
+        "previousCost": 40.1243963686,
+        "currentCost": 38.7069885066,
+        "severity": "low"
+      },
+      {
+        "date": "2026-05-11",
+        "service": "Amazon Elastic Container Service for Kubernetes",
+        "type": "spike",
+        "changePercent": 20.80752705263155,
+        "previousCost": 45.60000000000001,
+        "currentCost": 55.088232336,
+        "severity": "low"
+      },
+      {
+        "date": "2026-05-10",
+        "service": "Amazon Elastic Container Service",
+        "type": "drop",
+        "changePercent": 3.575546203662582,
+        "previousCost": 40.1243963686,
+        "currentCost": 38.6897300375,
+        "severity": "low"
+      }
+    ],
+    "wasteDetection": {
+      "idleInstances": 13,
+      "unattachedDisks": 1,
+      "lowCpuVMs": 6,
+      "potentialSaving": 955,
+      "details": {
+        "idleResources": [
+          {
+            "resourceId": "vol-05ba8883dc4d742bc",
+            "type": "EBS Volume",
+            "cost": 5,
+            "reason": "Unattached volume"
+          },
+          {
+            "resourceId": "i-03677cd2b62821bba",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0fac52c879fa3162b",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0f786f773e4cae38e",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0edb1a0b046aa8bc3",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-055d6e8b0bb5d5149",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-06a4793470c7a5de6",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0382f3413e3234b58",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0c2f450a5d89b9905",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-00d8541c8417fe628",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0dc462ed851b3fb4e",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-05ba0d382b4b63780",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0fa4c80fc9a88ee2c",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          },
+          {
+            "resourceId": "i-0470e7066ca2fd451",
+            "type": "EC2 Instance",
+            "cost": 50,
+            "reason": "Stopped instance"
+          }
+        ],
+        "underutilizedResources": [
+          {
+            "resourceId": "i-0126b86e8133b184f",
+            "type": "EC2 Instance",
+            "cost": 100,
+            "utilization": 1.1370553883281689,
+            "recommendation": "CPU usage is 1.1%. Consider downsizing or stopping."
+          },
+          {
+            "resourceId": "i-06661dca43c1e3965",
+            "type": "EC2 Instance",
+            "cost": 100,
+            "utilization": 5.472712031672995,
+            "recommendation": "CPU usage is 5.5%. Consider downsizing or stopping."
+          },
+          {
+            "resourceId": "i-010bc55a20874c70a",
+            "type": "EC2 Instance",
+            "cost": 100,
+            "utilization": 5.944015381132814,
+            "recommendation": "CPU usage is 5.9%. Consider downsizing or stopping."
+          },
+          {
+            "resourceId": "i-0bcd524ab8a8560b2",
+            "type": "EC2 Instance",
+            "cost": 100,
+            "utilization": 6.525100249817641,
+            "recommendation": "CPU usage is 6.5%. Consider downsizing or stopping."
+          },
+          {
+            "resourceId": "i-0d1b3cec32a921830",
+            "type": "EC2 Instance",
+            "cost": 100,
+            "utilization": 2.907042626809439,
+            "recommendation": "CPU usage is 2.9%. Consider downsizing or stopping."
+          },
+          {
+            "resourceId": "i-011860e813520bd7c",
+            "type": "EC2 Instance",
+            "cost": 100,
+            "utilization": 6.432137492153907,
+            "recommendation": "CPU usage is 6.4%. Consider downsizing or stopping."
+          }
+        ]
+      }
+    },
+    "utilizationData": [
+      {
+        "resourceId": "i-0126b86e8133b184f",
+        "resourceName": "mlflow-server-raia",
+        "service": "EC2",
+        "cost": 100,
+        "utilization": 1.1370553883281689,
+        "size": "t3.small",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-06661dca43c1e3965",
+        "resourceName": "cirrus-ai-data-dev-node",
+        "service": "EC2",
+        "cost": 100,
+        "utilization": 5.472712031672995,
+        "size": "t3.medium",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-010bc55a20874c70a",
+        "resourceName": "nexus-dev-clickhouse",
+        "service": "EC2",
+        "cost": 100,
+        "utilization": 5.944015381132814,
+        "size": "t4g.small",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-0bcd524ab8a8560b2",
+        "resourceName": "nexus-prod-clickhouse",
+        "service": "EC2",
+        "cost": 100,
+        "utilization": 6.525100249817643,
+        "size": "t4g.medium",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-0d1b3cec32a921830",
+        "resourceName": "cirrus-ai-data-dev-node",
+        "service": "EC2",
+        "cost": 100,
+        "utilization": 2.907042626809439,
+        "size": "t3.medium",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-011860e813520bd7c",
+        "resourceName": "nexus-staging-clickhouse",
+        "service": "EC2",
+        "cost": 100,
+        "utilization": 6.432184909564727,
+        "size": "t4g.small",
+        "recommendation": "Consider stopping or downsizing"
+      }
+    ],
+    "optimizationOpportunities": [
+      {
+        "category": "Idle Resources",
+        "description": "13 stopped instances and 1 unattached disks can be deleted",
+        "monthlySavings": 573,
+        "effort": "low",
+        "impact": "medium",
+        "resources": 14
+      },
+      {
+        "category": "Instance Rightsizing",
+        "description": "6 instances with low CPU utilization can be downsized",
+        "monthlySavings": 382,
+        "effort": "medium",
+        "impact": "high",
+        "resources": 6
+      },
+      {
+        "category": "Reserved Instances",
+        "description": "70% of compute is On-Demand. Purchase Reserved Instances or Savings Plans",
+        "monthlySavings": 0,
+        "effort": "low",
+        "impact": "high",
+        "resources": 0
+      }
+    ],
+    "departmentAllocation": [
+      {
+        "department": "Unallocated",
+        "cost": 0,
+        "percentage": 100,
+        "resourceCount": 0,
+        "topServices": []
+      }
+    ],
+    "heatmapData": {
+      "services": [],
+      "departments": [],
+      "data": []
+    },
+    "aiSpendAnalysis": {
+      "totalAISpend": 0,
+      "aiServices": [],
+      "aiPercentageOfTotal": 0,
+      "topAIService": "None",
+      "monthOverMonthChange": 0
+    }
+  },
+  "timestamp": 1780297363561,
+  "expiresAt": 1780300963561
+}

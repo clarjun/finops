@@ -8,7 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AppSidebar } from "@/components/app-sidebar";
 import { DateRangeProvider } from "@/contexts/date-range-context";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth, useLogout } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
 import Reports from "@/pages/reports";
 import AiQuery from "@/pages/ai-query";
@@ -20,6 +20,7 @@ import AgentDashboard from "@/pages/agent-dashboard";
 import Configuration from "@/pages/configuration";
 import Settings from "@/pages/settings";
 import CostEstimator from "@/pages/cost-estimator";
+import UsersPage from "@/pages/users";
 import Login from "@/pages/login";
 import NotFound from "@/pages/not-found";
 import { Button } from "@/components/ui/button";
@@ -32,9 +33,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useMsal } from "@azure/msal-react";
 
 function ProtectedRouter() {
+  const { isAdmin } = useAuth();
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
@@ -48,9 +49,11 @@ function ProtectedRouter() {
       <Route path="/agent" component={AgentDashboard} />
       <Route path="/configuration" component={Configuration} />
       <Route path="/settings" component={Settings} />
-      <Route path="/login">
-        <Redirect to="/" />
+      {/* Admin-only route */}
+      <Route path="/users">
+        {isAdmin ? <UsersPage /> : <Redirect to="/" />}
       </Route>
+      <Route path="/login"><Redirect to="/" /></Route>
       <Route component={NotFound} />
     </Switch>
   );
@@ -60,19 +63,13 @@ function PublicRouter() {
   return (
     <Switch>
       <Route path="/login" component={Login} />
-      <Route>
-        <Redirect to="/login" />
-      </Route>
+      <Route><Redirect to="/login" /></Route>
     </Switch>
   );
 }
 
 function App() {
-  const style = {
-    "--sidebar-width": "16rem",
-    "--sidebar-width-icon": "3rem",
-  };
-
+  const style = { "--sidebar-width": "16rem", "--sidebar-width-icon": "3rem" };
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider defaultTheme="dark">
@@ -89,7 +86,7 @@ function App() {
 
 function AuthWrapper({ style }: { style: Record<string, string> }) {
   const { isAuthenticated, user, isLoading } = useAuth();
-  const { instance, accounts } = useMsal();
+  const logout = useLogout();
 
   if (isLoading) {
     return (
@@ -102,21 +99,7 @@ function AuthWrapper({ style }: { style: Record<string, string> }) {
     );
   }
 
-  if (!isAuthenticated) {
-    return <PublicRouter />;
-  }
-
-  const handleLogout = async () => {
-    //window.location.href = '/auth/logout';
-    try {
-      await instance.logoutRedirect({
-        postLogoutRedirectUri: "/login",
-      });
-      queryClient.clear(); // clear cached user data
-    } catch (err) {
-      console.error("Logout failed:", err);
-    }
-  };
+  if (!isAuthenticated) return <PublicRouter />;
 
   return (
     <SidebarProvider style={style as React.CSSProperties}>
@@ -136,12 +119,12 @@ function AuthWrapper({ style }: { style: Record<string, string> }) {
                 <DropdownMenuContent align="end" className="w-56">
                   <DropdownMenuLabel>
                     <div>
-                      <p className="font-medium">{user?.name}</p>
-                      <p className="text-xs text-muted-foreground">{user?.email}</p>
+                      <p className="font-medium">{user?.username}</p>
+                      <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleLogout} data-testid="button-logout">
+                  <DropdownMenuItem onClick={() => logout.mutate()} data-testid="button-logout">
                     <LogOut className="mr-2 h-4 w-4" />
                     Logout
                   </DropdownMenuItem>

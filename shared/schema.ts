@@ -544,3 +544,20 @@ export const reportCache = pgTable("report_cache", {
 export const insertReportCacheSchema = createInsertSchema(reportCache).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertReportCache = z.infer<typeof insertReportCacheSchema>;
 export type ReportCache = typeof reportCache.$inferSelect;
+
+// ==================== USER MANAGEMENT ====================
+
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  username: varchar("username", { length: 100 }).notNull().unique(),
+  passwordHash: text("password_hash").notNull(),
+  role: varchar("role", { length: 20 }).notNull().default('user'), // 'admin' | 'user'
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: integer("created_by"), // admin user id who created this user
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertUser = z.infer<typeof insertUserSchema>;
+export type User = typeof users.$inferSelect;

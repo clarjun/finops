@@ -96,8 +96,8 @@ jobs:
           for provider in Microsoft.App Microsoft.OperationalInsights; do
             state=$(az provider show -n $provider --query "registrationState" -o tsv 2>/dev/null)
             if [ "$state" != "Registered" ]; then
-              echo "Registering $provider..."
-              az provider register -n $provider --wait
+              echo "Registering $provider (requires subscription-level permission)..."
+              az provider register -n $provider --wait || echo "Warning: Could not register $provider - may need to be done manually"
             else
               echo "$provider already registered, skipping."
             fi
