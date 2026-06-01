@@ -51,7 +51,11 @@ export function registerAuthRoutes(app: Express) {
       req.session.userId = user.id;
       req.session.username = user.username;
       req.session.role = user.role;
-      res.json({ success: true, user: { id: user.id, username: user.username, role: user.role } });
+      // Explicitly save session before responding to ensure cookie is set
+      req.session.save((err) => {
+        if (err) return res.status(500).json({ error: 'Session error' });
+        res.json({ success: true, user: { id: user.id, username: user.username, role: user.role } });
+      });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
