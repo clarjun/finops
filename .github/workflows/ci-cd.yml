@@ -133,13 +133,17 @@ jobs:
       - name: Create or update Container App
         run: |
           IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          ENV_VARS="DATABASE_URL=${{ secrets.DATABASE_URL }} \
-            SESSION_SECRET=${{ secrets.SESSION_SECRET }} \
-            OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }} \
-            RESEND_API_KEY=${{ secrets.RESEND_API_KEY }} \
-            ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }} \
-            NODE_ENV=production \
-            PORT=5173"
+
+          # Each env var on its own line — avoids shell quoting issues
+          ENV_VARS=(
+            "DATABASE_URL=${{ secrets.DATABASE_URL }}"
+            "SESSION_SECRET=${{ secrets.SESSION_SECRET }}"
+            "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
+            "RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}"
+            "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}"
+            "NODE_ENV=production"
+            "PORT=5173"
+          )
 
           # Check if app exists
           if az containerapp show \
@@ -151,7 +155,7 @@ jobs:
               --name ${{ secrets.CONTAINER_APP_NAME }} \
               --resource-group ${{ secrets.RESOURCE_GROUP }} \
               --image "$IMAGE" \
-              --set-env-vars $ENV_VARS \
+              --set-env-vars "${ENV_VARS[@]}" \
               --only-show-errors
           else
             echo "Creating new Container App..."
@@ -167,7 +171,7 @@ jobs:
               --ingress external \
               --min-replicas 1 \
               --max-replicas 3 \
-              --env-vars $ENV_VARS \
+              --env-vars "${ENV_VARS[@]}" \
               --tags creator=arjun.rathod@cirruslabs.io \
               --only-show-errors
           fi
