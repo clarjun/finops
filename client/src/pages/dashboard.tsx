@@ -441,11 +441,11 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="gcp" className="space-y-6">
-          {isProviderConfigured('gcp') ? renderDashboardContent() : renderNotConfigured('GCP')}
+          {(costLoading || !metadata || isProviderConfigured('gcp')) ? renderDashboardContent() : renderNotConfigured('GCP')}
         </TabsContent>
 
         <TabsContent value="azure" className="space-y-6">
-          {isProviderConfigured('azure') ? renderDashboardContent() : renderNotConfigured('Azure')}
+          {(costLoading || !metadata || isProviderConfigured('azure')) ? renderDashboardContent() : renderNotConfigured('Azure')}
         </TabsContent>
       </Tabs>
 

@@ -1525,6 +1525,36 @@ When answering:
     }
   });
   
+  // Get single cloud account (includes decrypted credentials for editing)
+  app.get("/api/cloud-accounts/:id", async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const account = await storage.getCloudAccount(id);
+
+      if (!account) {
+        return res.status(404).json({ success: false, error: "Cloud account not found" });
+      }
+
+      res.json({
+        success: true,
+        account: {
+          id: account.id,
+          provider: account.provider,
+          accountName: account.accountName,
+          accountId: account.accountId,
+          credentials: account.credentials,
+          refreshInterval: account.refreshInterval,
+          isActive: account.isActive,
+          lastSyncAt: account.lastSyncAt,
+          createdAt: account.createdAt,
+        }
+      });
+    } catch (error) {
+      console.error("Error fetching cloud account:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch cloud account" });
+    }
+  });
+
   // Update cloud account
   app.patch("/api/cloud-accounts/:id", async (req, res) => {
     try {

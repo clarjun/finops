@@ -1,8 +1,13 @@
-import dotenv from "dotenv";
-dotenv.config();
+// IMPORTANT: load env vars as a side-effect import on the very first line.
+// In ESM, all `import` statements run before any body statement, so a later
+// `dotenv.config()` call would execute AFTER ./db creates its pool — leaving
+// DATABASE_URL undefined and silently falling back to local PG* defaults.
+import "dotenv/config";
 
 import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
+import { pool } from "./db";
 import { registerRoutes } from "./routes";
 import { registerAuthRoutes } from "./auth";
 import { log } from "./vite";
@@ -16,8 +21,15 @@ app.use(express.urlencoded({ extended: false }));
 // Trust Azure Container Apps reverse proxy
 app.set('trust proxy', 1);
 
-// Session middleware
+// Session middleware — persistent Postgres-backed store so sessions survive
+// container restarts and are shared across replicas (Azure Container Apps).
+const PgSession = connectPgSimple(session);
 app.use(session({
+  store: new PgSession({
+    pool,
+    tableName: 'user_sessions',
+    createTableIfMissing: true,
+  }),
   secret: process.env.SESSION_SECRET || 'dev-secret-change-in-production',
   resave: false,
   saveUninitialized: false,
