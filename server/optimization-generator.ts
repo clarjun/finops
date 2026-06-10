@@ -591,12 +591,17 @@ export async function generateOptimizationRecommendations(): Promise<void> {
   try {
     // Get all active cloud accounts
     const accounts = await storage.getActiveCloudAccounts();
-    
+
     if (accounts.length === 0) {
       console.log('[Optimization Generator] No active cloud accounts found');
       return;
     }
-    
+
+    // Replace (don't append): clear existing active recommendations first so the
+    // totals don't keep growing each time the user clicks "Generate".
+    const cleared = await storage.clearActiveRecommendations();
+    console.log(`[Optimization Generator] Cleared ${cleared} existing active recommendation(s) before regenerating`);
+
     let totalRecommendations = 0;
     
     for (const account of accounts) {

@@ -299,8 +299,22 @@ export class DbStorage {
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(schema.optimizationRecommendations.id, id))
       .returning();
-    
+
     return updated;
+  }
+
+  // Remove existing 'active' recommendations so a regeneration replaces them
+  // instead of appending duplicates. User-actioned ones (implemented/dismissed)
+  // are not 'active', so they are preserved.
+  async clearActiveRecommendations(provider?: schema.CloudProvider): Promise<number> {
+    const conditions = [eq(schema.optimizationRecommendations.status, 'active')];
+    if (provider) {
+      conditions.push(eq(schema.optimizationRecommendations.provider, provider));
+    }
+    const deleted = await db.delete(schema.optimizationRecommendations)
+      .where(and(...conditions))
+      .returning({ id: schema.optimizationRecommendations.id });
+    return deleted.length;
   }
   
   // ==================== MULTI-CLOUD ACCOUNTS ====================

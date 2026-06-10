@@ -4,7 +4,7 @@
  * Used by alert checker and other real-time cost monitoring features
  */
 
-import { fetchAWSCostData, isAWSConfigured } from '../aws-client';
+import { fetchAllAWSAccountsCostData, isAWSConfigured } from '../aws-client';
 import { fetchGCPCostData, isGCPConfigured } from '../gcp-client';
 import { fetchAzureCostData, isAzureConfigured } from '../azure-client';
 import type { CloudProvider } from '@shared/schema';
@@ -49,7 +49,8 @@ async function fetchProviderData(
     switch (provider) {
       case 'aws':
         if (!await isAWSConfigured()) return [];
-        rawData = await fetchAWSCostData(startDate, endDate);
+        // Fetch across ALL active AWS accounts (each record tagged with account id/name)
+        rawData = await fetchAllAWSAccountsCostData(startDate, endDate);
         break;
       case 'gcp':
         if (!await isGCPConfigured()) return [];

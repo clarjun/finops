@@ -1,6 +1,6 @@
 import { CostExplorerClient, GetCostAndUsageCommand, GetCostAndUsageCommandInput, GetCostForecastCommand } from "@aws-sdk/client-cost-explorer";
 import { BudgetsClient, DescribeBudgetsCommand } from "@aws-sdk/client-budgets";
-import { getProviderCredentials } from "./cloud-config-manager";
+import { getProviderCredentials, getActiveCloudAccounts } from "./cloud-config-manager";
 
 let costExplorerClient: CostExplorerClient | null = null;
 let budgetsClient: BudgetsClient | null = null;
@@ -59,6 +59,8 @@ export interface AWSCostData {
   cost: number;
   region?: string;
   tags?: Record<string, string>;
+  accountId?: string;
+  accountName?: string;
 }
 
 export async function fetchAWSCostData(
@@ -120,6 +122,80 @@ export async function fetchAWSCostData(
     console.error("Error fetching AWS cost data:", error);
     throw new Error(`AWS Cost Explorer API error: ${error.message}`);
   }
+}
+
+/**
+ * Fetch AWS cost data for a SPECIFIC account's credentials, tagging each record
+ * with that account's id/name. Uses its own client (does not touch the module
+ * singleton) so multiple accounts can be queried independently.
+ */
+export async function fetchAWSCostDataForAccount(
+  credentials: any,
+  accountName: string,
+  accountId: string,
+  startDate: string,
+  endDate: string
+): Promise<AWSCostData[]> {
+  if (!credentials?.accessKeyId || !credentials?.secretAccessKey) {
+    console.error(`[AWS] Account "${accountName}" missing accessKeyId/secretAccessKey`);
+    return [];
+  }
+
+  const client = new CostExplorerClient({
+    region: credentials.region || "us-east-1",
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+    },
+  });
+
+  const params: GetCostAndUsageCommandInput = {
+    TimePeriod: { Start: startDate, End: endDate },
+    Granularity: "DAILY",
+    Metrics: ["UnblendedCost"],
+    GroupBy: [{ Type: "DIMENSION", Key: "SERVICE" }],
+  };
+
+  const response = await client.send(new GetCostAndUsageCommand(params));
+  const costData: AWSCostData[] = [];
+
+  for (const result of response.ResultsByTime || []) {
+    const date = result.TimePeriod?.Start || "";
+    for (const group of result.Groups || []) {
+      const service = group.Keys?.[0] || "Unknown";
+      const cost = parseFloat(group.Metrics?.UnblendedCost?.Amount || "0");
+      if (cost > 0) {
+        costData.push({ date, provider: "aws", service, cost, accountId, accountName });
+      }
+    }
+  }
+
+  console.log(`[AWS] Fetched ${costData.length} records for account "${accountName}"`);
+  return costData;
+}
+
+/**
+ * Fetch AWS cost data across ALL active AWS accounts, tagged per account.
+ * Failures on one account don't block the others.
+ */
+export async function fetchAllAWSAccountsCostData(
+  startDate: string,
+  endDate: string
+): Promise<AWSCostData[]> {
+  const accounts = await getActiveCloudAccounts('aws');
+  if (accounts.length === 0) return [];
+
+  const perAccount = await Promise.all(
+    accounts.map(acc =>
+      fetchAWSCostDataForAccount(acc.credentials, acc.accountName, acc.accountId, startDate, endDate)
+        .catch(err => {
+          console.error(`[AWS] Failed to fetch costs for account "${acc.accountName}":`, err?.message || err);
+          return [] as AWSCostData[];
+        })
+    )
+  );
+
+  return perAccount.flat();
 }
 
 export async function isAWSConfigured(): Promise<boolean> {

@@ -2097,6 +2097,27 @@ When answering:
     }
   });
   
+  // Generate fresh optimization recommendations across all configured providers
+  app.post("/api/optimization/recommendations/generate", async (req, res) => {
+    try {
+      const { generateOptimizationRecommendations } = await import('./optimization-generator');
+      await generateOptimizationRecommendations();
+
+      const { provider, accountId } = req.query;
+      const validProvider = (provider && ['aws', 'gcp', 'azure'].includes(provider as string))
+        ? (provider as schema.CloudProvider)
+        : undefined;
+      const recommendations = await storage.getActiveRecommendations(
+        accountId as string,
+        validProvider
+      );
+      res.json({ success: true, count: recommendations.length, recommendations });
+    } catch (error) {
+      console.error("Error generating recommendations:", error);
+      res.status(500).json({ success: false, error: "Failed to generate recommendations" });
+    }
+  });
+
   // Update recommendation status
   app.patch("/api/optimization/recommendations/:id", async (req, res) => {
     try {
@@ -2110,8 +2131,113 @@ When answering:
     }
   });
   
+  // ==================== AWS MULTI-ACCOUNT ====================
+
+  // Per-account cost summaries for the AWS tab (only meaningful when >1 account)
+  app.get("/api/aws/account-summaries", async (req, res) => {
+    try {
+      const accounts = await storage.getAllCloudAccounts('aws' as schema.CloudProvider);
+      if (accounts.length < 2) {
+        return res.json({ success: true, multiAccount: false, accounts: [] });
+      }
+
+      const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
+      const startDate = req.query.startDate
+        ? new Date(req.query.startDate as string)
+        : new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+      const startStr = startDate.toISOString().split('T')[0];
+      const endStr = endDate.toISOString().split('T')[0];
+
+      const { fetchAllAWSAccountsCostData } = await import('./aws-client');
+      const records = await fetchAllAWSAccountsCostData(startStr, endStr);
+
+      // Group cost records by account id
+      const byAccount = new Map<string, typeof records>();
+      for (const r of records) {
+        const key = r.accountId || r.accountName || 'unknown';
+        if (!byAccount.has(key)) byAccount.set(key, []);
+        byAccount.get(key)!.push(r);
+      }
+
+      const summaries = await Promise.all(accounts.map(async (acc) => {
+        const recs = byAccount.get(acc.accountId) || [];
+        const dailyMap = new Map<string, number>();
+        const serviceMap = new Map<string, number>();
+        let cost = 0;
+        for (const r of recs) {
+          cost += r.cost;
+          dailyMap.set(r.date, (dailyMap.get(r.date) || 0) + r.cost);
+          serviceMap.set(r.service, (serviceMap.get(r.service) || 0) + r.cost);
+        }
+        const dailyTrend = Array.from(dailyMap.entries())
+          .sort((a, b) => a[0].localeCompare(b[0]))
+          .map(([date, c]) => ({ date, cost: c }));
+        const services = Array.from(serviceMap.entries()).sort((a, b) => b[1] - a[1]);
+        const topService = services.length ? { name: services[0][0], cost: services[0][1] } : null;
+
+        let findingsCount = 0;
+        try {
+          findingsCount = (await storage.getActiveRecommendations(acc.accountId, 'aws' as schema.CloudProvider)).length;
+        } catch { /* findings are best-effort */ }
+
+        return {
+          id: acc.id,
+          accountName: acc.accountName,
+          accountId: acc.accountId,
+          isActive: acc.isActive,
+          lastSyncAt: acc.lastSyncAt,
+          cost,
+          serviceCount: services.length,
+          topService,
+          dailyTrend,
+          findingsCount,
+        };
+      }));
+
+      const awsTotal = summaries.reduce((s, a) => s + a.cost, 0);
+      const withPct = summaries
+        .map(s => ({ ...s, percentage: awsTotal > 0 ? (s.cost / awsTotal) * 100 : 0 }))
+        .sort((a, b) => b.cost - a.cost);
+
+      res.json({ success: true, multiAccount: true, awsTotal, accounts: withPct });
+    } catch (error) {
+      console.error("Error fetching AWS account summaries:", error);
+      res.status(500).json({ success: false, error: "Failed to fetch AWS account summaries" });
+    }
+  });
+
+  // ==================== COST ESTIMATOR ====================
+
+  // AI-powered architecture + cost estimate from natural-language requirements
+  app.post("/api/cost-estimator/estimate", async (req, res) => {
+    try {
+      const { requirements, region } = req.body;
+      if (!requirements || typeof requirements !== 'string' || !requirements.trim()) {
+        return res.status(400).json({ success: false, error: "Requirements are required" });
+      }
+
+      const { generateArchitecture } = await import('./cost-estimator/architecture-generator');
+      const { calculateCosts } = await import('./cost-estimator/aws-pricing-calculator');
+
+      const recommendation = await generateArchitecture(requirements);
+      const estimate = await calculateCosts(recommendation.architecture, region || 'us-east-1');
+
+      res.json({
+        success: true,
+        estimate,
+        reasoning: recommendation.reasoning,
+      });
+    } catch (error) {
+      console.error("Error generating cost estimate:", error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to generate cost estimate",
+      });
+    }
+  });
+
   // ==================== ANOMALY EVENTS ====================
-  
+
   // Get anomaly events
   app.get("/api/anomalies/events", async (req, res) => {
     try {
@@ -2226,27 +2352,26 @@ When answering:
       if (includeContext) {
         const providerFilter = provider || 'all';
 
-        // Get current cost data
-        const sampleData = loadMultiCloudSampleData();
-        const filteredData = providerFilter === 'all' 
-          ? sampleData.allCostData 
-          : sampleData[`${providerFilter}Data` as keyof typeof sampleData] as any[];
-
-        context.currentCostData = {
-          totalCost: filteredData.reduce((sum: number, d: any) => sum + d.cost, 0),
-          avgDailyCost: filteredData.reduce((sum: number, d: any) => sum + d.cost, 0) / 30,
-          serviceCount: new Set(filteredData.map((d: any) => d.serviceName)).size,
-          topService: {
-            name: filteredData[0]?.serviceName || 'Unknown',
-            cost: filteredData[0]?.cost || 0
-          },
-          serviceBreakdown: Object.entries(
-            filteredData.reduce((acc: any, d: any) => {
-              acc[d.serviceName] = (acc[d.serviceName] || 0) + d.cost;
-              return acc;
-            }, {})
-          ).map(([name, cost]) => ({ name, cost })).slice(0, 5)
-        };
+        // Get current cost data from LIVE cloud costs (not sample data) so the
+        // plan is grounded in the user's actual spend.
+        try {
+          const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+          const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+          const liveProviders = providerFilter === 'all' ? undefined : [providerFilter as CloudProvider];
+          const liveRecords = await fetchLiveCosts(undefined, undefined, liveProviders);
+          const processed = processMultiCloudCosts(liveRecords);
+          context.currentCostData = {
+            totalCost: processed.totalCost,
+            avgDailyCost: processed.avgDailyCost,
+            serviceCount: processed.serviceCount,
+            topService: processed.topService,
+            serviceBreakdown: processed.serviceBreakdown.slice(0, 5),
+          };
+          console.log(`[Agent Planner] Live cost context: $${processed.totalCost.toFixed(2)} across ${processed.serviceCount} services`);
+        } catch (err) {
+          console.error('[Agent Planner] Failed to load live cost data, proceeding with inventory only:', err);
+          context.currentCostData = null;
+        }
 
         // Fetch real AWS resource inventory if provider is AWS or all
         if (providerFilter === 'aws' || providerFilter === 'all') {

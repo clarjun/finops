@@ -9,6 +9,8 @@ import {
 } from "@/components/ui/select";
 import { LineChart, Line, BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
 interface DailyTrendChartProps {
   data: Array<{
@@ -30,6 +32,23 @@ export function DailyTrendChart({
   loading,
 }: DailyTrendChartProps) {
   const [chartType, setChartType] = useState<'line' | 'bar' | 'area'>('line');
+  const [selectedDay, setSelectedDay] = useState<DailyTrendChartProps["data"][number] | null>(null);
+
+  // When a day on the chart is clicked, open the breakdown modal for that day.
+  const handleChartClick = (state: any) => {
+    const date = state?.activeLabel;
+    if (!date) return;
+    const day = data.find((d) => d.date === date);
+    if (day) setSelectedDay(day);
+  };
+
+  // Services responsible for the selected day's cost, sorted high → low.
+  const dayServices = selectedDay
+    ? Object.entries(selectedDay.services || {})
+        .map(([name, cost]) => ({ name, cost: Number(cost) || 0 }))
+        .filter((s) => s.cost > 0)
+        .sort((a, b) => b.cost - a.cost)
+    : [];
 
   if (loading) {
     return (
@@ -55,6 +74,8 @@ export function DailyTrendChart({
   const renderChart = () => {
     const commonProps = {
       data: chartData,
+      onClick: handleChartClick,
+      style: { cursor: "pointer" as const },
     };
 
     const commonAxisProps = {
@@ -156,10 +177,14 @@ export function DailyTrendChart({
   };
 
   return (
+    <>
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-4 flex-wrap">
-          <CardTitle className="text-lg font-semibold">Daily Cost Trend</CardTitle>
+          <div>
+            <CardTitle className="text-lg font-semibold">Daily Cost Trend</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">Click a day to see the services behind that cost</p>
+          </div>
           <div className="flex gap-2">
             <Select value={chartType} onValueChange={(value: any) => setChartType(value)}>
               <SelectTrigger className="w-32" data-testid="select-trend-chart-type">
@@ -195,5 +220,52 @@ export function DailyTrendChart({
         </div>
       </CardContent>
     </Card>
+
+    <Dialog open={!!selectedDay} onOpenChange={(open) => !open && setSelectedDay(null)}>
+      <DialogContent className="max-w-2xl max-h-[85vh]" data-testid="dialog-day-breakdown">
+        <DialogHeader>
+          <DialogTitle className="text-xl">Cost breakdown — {selectedDay?.date}</DialogTitle>
+          <DialogDescription>
+            Total for the day:{" "}
+            <span className="font-semibold text-foreground">
+              ${(selectedDay?.cost ?? 0).toFixed(2)}
+            </span>{" "}
+            across {dayServices.length} service{dayServices.length === 1 ? "" : "s"}
+          </DialogDescription>
+        </DialogHeader>
+
+        <ScrollArea className="max-h-[calc(85vh-140px)] pr-4">
+          {dayServices.length === 0 ? (
+            <p className="text-center text-sm text-muted-foreground py-8">
+              No service-level cost recorded for this day.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {dayServices.map((s) => {
+                const pct = selectedDay && selectedDay.cost > 0 ? (s.cost / selectedDay.cost) * 100 : 0;
+                return (
+                  <div key={s.name} data-testid={`day-service-${s.name.toLowerCase().replace(/\s+/g, "-")}`}>
+                    <div className="flex items-center justify-between gap-4 text-sm">
+                      <span className="font-medium truncate">{s.name}</span>
+                      <span className="shrink-0 tabular-nums">
+                        ${s.cost.toFixed(2)}
+                        <span className="text-muted-foreground ml-2">{pct.toFixed(1)}%</span>
+                      </span>
+                    </div>
+                    <div className="mt-1 h-2 w-full rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full rounded-full bg-[hsl(var(--chart-1))]"
+                        style={{ width: `${Math.min(pct, 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -14,6 +14,7 @@ import {
 import { queryClient } from "@/lib/queryClient";
 import { CostSummaryCard } from "@/components/cost-summary-card";
 import { DailyTrendChart } from "@/components/daily-trend-chart";
+import { AwsAccountsSection } from "@/components/aws-accounts-section";
 import { ServiceBreakdownChart } from "@/components/service-breakdown-chart";
 import { SubscriptionChart } from "@/components/subscription-chart";
 import { CostDistributionTable } from "@/components/cost-distribution-table";
@@ -437,6 +438,7 @@ export default function Dashboard() {
         </TabsContent>
 
         <TabsContent value="aws" className="space-y-6">
+          <AwsAccountsSection startDate={dateRange.startDate} endDate={dateRange.endDate} />
           {renderDashboardContent()}
         </TabsContent>
 

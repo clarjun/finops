@@ -10,8 +10,8 @@ import {
 import { eq } from "drizzle-orm";
 
 const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL,
 });
 
 interface PlanningContext {
@@ -113,11 +113,14 @@ Dependencies: Array of stepIndex values that must complete first.`
           }
         ],
         response_format: { type: "json_object" },
-        max_completion_tokens: 8192, // GPT-5 uses reasoning tokens + output tokens, needs higher limit
+        max_completion_tokens: 16000, // GPT-5 spends reasoning tokens first; with the large inventory prompt a smaller budget leaves the content empty
       });
 
       const aiResponse = response.choices[0]?.message?.content || '';
-      console.log('[AI Agent Planner] Successfully received GPT-5 response');
+      console.log(`[AI Agent Planner] GPT-5 response received (finish: ${response.choices[0]?.finish_reason}, content length: ${aiResponse.length}, usage: ${JSON.stringify(response.usage)})`);
+      if (!aiResponse) {
+        throw new Error('Empty response from GPT-5 (likely token budget consumed by reasoning) — falling back');
+      }
 
       // Parse AI response
       const plan = this.parseAIPlan(aiResponse);
