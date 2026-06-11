@@ -4,7 +4,7 @@
  */
 
 import { CloudSpendOverview } from './types';
-import { fetchAWSBudgets, fetchAWSCostForecast } from '../aws-client';
+import { fetchAWSBudgets, fetchAWSCostForecast, fetchAWSBudgetForRange } from '../aws-client';
 
 export async function calculateSpendOverview(
   provider: 'aws' | 'azure' | 'gcp',
@@ -31,12 +31,13 @@ export async function calculateSpendOverview(
   const isCurrentMonth = dateRange ?
     dateRange.startDate.getMonth() === now.getMonth() &&
     dateRange.startDate.getFullYear() === now.getFullYear() : true;
-  
+
   let forecastMonthEnd = 0;
   let budget: number | undefined;
   let budgetUtilization: number | undefined;
   let budgetUnavailableReason: string | undefined;
   let finalPotentialSavings: number | undefined;
+  let budgetBasis: string | undefined;
   
   // Only fetch budget and forecast for single-month, current-month ranges
   if (isSingleMonth && isCurrentMonth) {
@@ -60,10 +61,11 @@ export async function calculateSpendOverview(
         
         // Fetch budget from AWS Budgets API
         budget = await fetchAWSBudgets();
-        
+
         if (budget > 0) {
           budgetUtilization = (totalSpendMTD / budget) * 100;
           finalPotentialSavings = potentialSavings;
+          budgetBasis = 'Monthly AWS budget (current month)';
         }
       } catch (error) {
         console.error('[Spend Calculator] Error fetching AWS budget/forecast:', error);
@@ -80,13 +82,30 @@ export async function calculateSpendOverview(
       budgetUnavailableReason = `Budget tracking not yet implemented for ${provider.toUpperCase()}`;
     }
   } else {
-    // Multi-month or non-current month range
-    if (!isSingleMonth) {
-      budgetUnavailableReason = "Budget comparison available only for single-month range";
-    } else if (!isCurrentMonth) {
-      budgetUnavailableReason = "Budget comparison available only for current month";
+    // Multi-month or non-current single month range.
+    // Pull AWS's REAL per-month budgeted amounts for the range and sum them —
+    // no monthly×N extrapolation.
+    if (provider === 'aws' && dateRange) {
+      try {
+        const rangeStartStr = dateRange.startDate.toISOString().split('T')[0];
+        const rangeEndStr = dateRange.endDate.toISOString().split('T')[0];
+        const rangeBudget = await fetchAWSBudgetForRange(rangeStartStr, rangeEndStr);
+        if (rangeBudget && rangeBudget.amount > 0) {
+          budget = rangeBudget.amount;
+          budgetUtilization = (totalSpendMTD / budget) * 100;
+          finalPotentialSavings = potentialSavings;
+          budgetBasis = rangeBudget.basis;
+        } else {
+          budgetUnavailableReason = 'No AWS budget history found for this date range';
+        }
+      } catch (error) {
+        console.error('[Spend Calculator] Error fetching AWS budget for range:', error);
+        budgetUnavailableReason = 'Could not fetch AWS budget for this range';
+      }
+    } else if (provider !== 'aws') {
+      budgetUnavailableReason = `Budget tracking not yet implemented for ${provider.toUpperCase()}`;
     }
-    
+
     // Still calculate forecast using linear projection
     const dailyAverage = totalSpendMTD / daysIntoMonth;
     forecastMonthEnd = dailyAverage * daysInMonth;
@@ -106,5 +125,6 @@ export async function calculateSpendOverview(
     daysIntoMonth,
     daysInMonth,
     budgetUnavailableReason,
+    budgetBasis,
   };
 }

@@ -226,7 +226,7 @@ export default function Reports() {
       pdf.setFontSize(12);
       pdf.text(`Provider: ${selectedProvider.toUpperCase()}`, pdfWidth / 2, 30, { align: 'center' });
       pdf.text(`Period: ${dateRange.startDate} to ${dateRange.endDate}`, pdfWidth / 2, 37, { align: 'center' });
-      pdf.text(`Generated: ${new Date().toLocaleString()}`, pdfWidth / 2, 44, { align: 'center' });
+      pdf.text(`Generated: ${new Date().toLocaleString('en-US')}`, pdfWidth / 2, 44, { align: 'center' });
 
       // Calculate how many pages we need
       const pageHeight = pdfHeight - 60; // Leave space for header
@@ -415,11 +415,11 @@ function SpendOverviewSection({ overview }: { overview: any }) {
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
             <DollarSign className="h-4 w-4" />
-            Total Spend (MTD)
+            Total Spend
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-3xl font-bold">${overview.totalSpendMTD.toLocaleString()}</div>
+          <div className="text-3xl font-bold">${overview.totalSpendMTD.toLocaleString('en-US', { useGrouping: false })}</div>
           <p className="text-xs text-muted-foreground mt-1">
             Day {overview.daysIntoMonth} of {overview.daysInMonth}
           </p>
@@ -434,7 +434,7 @@ function SpendOverviewSection({ overview }: { overview: any }) {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-3xl font-bold">${overview.forecastMonthEnd.toLocaleString()}</div>
+          <div className="text-3xl font-bold">${overview.forecastMonthEnd.toLocaleString('en-US', { useGrouping: false })}</div>
           <p className="text-xs text-muted-foreground mt-1">
             Projected based on current trend
           </p>
@@ -454,7 +454,7 @@ function SpendOverviewSection({ overview }: { overview: any }) {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-3xl font-bold">${overview.budget.toLocaleString()}</div>
+              <div className="text-3xl font-bold">${overview.budget.toLocaleString('en-US', { useGrouping: false })}</div>
               <div className="flex items-center gap-2 mt-2">
                 <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
                   <div 
@@ -467,6 +467,9 @@ function SpendOverviewSection({ overview }: { overview: any }) {
                 </div>
                 <span className="text-xs font-medium">{overview.budgetUtilization.toFixed(0)}%</span>
               </div>
+              {overview.budgetBasis && (
+                <p className="text-xs text-muted-foreground mt-2">{overview.budgetBasis}</p>
+              )}
             </CardContent>
           </Card>
 
@@ -479,7 +482,7 @@ function SpendOverviewSection({ overview }: { overview: any }) {
             </CardHeader>
             <CardContent>
               <div className="text-3xl font-bold text-green-600 dark:text-green-400">
-                ${overview.potentialSavings?.toLocaleString() || '0'}
+                ${overview.potentialSavings?.toLocaleString('en-US', { useGrouping: false }) || '0'}
               </div>
               <p className="text-xs text-muted-foreground mt-1">
                 Monthly optimization opportunity
@@ -532,7 +535,7 @@ function TopCostDriversCard({ drivers }: { drivers: any[] }) {
               </div>
               <div className="flex items-center gap-3">
                 <div className="text-right">
-                  <div className="font-bold text-lg">${driver.cost.toLocaleString()}</div>
+                  <div className="font-bold text-lg">${driver.cost.toLocaleString('en-US', { useGrouping: false })}</div>
                   {driver.trend !== 'stable' && (
                     <div className={`text-xs flex items-center gap-1 ${
                       driver.trend === 'up' ? 'text-red-500' : 'text-green-500'
@@ -573,7 +576,7 @@ function ExpensiveResourcesCard({ resources }: { resources: any[] }) {
                 <div className="text-xs text-muted-foreground">{resource.service} • {resource.region}</div>
               </div>
               <div className="text-right ml-4">
-                <div className="font-bold">${resource.cost.toLocaleString()}</div>
+                <div className="font-bold">${resource.cost.toLocaleString('en-US', { useGrouping: false })}</div>
               </div>
             </div>
           ))}
@@ -606,7 +609,7 @@ function CostTrendCard({ trend }: { trend: any[] }) {
                 border: '1px solid hsl(var(--border))',
                 borderRadius: '8px'
               }}
-              formatter={(value: any) => `$${value.toLocaleString()}`}
+              formatter={(value: any) => `$${value.toLocaleString('en-US', { useGrouping: false })}`}
             />
             <Legend />
             <Line 
@@ -718,7 +721,7 @@ function WasteDetectionCard({ waste }: { waste: any }) {
           <div className="p-4 rounded-lg bg-gradient-to-r from-orange-50 to-red-50 dark:from-orange-950 dark:to-red-950 border border-orange-200 dark:border-orange-800">
             <div className="text-sm text-muted-foreground mb-1">Potential Monthly Savings</div>
             <div className="text-3xl font-bold text-orange-600 dark:text-orange-400">
-              ${waste.potentialSaving.toLocaleString()}
+              ${waste.potentialSaving.toLocaleString('en-US', { useGrouping: false })}
             </div>
           </div>
 
@@ -841,7 +844,7 @@ function OptimizationCard({ opportunities }: { opportunities: any[] }) {
           <Zap className="h-5 w-5 text-yellow-500" />
           Optimization Opportunities
         </CardTitle>
-        <CardDescription>Total possible savings: ${totalSavings.toLocaleString()}/month</CardDescription>
+        <CardDescription>Total possible savings: ${totalSavings.toLocaleString('en-US', { useGrouping: false })}/month</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="space-y-3">
@@ -854,7 +857,7 @@ function OptimizationCard({ opportunities }: { opportunities: any[] }) {
                 </div>
                 <div className="text-right ml-4">
                   <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-                    ${opp.monthlySavings.toLocaleString()}
+                    ${opp.monthlySavings.toLocaleString('en-US', { useGrouping: false })}
                   </div>
                   <div className="text-xs text-muted-foreground">per month</div>
                 </div>
@@ -928,7 +931,7 @@ function DepartmentAllocationCard({ allocation }: { allocation: any[] }) {
                 border: '1px solid hsl(var(--border))',
                 borderRadius: '8px'
               }}
-              formatter={(value: any) => `$${value.toLocaleString()}`}
+              formatter={(value: any) => `$${value.toLocaleString('en-US', { useGrouping: false })}`}
             />
           </PieChart>
         </ResponsiveContainer>
@@ -945,7 +948,7 @@ function DepartmentAllocationCard({ allocation }: { allocation: any[] }) {
                   />
                   <span>{dept.department}</span>
                 </div>
-                <span className="font-medium">${dept.cost.toLocaleString()} ({percentage}%)</span>
+                <span className="font-medium">${dept.cost.toLocaleString('en-US', { useGrouping: false })} ({percentage}%)</span>
               </div>
             );
           })}
@@ -1196,7 +1199,7 @@ function AISpendCard({ aiSpend }: { aiSpend: any }) {
         </CardTitle>
         <CardDescription>
           {hasAISpend 
-            ? `Total AI spend: $${aiSpend.totalAISpend.toLocaleString()} (${aiSpend.aiPercentageOfTotal.toFixed(1)}% of total)`
+            ? `Total AI spend: $${aiSpend.totalAISpend.toLocaleString('en-US', { useGrouping: false })} (${aiSpend.aiPercentageOfTotal.toFixed(1)}% of total)`
             : 'No AI services detected in this period'
           }
         </CardDescription>
@@ -1236,14 +1239,14 @@ function AISpendCard({ aiSpend }: { aiSpend: any }) {
                       borderRadius: '8px'
                     }}
                     formatter={(value: any, name: string, props: any) => {
-                      return [`$${value.toLocaleString()} (${props.payload.percentage.toFixed(1)}%)`, props.payload.name];
+                      return [`$${value.toLocaleString('en-US', { useGrouping: false })} (${props.payload.percentage.toFixed(1)}%)`, props.payload.name];
                     }}
                   />
                 </PieChart>
               </ResponsiveContainer>
               <div className="text-center -mt-2">
                 <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">
-                  ${aiSpend.totalAISpend.toLocaleString()}
+                  ${aiSpend.totalAISpend.toLocaleString('en-US', { useGrouping: false })}
                 </div>
                 <div className="text-xs text-muted-foreground">Total AI Spend</div>
               </div>
@@ -1262,7 +1265,7 @@ function AISpendCard({ aiSpend }: { aiSpend: any }) {
                     <span className="text-sm truncate">{service.service}</span>
                   </div>
                   <div className="text-right ml-2">
-                    <div className="text-sm font-bold">${service.cost.toLocaleString()}</div>
+                    <div className="text-sm font-bold">${service.cost.toLocaleString('en-US', { useGrouping: false })}</div>
                     <div className="text-xs text-muted-foreground">{service.percentage.toFixed(1)}%</div>
                   </div>
                 </div>

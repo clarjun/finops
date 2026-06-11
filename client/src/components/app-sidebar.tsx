@@ -41,7 +41,7 @@ export function AppSidebar() {
           <SidebarGroupLabel className="text-xs font-semibold tracking-wide uppercase text-muted-foreground px-3">
             <div style={{ textAlign: "center", paddingTop: "100px", paddingLeft: "20px" }}>
               <img
-                src="assets/logo.png"
+                src="/assets/logo.png"
                 alt="Company Logo"
                 style={{ width: "150px", height: "auto", borderRadius: "8px", boxShadow: "0 0 10px rgba(0,0,0,0.1)" }}
               />

@@ -303,6 +303,102 @@ export async function fetchAWSBudgets(): Promise<number> {
 }
 
 /**
+ * Fetch the REAL AWS budget for an arbitrary date range by summing the actual
+ * per-period budgeted amounts AWS recorded (via DescribeBudgetPerformanceHistory).
+ * This reflects each month's true limit (including months where the limit
+ * differed) — no monthly×N extrapolation. Returns null if AWS has no real
+ * budget data covering the range.
+ */
+export async function fetchAWSBudgetForRange(
+  startDate: string,
+  endDate: string
+): Promise<{ amount: number; monthsCovered: number; basis: string } | null> {
+  try {
+    const { BudgetsClient, DescribeBudgetsCommand, DescribeBudgetPerformanceHistoryCommand } = await import("@aws-sdk/client-budgets");
+    const { STSClient, GetCallerIdentityCommand } = await import("@aws-sdk/client-sts");
+
+    const client = await initializeAWSClient();
+    if (!client || !currentCredentials) {
+      throw new Error("AWS client not configured");
+    }
+    const credentials = {
+      accessKeyId: currentCredentials.accessKeyId,
+      secretAccessKey: currentCredentials.secretAccessKey,
+    };
+
+    const sts = new STSClient({ region: "us-east-1", credentials });
+    const accountId = (await sts.send(new GetCallerIdentityCommand({}))).Account;
+    if (!accountId) throw new Error("Could not determine AWS account ID");
+
+    const budgetsClient = new BudgetsClient({ region: "us-east-1", credentials });
+    const budgetsResp = await budgetsClient.send(new DescribeBudgetsCommand({ AccountId: accountId }));
+    const budgets = budgetsResp.Budgets || [];
+    if (budgets.length === 0) return null;
+
+    const rangeStart = new Date(startDate);
+    const rangeEnd = new Date(endDate);
+    // First day of the range's starting month, used to decide which periods count.
+    const firstOfStartMonth = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+
+    // DescribeBudgetPerformanceHistory only accepts a window within the last
+    // ~12 months and not in the future, so clamp the requested window to
+    // [now-12mo, now]. We still only COUNT periods inside the requested range.
+    const now = new Date();
+    const twelveMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    const histStart = firstOfStartMonth < twelveMonthsAgo ? twelveMonthsAgo : firstOfStartMonth;
+    const histEnd = rangeEnd > now ? now : rangeEnd;
+    if (histStart > histEnd) {
+      console.log(`[AWS Budgets] Range ${startDate}..${endDate} is outside the available 12-month budget-history window`);
+      return null;
+    }
+
+    let total = 0;
+    const monthsSet = new Set<string>();
+
+    for (const b of budgets) {
+      if (!b.BudgetName) continue;
+      try {
+        const hist = await budgetsClient.send(new DescribeBudgetPerformanceHistoryCommand({
+          AccountId: accountId,
+          BudgetName: b.BudgetName,
+          TimePeriod: { Start: histStart, End: histEnd },
+        }));
+        const list = hist.BudgetPerformanceHistory?.BudgetedAndActualAmountsList || [];
+        for (const entry of list) {
+          const periodStart = entry.TimePeriod?.Start ? new Date(entry.TimePeriod.Start) : null;
+          if (!periodStart) continue;
+          // Count the period only if its month falls within the requested range.
+          if (periodStart >= firstOfStartMonth && periodStart <= rangeEnd) {
+            const amt = parseFloat(entry.BudgetedAmount?.Amount || "0");
+            if (amt > 0) {
+              total += amt;
+              monthsSet.add(`${periodStart.getFullYear()}-${periodStart.getMonth()}`);
+            }
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[AWS Budgets] No performance history for budget "${b.BudgetName}": ${e.message}`);
+      }
+    }
+
+    if (total <= 0 || monthsSet.size === 0) {
+      console.log(`[AWS Budgets] No real budget history found for ${startDate}..${endDate}`);
+      return null;
+    }
+
+    console.log(`[AWS Budgets] Real budget for ${startDate}..${endDate}: $${total.toFixed(2)} across ${monthsSet.size} month(s)`);
+    return {
+      amount: total,
+      monthsCovered: monthsSet.size,
+      basis: `Sum of actual AWS monthly budget limits for ${monthsSet.size} month(s) in range`,
+    };
+  } catch (error: any) {
+    console.error("[AWS Budgets] Error fetching budget for range:", error.message);
+    return null;
+  }
+}
+
+/**
  * Fetch AWS Cost Forecast for the current month
  * Uses GetCostForecast API
  */

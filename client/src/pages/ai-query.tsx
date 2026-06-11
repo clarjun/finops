@@ -36,7 +36,7 @@ export default function AiQuery() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">AI Query Interface</h1>
         <p className="text-muted-foreground mt-1">
-          Ask questions about your Azure spending using natural language
+          Ask questions about your cloud spending using natural language
         </p>
       </div>
 

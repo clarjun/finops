@@ -266,7 +266,7 @@ export default function Forecast() {
             <CardHeader>
               <CardTitle>Cost Forecast Visualization</CardTitle>
               <CardDescription>
-                Predicted costs with 95% confidence intervals using Ridge Regression
+                Predicted costs with 95% confidence intervals using a regression + seasonality model
               </CardDescription>
             </CardHeader>
             <CardContent>

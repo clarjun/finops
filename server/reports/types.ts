@@ -12,6 +12,7 @@ export interface CloudSpendOverview {
   daysIntoMonth: number;
   daysInMonth: number;
   budgetUnavailableReason?: string; // Reason why budget is not shown
+  budgetBasis?: string; // How the budget figure was derived (e.g. "monthly AWS budget × 3 months")
 }
 
 export interface TopCostDriver {

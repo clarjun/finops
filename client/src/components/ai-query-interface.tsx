@@ -64,7 +64,7 @@ export function AiQueryInterface({ onQuery }: AiQueryInterfaceProps) {
               <div>
                 <h2 className="text-2xl font-bold tracking-tight">AI-Powered Analysis</h2>
                 <p className="text-sm text-muted-foreground">
-                  Ask questions about your Azure spending in natural language
+                  Ask questions about your cloud spending in natural language
                 </p>
               </div>
             </div>
@@ -74,7 +74,7 @@ export function AiQueryInterface({ onQuery }: AiQueryInterfaceProps) {
                 <Input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Ask about your Azure spending... (e.g., 'What is my top cost driver?')"
+                  placeholder="Ask about your cloud spending... (e.g., 'What is my top cost driver?')"
                   className="flex-1 h-14 text-base bg-background/50 backdrop-blur-sm"
                   disabled={loading}
                   data-testid="input-ai-query"

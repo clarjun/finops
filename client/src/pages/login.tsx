@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Cloud, Loader2, AlertTriangle } from "lucide-react";
+import { Loader2, AlertTriangle } from "lucide-react";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -23,12 +23,8 @@ export default function Login() {
         {/* Logo / Brand */}
         <div className="text-center space-y-2">
           <div className="flex justify-center">
-            <div className="h-14 w-14 rounded-2xl bg-blue-600 flex items-center justify-center shadow-lg">
-              <Cloud className="h-8 w-8 text-white" />
-            </div>
+            <img src="/assets/logo.png" alt="Logo" className="h-24 w-auto" />
           </div>
-          <h1 className="text-2xl font-bold text-white">CloudWise FinOps</h1>
-          <p className="text-slate-400 text-sm">Multi-Cloud Cost Intelligence Platform</p>
         </div>
 
         <Card className="border-slate-700 bg-slate-800/60 backdrop-blur shadow-2xl">

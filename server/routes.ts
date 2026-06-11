@@ -363,7 +363,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // Prepare comprehensive context for AI with dynamic provider reference
-      const context = `You are an AI assistant analyzing ${providerName} cloud spending data. Answer questions clearly and concisely based on the data provided.
+      const costOnlyContext = `You are an AI assistant analyzing ${providerName} cloud spending data. Answer questions clearly and concisely based on the data provided.
 
 COST SUMMARY:
 - Total Cost: $${costData.totalCost.toFixed(2)}
@@ -399,6 +399,34 @@ When answering:
 - Provide specific numbers and percentages from the data
 - Be concise and actionable`;
 
+      // Decide whether this is a resource-level question (idle / orphaned /
+      // unused / specific resource types). If so, enrich the context with REAL
+      // resource inventory from the relevant cloud(s); otherwise use the
+      // cost-only context. Falls back to cost-only on any failure.
+      const { analyzeQuery, describeIntent } = await import('./utils/query-analyzer');
+      const intent = analyzeQuery(query);
+      // Align the resource provider with the route's detected provider when one
+      // was explicitly named; otherwise keep the analyzer's finer detection
+      // (e.g. "ec2"/"s3" implies AWS even without the word "aws").
+      if (detectedProvider !== 'all') {
+        intent.provider = detectedProvider as 'aws' | 'azure' | 'gcp';
+      }
+
+      let context = costOnlyContext;
+      if (intent.needsResourceData) {
+        try {
+          const { buildEnhancedContext } = await import('./utils/ai-context-builder');
+          const enriched = await buildEnhancedContext(query, intent, costData, anomalyData);
+          if (enriched && enriched.trim().length > 0) {
+            context = enriched;
+            console.log(`[AI Analyze] Using resource-enhanced context (${describeIntent(intent)})`);
+          }
+        } catch (resErr) {
+          console.error('[AI Analyze] Resource context failed, using cost-only context:', resErr);
+          context = costOnlyContext;
+        }
+      }
+
       // Log context length for debugging
       console.log(`AI Query context length: ${context.length} characters`);
       console.log(`User query: "${query}"`);
@@ -416,7 +444,9 @@ When answering:
           { role: "system", content: context },
           { role: "user", content: query }
         ],
-        max_completion_tokens: 2000,
+        // GPT-5 spends reasoning tokens before output; the richer resource
+        // context needs more headroom or the answer comes back empty.
+        max_completion_tokens: 6000,
       });
 
       console.log(`OpenAI completion choices:`, completion.choices?.length || 0);
@@ -683,45 +713,24 @@ When answering:
       const { forecastDays = 30, provider } = req.body;
       const cloudProvider = (provider as CloudProvider | 'all' | undefined) || 'all';
       
-      let costData;
-      
-      // Check if we have real Azure data and it's requested
-      const hasRealAzureData = cachedCostData !== null;
-      const needsAzureData = cloudProvider === 'azure' || cloudProvider === 'all';
-      
-      if (hasRealAzureData && needsAzureData && cloudProvider === 'azure') {
-        // Use real Azure data when available and specifically requested
-        costData = cachedCostData;
-      } else if (hasRealAzureData && needsAzureData && cloudProvider === 'all') {
-        // For 'all' provider with real Azure data, use legacy behavior for backward compatibility
-        costData = cachedCostData;
-      } else {
-        // Use multi-cloud sample data for AWS, GCP, or when Azure data isn't available
-        const sampleData = loadMultiCloudSampleData();
-        
-        switch (cloudProvider) {
-          case 'aws':
-            costData = sampleData.awsOnly;
-            break;
-          case 'gcp':
-            costData = sampleData.gcpOnly;
-            break;
-          case 'azure':
-            costData = sampleData.azureOnly;
-            break;
-          case 'all':
-          default:
-            costData = sampleData.allProviders;
-        }
-      }
-      
-      // Run Python forecasting script
-      const forecastResult = await runPythonScript("cost_forecasting.py", {
-        forecastDays,
-        costData,
-      });
-      
-      // If Python script failed, return error
+      // Pull REAL historical cost data (last ~90 days) so the forecast is based
+      // on the user's actual spend, not sample data.
+      const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+      const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
+      const { forecastCosts } = await import('./utils/cost-forecaster');
+
+      const histEnd = new Date();
+      const histStart = new Date();
+      histStart.setDate(histStart.getDate() - 90);
+      const providersToForecast = cloudProvider === 'all' ? undefined : [cloudProvider as CloudProvider];
+      const liveRecords = await fetchLiveCosts(histStart, histEnd, providersToForecast);
+      const costData = processMultiCloudCosts(liveRecords);
+
+      // Run the in-process forecaster (regression + weekly seasonality + damping).
+      // forecastDays is honoured here (the old Python path read the wrong key).
+      const forecastResult = forecastCosts(costData as any, forecastDays);
+
+      // If the forecaster could not produce a result, return the error
       if (!forecastResult.success) {
         return res.status(400).json(forecastResult);
       }
