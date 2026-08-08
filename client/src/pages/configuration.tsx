@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { Cloud, Plus, Trash2, CheckCircle, XCircle, Loader2, Eye, EyeOff } from "lucide-react";
+import { IngestionPanel } from "@/components/ingestion-panel";
 import type { CloudProvider } from "@shared/schema";
 
 interface CloudAccount {
@@ -211,6 +212,11 @@ export default function Configuration() {
           </CardContent>
         </Card>
       )}
+
+      {/* Placed above the per-provider tabs: whether cost data is current
+          applies to every provider, and it is the first thing to check when
+          the dashboard looks wrong. */}
+      <IngestionPanel />
 
       <Tabs defaultValue="aws" className="space-y-4">
         <TabsList className="grid w-full grid-cols-3">

@@ -1,6 +1,6 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator, Users } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator, Users, ScrollText } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth, type Permission } from "@/hooks/use-auth";
 import {
   Sidebar,
   SidebarContent,
@@ -24,15 +24,24 @@ const menuItems = [
   { title: "Configuration",  url: "/configuration", icon: Cloud },
 ];
 
-const adminMenuItems = [
-  { title: "User Management", url: "/users", icon: Users },
+/**
+ * Nav entries gated on a specific permission rather than a broad "isAdmin"
+ * flag, so the menu matches what the API will actually allow. Showing a link
+ * that 403s is worse than not showing it.
+ */
+const permissionedMenuItems: Array<{ title: string; url: string; icon: typeof Users; permission: Permission }> = [
+  { title: "User Management", url: "/users", icon: Users, permission: 'user:manage' },
+  { title: "Audit Log", url: "/audit", icon: ScrollText, permission: 'audit:read' },
 ];
 
 export function AppSidebar() {
   const [location] = useLocation();
-  const { isAdmin } = useAuth();
+  const { can } = useAuth();
 
-  const allItems = isAdmin ? [...menuItems, ...adminMenuItems] : menuItems;
+  const allItems = [
+    ...menuItems,
+    ...permissionedMenuItems.filter(item => can(item.permission)),
+  ];
 
   return (
     <Sidebar>

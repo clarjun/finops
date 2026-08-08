@@ -8,6 +8,7 @@ import { useState } from "react";
 import { TrendingDown, TrendingUp, AlertTriangle, CheckCircle2, XCircle, Lightbulb } from "lucide-react";
 import { queryClient } from "@/lib/queryClient";
 import type { OptimizationRecommendation } from "@shared/schema";
+import { RealizedSavingsPanel } from "@/components/realized-savings-panel";
 
 export default function OptimizationPage() {
   const [selectedProvider, setSelectedProvider] = useState<string>("all");
@@ -142,6 +143,11 @@ export default function OptimizationPage() {
           </Button>
         </div>
       </div>
+
+      {/* Measured outcomes sit above the projections deliberately: what the
+          recommendations actually delivered is the context for reading what
+          they promise next. */}
+      <RealizedSavingsPanel />
 
       {/* Summary Cards */}
       <div className="grid gap-4 md:grid-cols-3">
