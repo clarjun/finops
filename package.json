@@ -11,6 +11,7 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx server/migrate.ts",
     "db:seed-admin": "tsx server/seed-admin.ts",
+    "db:rotate-key": "tsx server/rotate-key.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
