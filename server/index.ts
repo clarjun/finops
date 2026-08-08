@@ -17,6 +17,7 @@ import { registerAuditRoutes } from "./audit-routes";
 import { registerCostFactRoutes } from "./ingestion/routes";
 import { registerSavingsRoutes } from "./savings/routes";
 import { startIngestionScheduler } from "./ingestion/scheduler";
+import { startReportScheduler } from "./reports/scheduler";
 import { log } from "./vite";
 import { serveStatic } from "./static";
 import { startBudgetAlertScheduler } from "./utils/budget-alert-checker-new";
@@ -130,5 +131,10 @@ app.use((req, res, next) => {
     } else {
       log('Cost ingestion scheduler disabled (INGESTION_ENABLED=false)');
     }
+
+    // Scheduled report delivery. Previously configurable in the UI but never
+    // executed — getDueReportSchedules() had no caller.
+    startReportScheduler(Number(process.env.REPORT_INTERVAL_MINUTES) || 15);
+    log('Report scheduler started');
   });
 })();

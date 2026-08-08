@@ -323,6 +323,11 @@ export const reportSchedules = pgTable("report_schedules", {
   subscriptionIds: text("subscription_ids"), // Comma-separated IDs, null = all
   nextRunAt: timestamp("next_run_at").notNull(),
   isEnabled: integer("is_enabled").notNull().default(1),
+  // Outcome of the most recent delivery attempt. Without these, a schedule that
+  // fails every week looks exactly like one that is working. See migration 0011.
+  lastRunAt: timestamp("last_run_at"),
+  lastRunStatus: varchar("last_run_status", { length: 20 }), // success | failed | skipped
+  lastRunError: text("last_run_error"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
