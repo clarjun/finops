@@ -8,6 +8,9 @@ import { db } from "./db";
 import { optimizationActions, actionFeedback, optimizationPlans } from "../shared/schema";
 import { and, eq } from "drizzle-orm";
 import { currentOrgId } from "./tenant-context";
+import { evaluate } from "./agent/guardrails";
+import { getAwsClientsForAction } from "./agent/credentials";
+import { recordAudit } from "./audit";
 
 interface ExecutionResult {
   success: boolean;
@@ -17,29 +20,45 @@ interface ExecutionResult {
 }
 
 export class AIActionExecutor {
-  private ec2Client: EC2Client;
-  private s3Client: S3Client;
+  /**
+   * Whether the change currently being executed is simulated.
+   *
+   * Set per action from the tenant's agent_config by the guardrail evaluation,
+   * not by a constructor argument. It was previously a constructor default that
+   * no caller ever overrode, which meant the dry-run switch in the settings UI
+   * had no effect in either direction.
+   */
   private dryRunMode: boolean = true;
 
-  constructor(dryRunMode: boolean = true) {
-    this.dryRunMode = dryRunMode;
-    
-    // Initialize AWS clients
-    this.ec2Client = new EC2Client({
-      region: process.env.AWS_REGION || 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || ''
-      }
-    });
+  /** AWS clients for the action in flight, built from that tenant's credentials. */
+  private ec2Client: EC2Client | null = null;
+  private s3Client: S3Client | null = null;
 
-    this.s3Client = new S3Client({
-      region: process.env.AWS_REGION || 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || ''
-      }
-    });
+  /**
+   * Loads the calling tenant's credentials for this action. Throws rather than
+   * falling back to anything ambient — there is no environment fallback.
+   */
+  private async useAwsCredentials(action: any): Promise<string | undefined> {
+    const { ec2, s3, account, warning } = await getAwsClientsForAction(
+      action.accountId ?? null,
+      action.currentState?.region,
+    );
+    this.ec2Client = ec2;
+    this.s3Client = s3;
+    console.log(`[Action Executor] Using AWS account "${account.accountName}" for action ${action.id}`);
+    if (warning) console.warn(`[Action Executor] ${warning}`);
+    return warning;
+  }
+
+  /** Guards every AWS call: a null client means credentials were never resolved. */
+  private get ec2(): EC2Client {
+    if (!this.ec2Client) throw new Error('AWS credentials were not resolved for this action');
+    return this.ec2Client;
+  }
+
+  private get s3(): S3Client {
+    if (!this.s3Client) throw new Error('AWS credentials were not resolved for this action');
+    return this.s3Client;
   }
 
   async executeAction(actionId: number): Promise<ExecutionResult> {
@@ -66,8 +85,75 @@ export class AIActionExecutor {
         };
       }
 
-      console.log(`[Action Executor] Executing action ${actionId}: ${action.actionType}`);
-      console.log(`[Action Executor] Dry-run mode: ${this.dryRunMode}`);
+      // Guardrails decide whether this runs for real, is simulated, or is
+      // refused — using the tenant's agent_config, which nothing read before.
+      const decision = await evaluate(action);
+      this.dryRunMode = decision.dryRun;
+
+      console.log(
+        `[Action Executor] Action ${actionId} (${action.actionType}): ` +
+        `${decision.outcome} — ${decision.reasons.join(' ')}`
+      );
+
+      await recordAudit({
+        action: 'agent.action.guardrail',
+        outcome: decision.outcome === 'block' ? 'denied' : 'success',
+        resourceType: 'optimization_action',
+        resourceId: String(actionId),
+        metadata: {
+          decision: decision.outcome,
+          actionType: action.actionType,
+          provider: action.provider,
+          reasons: decision.reasons,
+          config: decision.config,
+        },
+      });
+
+      if (decision.outcome === 'block') {
+        await db.update(optimizationActions)
+          .set({ status: 'rejected', executionError: decision.reasons.join(' ') })
+          .where(and(
+            eq(optimizationActions.id, actionId),
+            eq(optimizationActions.organizationId, currentOrgId()),
+          ));
+
+        return {
+          success: false,
+          message: 'Blocked by agent guardrails',
+          error: decision.reasons.join(' '),
+        };
+      }
+
+      // Resolve this tenant's cloud credentials before touching anything. A
+      // real run with no usable credentials must fail here, not part-way
+      // through against the wrong account.
+      let credentialWarning: string | undefined;
+      if (!decision.dryRun && action.provider === 'aws') {
+        try {
+          credentialWarning = await this.useAwsCredentials(action);
+        } catch (err: any) {
+          await db.update(optimizationActions)
+            .set({ status: 'failed', executionError: err?.message ?? String(err) })
+            .where(and(
+              eq(optimizationActions.id, actionId),
+              eq(optimizationActions.organizationId, currentOrgId()),
+            ));
+
+          await recordAudit({
+            action: 'agent.action.execute',
+            outcome: 'failure',
+            resourceType: 'optimization_action',
+            resourceId: String(actionId),
+            metadata: { reason: 'credential_resolution_failed', error: err?.message ?? String(err) },
+          });
+
+          return {
+            success: false,
+            message: 'Could not resolve cloud credentials',
+            error: err?.message ?? String(err),
+          };
+        }
+      }
 
       // Update status to executing
       await db.update(optimizationActions)
@@ -133,6 +219,28 @@ export class AIActionExecutor {
             error: `Unsupported action type: ${action.actionType}`
           };
       }
+
+      // Surface a credential fallback in the stored execution record, so an
+      // action that ran against a different account than it named is visible
+      // afterwards rather than only in the server log.
+      if (credentialWarning && result.executionDetails) {
+        result.executionDetails.credentialWarning = credentialWarning;
+      }
+
+      await recordAudit({
+        action: 'agent.action.execute',
+        outcome: result.success ? 'success' : 'failure',
+        resourceType: 'optimization_action',
+        resourceId: String(actionId),
+        metadata: {
+          actionType: action.actionType,
+          provider: action.provider,
+          simulated: decision.dryRun,
+          resourceTargeted: action.resourceId,
+          credentialWarning: credentialWarning ?? null,
+          error: result.error ?? null,
+        },
+      });
 
       // Update action with result
       if (result.success) {
@@ -235,18 +343,18 @@ export class AIActionExecutor {
       //   }
       // });
 
-      // await this.ec2Client.send(command);
+      // await this.ec2.send(command);
 
       const instanceId = action.resourceId;
       const newType = action.proposedState.instanceType;
 
       console.log(`🔹 Stopping instance ${instanceId}...`);
-      await this.ec2Client.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
+      await this.ec2.send(new StopInstancesCommand({ InstanceIds: [instanceId] }));
 
       // Wait until instance is stopped
       let stopped = false;
       while (!stopped) {
-        const status = await this.ec2Client.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
+        const status = await this.ec2.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }));
         const state = status.Reservations?.[0]?.Instances?.[0]?.State?.Name;
         console.log(`   Current state: ${state}`);
         if (state === "stopped") stopped = true;
@@ -254,7 +362,7 @@ export class AIActionExecutor {
       }
 
       console.log(`🔹 Modifying instance type to ${newType}...`);
-      await this.ec2Client.send(
+      await this.ec2.send(
         new ModifyInstanceAttributeCommand({
           InstanceId: instanceId,
           InstanceType: { Value: newType },
@@ -262,7 +370,7 @@ export class AIActionExecutor {
       );
 
       console.log(`🔹 Starting instance ${instanceId}...`);
-      await this.ec2Client.send(new StartInstancesCommand({ InstanceIds: [instanceId] }));
+      await this.ec2.send(new StartInstancesCommand({ InstanceIds: [instanceId] }));
 
       console.log(`✅ Instance ${instanceId} updated to type ${newType} and restarted.`);
 
@@ -306,7 +414,7 @@ export class AIActionExecutor {
         LifecycleConfiguration: action.proposedState
       });
 
-      await this.s3Client.send(command);
+      await this.s3.send(command);
 
       return {
         success: true,
@@ -344,7 +452,7 @@ export class AIActionExecutor {
         InstanceIds: [action.resourceId]
       });
 
-      await this.ec2Client.send(command);
+      await this.ec2.send(command);
 
       return {
         success: true,
@@ -690,4 +798,7 @@ export class AIActionExecutor {
 }
 
 // Export singleton instance
-export const aiActionExecutor = new AIActionExecutor(true); // Default to dry-run mode for safety
+// Dry-run is no longer a construction-time flag. It is decided per action from
+// the calling tenant's agent_config by server/agent/guardrails.ts, because a
+// single process serves every tenant and they do not share a setting.
+export const aiActionExecutor = new AIActionExecutor();
