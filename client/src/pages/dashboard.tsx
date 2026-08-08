@@ -23,6 +23,9 @@ import { QuickWinsPanel } from "@/components/quick-wins-panel";
 import { ServiceAnalysisModal } from "@/components/service-analysis-modal";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { useDateRange } from "@/contexts/date-range-context";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { TagAllocationPanel } from "@/components/tag-allocation-panel";
+import type { CostBasis } from "@/hooks/use-cost-store";
 import { useToast } from "@/hooks/use-toast";
 import type { ProcessedCostData, AnomalyDetectionResult } from "@shared/schema";
 
@@ -47,17 +50,30 @@ export default function Dashboard() {
   const { toast } = useToast();
   const { dateRange } = useDateRange();
 
+  /**
+   * Which cost the dashboard reports.
+   *
+   * effective — commitments amortized and credits applied. The right basis for
+   *             optimization and showback, and the default.
+   * billed    — what the invoice says. Use when reconciling with finance.
+   *
+   * Offering the choice, and labelling which is shown, is the difference
+   * between a number someone can defend and one they merely quote.
+   */
+  const [costBasis, setCostBasis] = useState<CostBasis>('effective');
+
   // Cost data comes from the ingested fact store rather than a live provider
   // API call per page load. When the store has nothing for the selected window
   // — a new tenant, or a range predating the first ingestion — the endpoint
   // reports source:'empty' and we fall back to the live path, so the dashboard
   // is never blank in a way that reads as "you spent nothing".
   const { data: costResponse, isLoading: costLoading, refetch: refetchCostData } = useQuery<CostDataResponse>({
-    queryKey: ["/api/costs/processed", selectedProvider, dateRange.startDate, dateRange.endDate],
+    queryKey: ["/api/costs/processed", selectedProvider, dateRange.startDate, dateRange.endDate, costBasis],
     queryFn: async () => {
       const params = new URLSearchParams({
         startDate: dateRange.startDate,
         endDate: dateRange.endDate,
+        costBasis,
       });
       if (selectedProvider !== "all") {
         params.append('provider', selectedProvider);
@@ -378,6 +394,17 @@ export default function Dashboard() {
             recommendations={(recommendationsData as { success: boolean; recommendations: any[] })?.recommendations}
             loading={costLoading}
           />
+
+          {/* Allocation only means anything against ingested data — the live
+              path carries no tags. */}
+          {costResponse?.source === 'facts' && (
+            <TagAllocationPanel
+              start={dateRange.startDate}
+              end={dateRange.endDate}
+              costBasis={costBasis}
+              provider={selectedProvider}
+            />
+          )}
         </div>
       </div>
     </>
@@ -409,6 +436,20 @@ export default function Dashboard() {
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
+          {/* Only meaningful against the fact store — the live path returns one
+              unlabelled number, so the choice is hidden rather than shown as a
+              control that silently does nothing. */}
+          {costResponse?.source === 'facts' && (
+            <Select value={costBasis} onValueChange={v => setCostBasis(v as CostBasis)}>
+              <SelectTrigger className="w-44" data-testid="select-cost-basis">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="effective">Effective cost</SelectItem>
+                <SelectItem value="billed">Billed cost</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
           <DateRangePicker />
           <DropdownMenu>
             {/* <DropdownMenuTrigger asChild>
