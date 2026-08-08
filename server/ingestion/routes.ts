@@ -12,8 +12,9 @@ import { ingestAllProviders, defaultRange, getIngestionStatus } from "./ingest";
 import {
   getTotalCost, getDailyTrend, getServiceBreakdown, getCategoryBreakdown,
   getProviderBreakdown, getSubAccountBreakdown, getCostByTag, getCoverage,
-  type CostBasis,
+  hasFactsFor, type CostBasis,
 } from "./queries";
+import { buildProcessedCostData } from "./processed-view";
 
 const dayRe = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -85,6 +86,47 @@ export function registerCostFactRoutes(app: Express) {
       });
     } catch (err) {
       fail(res, err, 'load cost summary');
+    }
+  });
+
+  // GET /api/costs/processed — the ProcessedCostData shape the dashboard and
+  // every chart component already consume, served from the fact store.
+  //
+  // Accepts startDate/endDate (the dashboard's parameter names) as well as
+  // start/end, so the client change is a URL swap rather than a rewrite.
+  //
+  // When the store holds nothing for the window it returns source:'empty'
+  // instead of a page of zeros, and the client falls back to the live endpoint.
+  // A brand-new tenant, or one whose first ingestion has not run, must not see
+  // an empty dashboard that looks like "you spent nothing".
+  app.get('/api/costs/processed', async (req, res) => {
+    try {
+      const q = req.query as Record<string, string | undefined>;
+      const f = parseFilters({
+        start: q.start ?? q.startDate,
+        end: q.end ?? q.endDate,
+        providers: q.providers ?? (q.provider && q.provider !== 'all' ? q.provider : undefined),
+        costBasis: q.costBasis,
+        includeTax: q.includeTax,
+      });
+
+      if (!(await hasFactsFor(f.start, f.end))) {
+        const coverage = await getCoverage();
+        return res.json({
+          source: 'empty',
+          coverage,
+          message: coverage.rows === 0
+            ? 'No cost data has been ingested yet. Run ingestion from Configuration.'
+            : 'No ingested data for this period. Run a backfill to load it.',
+        });
+      }
+
+      const data = await buildProcessedCostData(f);
+      const coverage = await getCoverage();
+
+      res.json({ source: 'facts', coverage, ...data });
+    } catch (err) {
+      fail(res, err, 'load processed cost data');
     }
   });
 

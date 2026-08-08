@@ -28,6 +28,17 @@ import type { ProcessedCostData, AnomalyDetectionResult } from "@shared/schema";
 
 type CloudProvider = 'all' | 'aws' | 'gcp' | 'azure';
 
+/**
+ * ProcessedCostData plus provenance. `source` says where the numbers came from
+ * and `costBasis` says which cost they are — showing a figure without being able
+ * to answer either question is how a dashboard loses the finance team.
+ */
+type CostDataResponse = ProcessedCostData & {
+  source: 'facts' | 'live';
+  costBasis?: 'billed' | 'effective';
+  coverage?: { latest: string | null; lastUpdated: string | null; rows: number };
+};
+
 export default function Dashboard() {
   const [selectedService, setSelectedService] = useState("all");
   const [selectedProvider, setSelectedProvider] = useState<CloudProvider>("all");
@@ -36,24 +47,35 @@ export default function Dashboard() {
   const { toast } = useToast();
   const { dateRange } = useDateRange();
 
-  const { data: costData, isLoading: costLoading, refetch: refetchCostData } = useQuery<ProcessedCostData>({
-    queryKey: ["/api/cost-data", selectedProvider, dateRange.startDate, dateRange.endDate],
+  // Cost data comes from the ingested fact store rather than a live provider
+  // API call per page load. When the store has nothing for the selected window
+  // — a new tenant, or a range predating the first ingestion — the endpoint
+  // reports source:'empty' and we fall back to the live path, so the dashboard
+  // is never blank in a way that reads as "you spent nothing".
+  const { data: costResponse, isLoading: costLoading, refetch: refetchCostData } = useQuery<CostDataResponse>({
+    queryKey: ["/api/costs/processed", selectedProvider, dateRange.startDate, dateRange.endDate],
     queryFn: async () => {
       const params = new URLSearchParams({
         startDate: dateRange.startDate,
         endDate: dateRange.endDate,
       });
-      
       if (selectedProvider !== "all") {
         params.append('provider', selectedProvider);
       }
-      
-      const url = `/api/cost-data?${params.toString()}`;
-      const response = await fetch(url, { credentials: 'include' });
-      if (!response.ok) throw new Error('Failed to fetch cost data');
-      return await response.json();
+
+      const stored = await fetch(`/api/costs/processed?${params.toString()}`, { credentials: 'include' });
+      if (stored.ok) {
+        const payload = await stored.json();
+        if (payload.source === 'facts') return payload as CostDataResponse;
+      }
+
+      const live = await fetch(`/api/cost-data?${params.toString()}`, { credentials: 'include' });
+      if (!live.ok) throw new Error('Failed to fetch cost data');
+      return { ...(await live.json()), source: 'live' } as CostDataResponse;
     },
   });
+
+  const costData = costResponse as ProcessedCostData | undefined;
 
   const { data: anomalyData, isLoading: anomalyLoading } = useQuery<AnomalyDetectionResult>({
     queryKey: ["/api/anomalies", selectedProvider, dateRange.startDate, dateRange.endDate],
@@ -369,6 +391,22 @@ export default function Dashboard() {
           <p className="text-muted-foreground mt-1">
             {getProviderDescription()}
           </p>
+          {/* Where these numbers came from and which cost they are. Both matter
+              when someone asks why the dashboard disagrees with the invoice. */}
+          {costResponse && (
+            <p className="text-xs text-muted-foreground mt-1.5" data-testid="text-data-provenance">
+              {costResponse.source === 'facts' ? (
+                <>
+                  {costResponse.costBasis === 'billed' ? 'Billed cost' : 'Effective cost'}
+                  {' · ingested data'}
+                  {costResponse.coverage?.lastUpdated &&
+                    ` · updated ${new Date(costResponse.coverage.lastUpdated).toLocaleString()}`}
+                </>
+              ) : (
+                <>Live provider data · not yet ingested</>
+              )}
+            </p>
+          )}
         </div>
         <div className="flex gap-2 flex-wrap">
           <DateRangePicker />
