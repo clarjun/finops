@@ -775,9 +775,10 @@ When answering:
       const { forecastDays = 30, provider } = req.body;
       const cloudProvider = (provider as CloudProvider | 'all' | undefined) || 'all';
       
-      // Pull REAL historical cost data (last ~90 days) so the forecast is based
-      // on the user's actual spend, not sample data.
-      const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+      // Historical spend for the model. Read from the ingested fact store: this
+      // previously called the provider billing APIs for 90 days on every single
+      // forecast request, which is slow and billed per call.
+      const { fetchCostRecords } = await import('./ingestion/cost-records');
       const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
       const { forecastCosts } = await import('./utils/cost-forecaster');
 
@@ -785,8 +786,9 @@ When answering:
       const histStart = new Date();
       histStart.setDate(histStart.getDate() - 90);
       const providersToForecast = cloudProvider === 'all' ? undefined : [cloudProvider as CloudProvider];
-      const liveRecords = await fetchLiveCosts(histStart, histEnd, providersToForecast);
-      const costData = processMultiCloudCosts(liveRecords);
+      const { records: histRecords, source } = await fetchCostRecords(histStart, histEnd, providersToForecast);
+      console.log(`[Forecast] ${histRecords.length} historical records from ${source}`);
+      const costData = processMultiCloudCosts(histRecords);
 
       // Run the in-process forecaster (regression + weekly seasonality + damping).
       // forecastDays is honoured here (the old Python path read the wrong key).
@@ -1024,7 +1026,7 @@ When answering:
       const fetchAndRefresh = async (): Promise<any> => {
         console.log(`[FinOps Report] Fetching fresh data from APIs for ${provider} (${startDateStr} to ${endDateStr})`);
         const { generateFinOpsReport } = await import('./reports/report-engine');
-        const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+        const { fetchCostRecords } = await import('./ingestion/cost-records');
         const { fetchExpensiveResources } = await import('./reports/expensive-resources-fetcher');
 
         const sixMonthsAgo = new Date(startDate);
@@ -1034,14 +1036,18 @@ When answering:
         const account = accounts.find((acc: any) => acc.provider === provider);
         const accountId = account?.accountId;
 
-        const [currentPeriodRecords, historicalRecords, expensiveResourcesList] = await Promise.all([
-          fetchLiveCosts(startDate, endDate, [provider as 'aws' | 'azure' | 'gcp']),
-          fetchLiveCosts(sixMonthsAgo, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+        // Both windows now come from the fact store. The six-month history in
+        // particular used to be six months of provider API calls on every cache
+        // miss; it is one indexed query.
+        const [current, historical, expensiveResourcesList] = await Promise.all([
+          fetchCostRecords(startDate, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+          fetchCostRecords(sixMonthsAgo, endDate, [provider as 'aws' | 'azure' | 'gcp']),
           fetchExpensiveResources(provider as 'aws' | 'azure' | 'gcp', startDateStr, endDateStr, 10),
         ]);
+        console.log(`[FinOps Report] current=${current.records.length} (${current.source}), history=${historical.records.length} (${historical.source})`);
 
-        const formattedCurrent = currentPeriodRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
-        const formattedHistorical = historicalRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+        const formattedCurrent = current.records.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+        const formattedHistorical = historical.records.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
 
         const serviceAggregation: Record<string, number> = {};
         for (const record of formattedCurrent) {
@@ -1157,11 +1163,13 @@ When answering:
     };
 
     try {
-      const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
+      const { fetchCostRecords } = await import('./ingestion/cost-records');
       const { fetchExpensiveResources } = await import('./reports/expensive-resources-fetcher');
 
-      // ── Step 1: Fetch data (the slow part) ──────────────────────────────
-      send('status', { message: 'Fetching cost data from AWS...', step: 1, total: 11 });
+      // ── Step 1: Fetch data ──────────────────────────────────────────────
+      // Formerly "the slow part": six months of billing-API calls per report.
+      // Now two indexed queries against the fact store.
+      send('status', { message: 'Loading cost data...', step: 1, total: 11 });
 
       const sixMonthsAgo = new Date(startDate);
       sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 5);
@@ -1170,17 +1178,21 @@ When answering:
       const account = accounts.find((acc: any) => acc.provider === provider);
       const accountId = account?.accountId;
 
-      // Fetch current period + historical + expensive resources in parallel
-      const [currentPeriodRecords, historicalRecords, expensiveResourcesList] = await Promise.all([
-        fetchLiveCosts(startDate, endDate, [provider as 'aws' | 'azure' | 'gcp']),
-        fetchLiveCosts(sixMonthsAgo, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+      const [current, historical, expensiveResourcesList] = await Promise.all([
+        fetchCostRecords(startDate, endDate, [provider as 'aws' | 'azure' | 'gcp']),
+        fetchCostRecords(sixMonthsAgo, endDate, [provider as 'aws' | 'azure' | 'gcp']),
         fetchExpensiveResources(provider as 'aws' | 'azure' | 'gcp', startDateStr, endDateStr, 10),
       ]);
 
-      send('status', { message: 'Data fetched. Computing sections...', step: 2, total: 11 });
+      // Tell the client where the numbers came from, so a report built from a
+      // live fallback is not mistaken for one built from ingested history.
+      send('status', {
+        message: current.source === 'facts' ? 'Loaded ingested data. Computing sections...' : 'Loaded live provider data. Computing sections...',
+        step: 2, total: 11, source: current.source,
+      });
 
-      const formattedCurrent = currentPeriodRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
-      const formattedHistorical = historicalRecords.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+      const formattedCurrent = current.records.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
+      const formattedHistorical = historical.records.map(d => ({ date: d.date, service: d.serviceName, cost: d.cost }));
 
       const serviceAggregation: Record<string, number> = {};
       for (const r of formattedCurrent) {
