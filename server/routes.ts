@@ -27,13 +27,87 @@ import { checkBudgetAlerts } from "./utils/budget-alert-checker-new";
 import type { CloudProvider } from "@shared/schema";
 import { fetchAWSCostData, isAWSConfigured } from "./aws-client";
 import { fetchGCPCostData, isGCPConfigured } from "./gcp-client";
+import { currentOrgId, currentUsername } from "./tenant-context";
+
+/**
+ * The agent config row for the current tenant, created on first access.
+ *
+ * Defaults are deliberately the safe ones: dry-run on, auto-execute off. A new
+ * organization must opt in to letting the agent touch live infrastructure.
+ */
+async function getOrCreateAgentConfig(): Promise<schema.AgentConfig> {
+  const orgId = currentOrgId();
+
+  const [existing] = await db.select().from(schema.agentConfig)
+    .where(eq(schema.agentConfig.organizationId, orgId))
+    .limit(1);
+  if (existing) return existing;
+
+  const [created] = await db.insert(schema.agentConfig)
+    .values({
+      organizationId: orgId,
+      dryRunMode: 1,
+      autoExecuteEnabled: 0,
+      safetyMode: 1,
+    })
+    .returning();
+  return created;
+}
 
 // Multi-cloud sample data cache
 let multiCloudSampleData: ReturnType<typeof generateMultiCloudSampleData> | null = null;
 let cachedCostData: any = null; // Legacy Azure-only cache
-let azureClient: AzureCostManagementClient | null = null;
-let currentAzureAccountId: number | null = null;
-let autoRefreshInterval: NodeJS.Timeout | null = null;
+/**
+ * Azure clients, one per tenant.
+ *
+ * This used to be a single module-level `azureClient`, initialized once at boot
+ * from "the first active Azure account". With more than one organization that is
+ * a cross-tenant leak: whichever tenant booted first would have had its Azure
+ * credentials used to answer every other tenant's request. Keyed by
+ * organization and resolved lazily on first use instead.
+ */
+interface TenantAzureClient {
+  client: AzureCostManagementClient;
+  accountId: number;
+}
+const azureClientsByOrg = new Map<number, TenantAzureClient>();
+
+/**
+ * The calling tenant's Azure client, initialized from its stored credentials on
+ * first use. Returns null when the tenant has not configured Azure.
+ */
+async function getTenantAzureClient(): Promise<TenantAzureClient | null> {
+  const orgId = currentOrgId();
+  const cached = azureClientsByOrg.get(orgId);
+  if (cached) return cached;
+
+  const accounts = await storage.getActiveAzureAccounts();
+  if (accounts.length === 0) return null;
+
+  const account = accounts[0];
+  const entry: TenantAzureClient = {
+    accountId: account.id,
+    client: new AzureCostManagementClient({
+      tenantId: account.tenantId,
+      clientId: account.clientId,
+      clientSecret: account.clientSecret,
+      subscriptionId: account.subscriptionId,
+      scope: account.scope as any,
+      resourceGroupName: account.resourceGroupName || undefined,
+      billingAccountId: account.billingAccountId || undefined,
+      refreshInterval: account.refreshInterval,
+    }),
+  };
+
+  azureClientsByOrg.set(orgId, entry);
+  console.log(`[Azure] Initialized client for org ${orgId}: ${account.accountName}`);
+  return entry;
+}
+
+/** Drop a tenant's cached client so the next request rebuilds it from new credentials. */
+function invalidateTenantAzureClient() {
+  azureClientsByOrg.delete(currentOrgId());
+}
 
 function loadSampleData() {
   // Legacy function for Azure-only data (backward compatibility)
@@ -92,6 +166,7 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
         .delete(costHistory)
         .where(
           and(
+            eq(costHistory.organizationId, currentOrgId()),
             eq(costHistory.accountId, subscriptionId),
             eq(costHistory.provider, 'azure'),
             gte(costHistory.date, minDate),
@@ -101,10 +176,11 @@ async function saveCostDataToHistory(azureResponse: any, subscriptionId: string)
     }
 
     // Insert cost records in batches to avoid timeout
+    const orgId = currentOrgId();
     const batchSize = 100;
     for (let i = 0; i < costRecords.length; i += batchSize) {
       const batch = costRecords.slice(i, i + batchSize);
-      await db.insert(costHistory).values(batch);
+      await db.insert(costHistory).values(batch.map((r: any) => ({ ...r, organizationId: orgId })));
     }
     
     console.log(`Saved ${costRecords.length} cost records to database for subscription ${subscriptionId}`);
@@ -181,11 +257,10 @@ async function fetchRealGCPData(): Promise<{ success: boolean; data: any[]; erro
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Check cloud provider configuration status on startup (informational only, will re-check on each request)
-  const initialAwsCheck = await isAWSConfigured();
-  const initialGcpCheck = await isGCPConfigured();
-  console.log(`AWS Cost Explorer: ${initialAwsCheck ? 'CONFIGURED Ô£ô' : 'Not configured - using sample data'}`);
-  console.log(`GCP BigQuery Billing: ${initialGcpCheck ? 'CONFIGURED Ô£ô' : 'Not configured - using sample data'}`);
+  // Provider configuration is per tenant, so there is nothing meaningful to
+  // check at boot — there is no tenant yet. Each request resolves its own
+  // tenant's credentials, and these checks already ran on every request anyway.
+  // (The removed startup log was informational only.)
 
   // Get processed cost data with optional provider filtering
   app.get("/api/cost-data", async (req, res) => {
@@ -548,13 +623,11 @@ When answering:
   app.post("/api/azure/config", async (req, res) => {
     try {
       const validated = azureConfigSchema.parse(req.body);
-      
-      // Create Azure client with new config
-      azureClient = new AzureCostManagementClient(validated);
-      
-      // Test the connection
-      const isConnected = await azureClient.testConnection();
-      
+
+      // Test the submitted credentials before persisting anything.
+      const candidate = new AzureCostManagementClient(validated);
+      const isConnected = await candidate.testConnection();
+
       if (!isConnected) {
         return res.status(401).json({ 
           error: "Failed to authenticate with Azure. Please check your credentials.",
@@ -576,29 +649,16 @@ When answering:
         isActive: 1,
       });
       
-      currentAzureAccountId = azureAccount.id;
-      
-      // Setup auto-refresh if configured
-      if (autoRefreshInterval) {
-        clearInterval(autoRefreshInterval);
-      }
-      
-      if (validated.refreshInterval) {
-        autoRefreshInterval = setInterval(async () => {
-          try {
-            console.log('Auto-refreshing Azure cost data...');
-            if (azureClient) {
-              const azureData = await azureClient.queryCostData();
-              cachedCostData = processAzureCostData(azureData);
-              await saveCostDataToHistory(azureData, validated.subscriptionId);
-            }
-          } catch (error) {
-            console.error('Auto-refresh failed:', error);
-          }
-        }, validated.refreshInterval * 1000);
-      }
-      
-      res.json({ 
+      // Adopt the tested client for this tenant.
+      azureClientsByOrg.set(currentOrgId(), { client: candidate, accountId: azureAccount.id });
+
+      // The old code started a per-process setInterval here to auto-refresh cost
+      // data. That is wrong under tenancy and under multiple replicas: it would
+      // spawn one timer per tenant per replica, all writing the same rows.
+      // Scheduled refresh belongs in the job scheduler alongside the budget
+      // checker, which already holds an advisory lock. Not started here.
+
+      res.json({
         success: true,
         message: "Azure configuration saved successfully and persisted to database",
         accountId: azureAccount.id,
@@ -627,9 +687,10 @@ When answering:
         return res.json({ configured: false });
       }
       
-      // Return the first active account (or current if set)
-      const account = currentAzureAccountId 
-        ? accounts.find(a => a.id === currentAzureAccountId) || accounts[0]
+      // Return the account backing this tenant's active client, else the first.
+      const active = azureClientsByOrg.get(currentOrgId());
+      const account = active
+        ? accounts.find(a => a.id === active.accountId) || accounts[0]
         : accounts[0];
       
       // NEVER return sensitive credentials to the client
@@ -653,23 +714,24 @@ When answering:
   // Fetch fresh data from Azure API
   app.post("/api/azure/refresh", async (_req, res) => {
     try {
-      if (!azureClient || !currentAzureAccountId) {
-        return res.status(400).json({ 
+      const azure = await getTenantAzureClient();
+      if (!azure) {
+        return res.status(400).json({
           error: "Azure is not configured. Please configure Azure credentials first.",
-          success: false 
+          success: false
         });
       }
-      
+
       // Get account details from database for subscription ID
-      const account = await storage.getAzureAccount(currentAzureAccountId);
+      const account = await storage.getAzureAccount(azure.accountId);
       if (!account) {
         return res.status(400).json({
           error: "Azure account not found",
           success: false
         });
       }
-      
-      const azureData = await azureClient.queryCostData();
+
+      const azureData = await azure.client.queryCostData();
       cachedCostData = processAzureCostData(azureData);
       
       // Save to database for historical analysis and ML training
@@ -762,11 +824,12 @@ When answering:
         dataPoints: costData?.dailyTrends?.length || 0,
       };
       
-      // Save forecast to database if successful and we have Azure account
-      if (transformedResult.forecasts && 
-          Array.isArray(transformedResult.forecasts) && 
-          transformedResult.forecasts.length > 0 && 
-          currentAzureAccountId) {
+      // Save forecast to database if successful and this tenant has Azure set up
+      const azureForForecast = await getTenantAzureClient();
+      if (transformedResult.forecasts &&
+          Array.isArray(transformedResult.forecasts) &&
+          transformedResult.forecasts.length > 0 &&
+          azureForForecast) {
         try {
           // Validate forecast data before persisting
           const validForecasts = transformedResult.forecasts.filter((f: any) => 
@@ -781,7 +844,7 @@ When answering:
           
           if (validForecasts.length > 0) {
             // Get current Azure account for subscription ID
-            const account = await storage.getAzureAccount(currentAzureAccountId);
+            const account = await storage.getAzureAccount(azureForForecast.accountId);
             if (account) {
               const forecastRecords = validForecasts.map((f: any) => ({
                 provider: 'azure' as const,
@@ -795,7 +858,9 @@ When answering:
               }));
               
               // Save to database
-              await db.insert(forecastData).values(forecastRecords);
+              const orgId = currentOrgId();
+              await db.insert(forecastData)
+                .values(forecastRecords.map(f => ({ ...f, organizationId: orgId })));
             }
           }
         } catch (dbError) {
@@ -2262,55 +2327,9 @@ When answering:
     }
   });
 
-  // Initialize Azure client from database on startup
-  async function initializeAzureClient() {
-    try {
-      const accounts = await storage.getActiveAzureAccounts();
-      
-      if (accounts.length > 0) {
-        const account = accounts[0]; // Use first active account
-        currentAzureAccountId = account.id;
-        
-        // Create Azure client with decrypted credentials
-        azureClient = new AzureCostManagementClient({
-          tenantId: account.tenantId,
-          clientId: account.clientId,
-          clientSecret: account.clientSecret,
-          subscriptionId: account.subscriptionId,
-          scope: account.scope as any,
-          resourceGroupName: account.resourceGroupName || undefined,
-          billingAccountId: account.billingAccountId || undefined,
-          refreshInterval: account.refreshInterval,
-        });
-        
-        // Setup auto-refresh if configured
-        if (account.refreshInterval > 0) {
-          autoRefreshInterval = setInterval(async () => {
-            try {
-              console.log('Auto-refreshing Azure cost data...');
-              if (azureClient) {
-                const azureData = await azureClient.queryCostData();
-                cachedCostData = processAzureCostData(azureData);
-                await saveCostDataToHistory(azureData, account.subscriptionId);
-              }
-            } catch (error) {
-              console.error('Auto-refresh failed:', error);
-            }
-          }, account.refreshInterval * 1000);
-        }
-        
-        console.log(`Loaded Azure account from database: ${account.accountName}`);
-      } else {
-        console.log('No Azure accounts found in database. Using sample data.');
-      }
-    } catch (error) {
-      console.error('Error initializing Azure client from database:', error);
-      console.log('Falling back to sample data.');
-    }
-  }
-  
-  // Initialize on startup
-  initializeAzureClient();
+  // Azure clients are no longer built at startup. There is no tenant at boot, so
+  // "the first active Azure account" is not a meaningful thing to load — see
+  // getTenantAzureClient(), which resolves the calling tenant's client lazily.
 
   // ==================== AGENTIC AI ENDPOINTS ====================
   
@@ -2479,17 +2498,22 @@ When answering:
     try {
       const { status, provider } = req.query;
 
-      let query = db.select().from(schema.optimizationPlans);
+      // Conditions are collected and applied once: chaining .where() twice
+      // replaces the first predicate rather than combining them, so the previous
+      // form silently ignored the status filter whenever provider was also set.
+      const conditions = [eq(schema.optimizationPlans.organizationId, currentOrgId())];
 
       if (status) {
-        query = query.where(eq(schema.optimizationPlans.status, status as string)) as any;
+        conditions.push(eq(schema.optimizationPlans.status, status as string));
       }
 
       if (provider) {
-        query = query.where(eq(schema.optimizationPlans.provider, provider as string)) as any;
+        conditions.push(eq(schema.optimizationPlans.provider, provider as string));
       }
 
-      const plans = await query.orderBy(schema.optimizationPlans.createdAt);
+      const plans = await db.select().from(schema.optimizationPlans)
+        .where(and(...conditions))
+        .orderBy(schema.optimizationPlans.createdAt);
       res.json(plans);
     } catch (error: any) {
       console.error("Error fetching plans:", error);
@@ -2502,13 +2526,24 @@ When answering:
     try {
       const planId = parseInt(req.params.id);
 
-      const plan = await db.select().from(schema.optimizationPlans).where(eq(schema.optimizationPlans.id, planId)).limit(1);
+      const plan = await db.select().from(schema.optimizationPlans)
+        .where(and(
+          eq(schema.optimizationPlans.id, planId),
+          eq(schema.optimizationPlans.organizationId, currentOrgId()),
+        ))
+        .limit(1);
 
+      // A plan belonging to another tenant is reported as not found rather than
+      // forbidden, so ids cannot be probed for existence.
       if (plan.length === 0) {
         return res.status(404).json({ error: "Plan not found" });
       }
 
-      const actions = await db.select().from(schema.optimizationActions).where(eq(schema.optimizationActions.planId, planId));
+      const actions = await db.select().from(schema.optimizationActions)
+        .where(and(
+          eq(schema.optimizationActions.planId, planId),
+          eq(schema.optimizationActions.organizationId, currentOrgId()),
+        ));
 
       res.json({
         ...plan[0],
@@ -2526,17 +2561,28 @@ When answering:
       const planId = parseInt(req.params.id);
 
       // Check if plan exists
-      const plan = await db.select().from(schema.optimizationPlans).where(eq(schema.optimizationPlans.id, planId)).limit(1);
+      const plan = await db.select().from(schema.optimizationPlans)
+        .where(and(
+          eq(schema.optimizationPlans.id, planId),
+          eq(schema.optimizationPlans.organizationId, currentOrgId()),
+        ))
+        .limit(1);
 
       if (plan.length === 0) {
         return res.status(404).json({ error: "Plan not found" });
       }
 
       // Delete associated actions first
-      await db.delete(schema.optimizationActions).where(eq(schema.optimizationActions.planId, planId));
+      await db.delete(schema.optimizationActions).where(and(
+        eq(schema.optimizationActions.planId, planId),
+        eq(schema.optimizationActions.organizationId, currentOrgId()),
+      ));
 
       // Delete the plan
-      await db.delete(schema.optimizationPlans).where(eq(schema.optimizationPlans.id, planId));
+      await db.delete(schema.optimizationPlans).where(and(
+        eq(schema.optimizationPlans.id, planId),
+        eq(schema.optimizationPlans.organizationId, currentOrgId()),
+      ));
 
       res.json({ success: true, message: "Plan and associated actions deleted successfully" });
     } catch (error: any) {
@@ -2554,11 +2600,14 @@ When answering:
         return res.status(400).json({ error: "Invalid request: planIds must be a non-empty array" });
       }
 
-      // Update position for each plan
+      // Update position for each plan. Ids from another tenant match no rows.
       for (let i = 0; i < planIds.length; i++) {
         await db.update(schema.optimizationPlans)
           .set({ position: i })
-          .where(eq(schema.optimizationPlans.id, planIds[i]));
+          .where(and(
+            eq(schema.optimizationPlans.id, planIds[i]),
+            eq(schema.optimizationPlans.organizationId, currentOrgId()),
+          ));
       }
 
       res.json({ success: true, message: "Plan positions updated successfully" });
@@ -2573,21 +2622,24 @@ When answering:
     try {
       const { status, provider, planId } = req.query;
 
-      let query = db.select().from(schema.optimizationActions);
+      // As above: one combined predicate, not three overwriting .where() calls.
+      const conditions = [eq(schema.optimizationActions.organizationId, currentOrgId())];
 
       if (status) {
-        query = query.where(eq(schema.optimizationActions.status, status as string)) as any;
+        conditions.push(eq(schema.optimizationActions.status, status as string));
       }
 
       if (provider) {
-        query = query.where(eq(schema.optimizationActions.provider, provider as string)) as any;
+        conditions.push(eq(schema.optimizationActions.provider, provider as string));
       }
 
       if (planId) {
-        query = query.where(eq(schema.optimizationActions.planId, parseInt(planId as string))) as any;
+        conditions.push(eq(schema.optimizationActions.planId, parseInt(planId as string)));
       }
 
-      const actions = await query.orderBy(schema.optimizationActions.createdAt);
+      const actions = await db.select().from(schema.optimizationActions)
+        .where(and(...conditions))
+        .orderBy(schema.optimizationActions.createdAt);
       res.json(actions);
     } catch (error: any) {
       console.error("Error fetching actions:", error);
@@ -2610,13 +2662,19 @@ When answering:
       const actionId = parseInt(req.params.id);
       const { approvedBy } = validation.data;
 
+      // Attribute the approval to the authenticated user rather than a
+      // client-supplied name — an audit trail that records whatever the caller
+      // claimed is not an audit trail.
       const result = await db.update(schema.optimizationActions)
         .set({
           status: 'approved',
           approvedAt: new Date(),
-          approvedBy: approvedBy || 'user'
+          approvedBy: currentUsername() ?? approvedBy ?? 'unknown'
         })
-        .where(eq(schema.optimizationActions.id, actionId))
+        .where(and(
+          eq(schema.optimizationActions.id, actionId),
+          eq(schema.optimizationActions.organizationId, currentOrgId()),
+        ))
         .returning();
 
       if (result.length === 0) {
@@ -2648,9 +2706,12 @@ When answering:
       const result = await db.update(schema.optimizationActions)
         .set({
           status: 'rejected',
-          executionError: reason || 'Rejected by user'
+          executionError: reason || `Rejected by ${currentUsername() ?? 'user'}`
         })
-        .where(eq(schema.optimizationActions.id, actionId))
+        .where(and(
+          eq(schema.optimizationActions.id, actionId),
+          eq(schema.optimizationActions.organizationId, currentOrgId()),
+        ))
         .returning();
 
       if (result.length === 0) {
@@ -2667,13 +2728,11 @@ When answering:
   // GET /api/agent/config - Get agent configuration
   app.get("/api/agent/config", async (req, res) => {
     try {
-      const config = await db.select().from(schema.agentConfig).limit(1);
-      
-      if (config.length === 0) {
-        return res.status(404).json({ error: "Agent configuration not found" });
-      }
-
-      res.json(config[0]);
+      // One config row per tenant, created on first read with safe defaults
+      // (dry-run on, auto-execute off) so a new organization is never left
+      // without one — previously this 404'd and the UI showed nothing.
+      const config = await getOrCreateAgentConfig();
+      res.json(config);
     } catch (error: any) {
       console.error("Error fetching agent config:", error);
       res.status(500).json({ error: error.message || "Failed to fetch agent config" });
@@ -2683,20 +2742,21 @@ When answering:
   // PUT /api/agent/config - Update agent configuration
   app.put("/api/agent/config", async (req, res) => {
     try {
-      const updates = req.body;
+      // organizationId and id are not client-settable — a config row cannot be
+      // moved between tenants.
+      const { organizationId: _org, id: _id, ...updates } = req.body ?? {};
 
-      const config = await db.select().from(schema.agentConfig).limit(1);
-      
-      if (config.length === 0) {
-        return res.status(404).json({ error: "Agent configuration not found" });
-      }
+      const config = await getOrCreateAgentConfig();
 
       const result = await db.update(schema.agentConfig)
         .set({
           ...updates,
           updatedAt: new Date()
         })
-        .where(eq(schema.agentConfig.id, config[0].id))
+        .where(and(
+          eq(schema.agentConfig.id, config.id),
+          eq(schema.agentConfig.organizationId, currentOrgId()),
+        ))
         .returning();
 
       res.json(result[0]);
@@ -2785,23 +2845,32 @@ When answering:
       // Get the action first to retrieve planId
       const [action] = await db.select()
         .from(schema.optimizationActions)
-        .where(eq(schema.optimizationActions.id, actionId))
+        .where(and(
+          eq(schema.optimizationActions.id, actionId),
+          eq(schema.optimizationActions.organizationId, currentOrgId()),
+        ))
         .limit(1);
-      
+
       if (!action) {
         return res.status(404).json({ error: "Action not found" });
       }
 
       // Delete the action
       await db.delete(schema.optimizationActions)
-        .where(eq(schema.optimizationActions.id, actionId));
+        .where(and(
+          eq(schema.optimizationActions.id, actionId),
+          eq(schema.optimizationActions.organizationId, currentOrgId()),
+        ));
 
       // Update the plan's total steps and completed steps
       const planId = action.planId;
       if (planId) {
         const planActions = await db.select()
           .from(schema.optimizationActions)
-          .where(eq(schema.optimizationActions.planId, planId));
+          .where(and(
+            eq(schema.optimizationActions.planId, planId),
+            eq(schema.optimizationActions.organizationId, currentOrgId()),
+          ));
         
         const completedCount = planActions.filter((a: any) => a.status === 'completed').length;
         
@@ -2810,7 +2879,10 @@ When answering:
             totalSteps: planActions.length,
             completedSteps: completedCount,
           })
-          .where(eq(schema.optimizationPlans.id, planId));
+          .where(and(
+            eq(schema.optimizationPlans.id, planId),
+            eq(schema.optimizationPlans.organizationId, currentOrgId()),
+          ));
       }
 
       res.json({ success: true, deletedAction: action });

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useAuth } from "@/hooks/use-auth";
+import { useAuth, USER_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type UserRole } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,21 +14,33 @@ import { Plus, Pencil, Trash2, Users, ShieldCheck, User } from "lucide-react";
 interface AppUser {
   id: number;
   username: string;
-  role: string;
+  email: string | null;
+  role: UserRole;
+  isPlatformAdmin: boolean;
   isActive: boolean;
+  lastLoginAt: string | null;
   createdAt: string;
 }
 
 interface UserForm {
   username: string;
   password: string;
-  role: string;
+  role: UserRole;
 }
 
-const emptyForm: UserForm = { username: '', password: '', role: 'user' };
+/** New accounts start at the least privilege; promote deliberately. */
+const emptyForm: UserForm = { username: '', password: '', role: 'viewer' };
+
+/** Must match ROLE_RANK in server/auth.ts — you cannot grant above your own role. */
+const ROLE_RANK: Record<UserRole, number> = {
+  viewer: 0, engineer: 1, finops: 2, admin: 3, owner: 4,
+};
+
+const MIN_PASSWORD_LENGTH = 12;
 
 export default function UsersPage() {
   const { user: me } = useAuth();
+  const myRank = me ? ROLE_RANK[me.role] ?? 0 : 0;
   const qc = useQueryClient();
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -122,18 +134,31 @@ export default function UsersPage() {
             <CardContent className="flex items-center justify-between py-4">
               <div className="flex items-center gap-3">
                 <div className="h-9 w-9 rounded-full bg-muted flex items-center justify-center">
-                  {u.role === 'admin' ? <ShieldCheck className="h-5 w-5 text-blue-500" /> : <User className="h-5 w-5 text-muted-foreground" />}
+                  {ROLE_RANK[u.role] >= ROLE_RANK.admin
+                    ? <ShieldCheck className="h-5 w-5 text-blue-500" />
+                    : <User className="h-5 w-5 text-muted-foreground" />}
                 </div>
                 <div>
                   <p className="font-medium">{u.username} {u.id === me?.id && <span className="text-xs text-muted-foreground">(you)</span>}</p>
-                  <p className="text-xs text-muted-foreground">Created {new Date(u.createdAt).toLocaleDateString()}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {u.lastLoginAt
+                      ? `Last login ${new Date(u.lastLoginAt).toLocaleDateString()}`
+                      : 'Never signed in'}
+                    {' · '}Created {new Date(u.createdAt).toLocaleDateString()}
+                  </p>
                 </div>
               </div>
               <div className="flex items-center gap-3">
-                <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>{u.role}</Badge>
+                <Badge variant={ROLE_RANK[u.role] >= ROLE_RANK.admin ? 'default' : 'secondary'}>
+                  {ROLE_LABELS[u.role] ?? u.role}
+                </Badge>
                 <Badge variant={u.isActive ? 'outline' : 'destructive'}>{u.isActive ? 'Active' : 'Inactive'}</Badge>
-                <Button variant="ghost" size="icon" onClick={() => openEdit(u)}><Pencil className="h-4 w-4" /></Button>
-                {u.id !== me?.id && (
+                {/* The server rejects edits to a user who outranks you; hide the
+                    controls rather than surface a 403 after the click. */}
+                {ROLE_RANK[u.role] <= myRank && (
+                  <Button variant="ghost" size="icon" onClick={() => openEdit(u)}><Pencil className="h-4 w-4" /></Button>
+                )}
+                {u.id !== me?.id && ROLE_RANK[u.role] <= myRank && (
                   <>
                     <Button variant="ghost" size="icon" onClick={() => toggleActive.mutate({ id: u.id, isActive: !u.isActive })}>
                       {u.isActive ? <span className="text-xs text-yellow-600">Disable</span> : <span className="text-xs text-green-600">Enable</span>}
@@ -162,17 +187,32 @@ export default function UsersPage() {
             </div>
             <div className="space-y-1.5">
               <Label>{editing ? 'New Password (leave blank to keep)' : 'Password'}</Label>
-              <Input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} required={!editing} placeholder={editing ? 'Leave blank to keep current' : 'Enter password'} />
+              <Input
+                type="password"
+                value={form.password}
+                onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                required={!editing}
+                minLength={form.password ? MIN_PASSWORD_LENGTH : undefined}
+                placeholder={editing ? 'Leave blank to keep current' : `At least ${MIN_PASSWORD_LENGTH} characters`}
+              />
+              {form.password && form.password.length < MIN_PASSWORD_LENGTH && (
+                <p className="text-xs text-destructive">
+                  Must be at least {MIN_PASSWORD_LENGTH} characters.
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label>Role</Label>
-              <Select value={form.role} onValueChange={v => setForm(f => ({ ...f, role: v }))}>
+              <Select value={form.role} onValueChange={v => setForm(f => ({ ...f, role: v as UserRole }))}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="user">User</SelectItem>
-                  <SelectItem value="admin">Admin</SelectItem>
+                  {/* Only roles at or below your own — the server rejects the rest. */}
+                  {USER_ROLES.filter(r => ROLE_RANK[r] <= myRank).map(r => (
+                    <SelectItem key={r} value={r}>{ROLE_LABELS[r]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">{ROLE_DESCRIPTIONS[form.role]}</p>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setDialogOpen(false)}>Cancel</Button>

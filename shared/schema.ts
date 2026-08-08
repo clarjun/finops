@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { pgTable, text, varchar, timestamp, numeric, integer, jsonb, serial, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, numeric, integer, jsonb, serial, bigserial, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 
 // Cloud Provider Types
@@ -166,9 +166,39 @@ export interface AzureQueryBody {
 
 // ==================== DATABASE SCHEMA ====================
 
+// ==================== TENANCY ====================
+
+// An organization is the tenant boundary. Every tenant-scoped row below carries
+// an organizationId; a single-tenant / on-prem install is simply a database with
+// one organization, so the same code serves both deployment models.
+export const organizations = pgTable("organizations", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 255 }).notNull(),
+  slug: varchar("slug", { length: 100 }).notNull().unique(),
+  plan: varchar("plan", { length: 50 }).notNull().default('standard'),
+  status: varchar("status", { length: 20 }).notNull().default('active'), // 'active' | 'suspended'
+  settings: jsonb("settings").notNull().default({}),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertOrganizationSchema = createInsertSchema(organizations).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertOrganization = z.infer<typeof insertOrganizationSchema>;
+export type Organization = typeof organizations.$inferSelect;
+
+// The tenant key, declared once. `.default(1)` mirrors the migration and keeps
+// legacy writers that predate tenancy from failing hard; server/tenant-context.ts
+// is the real enforcement point and always sets it explicitly.
+const organizationId = () =>
+  integer("organization_id").notNull().default(1).references(() => organizations.id, { onDelete: 'cascade' });
+
+// Tables that are NOT tenant-scoped (deliberately global):
+//   organizations, schema_migrations, user_sessions
+
 // Historical Cost Data - stores daily cost records for ML training and analysis (Multi-Cloud)
 export const costHistory = pgTable("cost_history", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(), // 'azure', 'aws', 'gcp'
   date: timestamp("date").notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(), // AWS Account ID, Azure Subscription ID, GCP Project ID
@@ -195,6 +225,7 @@ export type CostHistory = typeof costHistory.$inferSelect;
 // 4. Audit all access to this table
 export const cloudAccounts = pgTable("cloud_accounts", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(), // 'azure', 'aws', 'gcp'
   accountName: varchar("account_name", { length: 255 }).notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(), // AWS Account ID, Azure Subscription ID, GCP Project ID
@@ -213,6 +244,7 @@ export type CloudAccount = typeof cloudAccounts.$inferSelect;
 // Legacy Azure Accounts table (deprecated - migrate to cloudAccounts)
 export const azureAccounts = pgTable("azure_accounts", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   accountName: varchar("account_name", { length: 255 }).notNull(),
   tenantId: varchar("tenant_id", { length: 255 }).notNull(),
   clientId: varchar("client_id", { length: 255 }).notNull(),
@@ -234,6 +266,7 @@ export type AzureAccount = typeof azureAccounts.$inferSelect;
 // Budgets - for tracking spending limits across cloud providers
 export const budgets = pgTable("budgets", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   budgetName: varchar("budget_name", { length: 255 }).notNull(),
   provider: varchar("provider", { length: 20 }), // null = all providers
   accountId: varchar("account_id", { length: 255 }), // null = all accounts
@@ -259,6 +292,7 @@ export type Budget = typeof budgets.$inferSelect;
 // Alert Rules - for budget threshold notifications (multi-cloud)
 export const alertRules = pgTable("alert_rules", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   ruleName: varchar("rule_name", { length: 255 }).notNull(),
   provider: varchar("provider", { length: 20 }), // null = all providers
   accountId: varchar("account_id", { length: 255 }), // null = all accounts
@@ -280,6 +314,7 @@ export type AlertRule = typeof alertRules.$inferSelect;
 // Report Schedules - for automated report generation
 export const reportSchedules = pgTable("report_schedules", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   scheduleName: varchar("schedule_name", { length: 255 }).notNull(),
   reportType: varchar("report_type", { length: 50 }).notNull(), // 'cost_summary', 'detailed', 'forecast'
   frequency: varchar("frequency", { length: 50 }).notNull(), // 'daily', 'weekly', 'monthly'
@@ -299,6 +334,7 @@ export type ReportSchedule = typeof reportSchedules.$inferSelect;
 // Resource Inventory - tracks cloud resources across providers
 export const resourceInventory = pgTable("resource_inventory", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(),
   resourceId: varchar("resource_id", { length: 500 }).notNull(), // Unique resource identifier
@@ -323,6 +359,7 @@ export type ResourceInventory = typeof resourceInventory.$inferSelect;
 // Tag Analysis - for cost allocation and governance
 export const tagAnalysis = pgTable("tag_analysis", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(),
   tagKey: varchar("tag_key", { length: 255 }).notNull(),
@@ -341,6 +378,7 @@ export type TagAnalysis = typeof tagAnalysis.$inferSelect;
 // ML Forecast Data - stores prediction results (multi-cloud)
 export const forecastData = pgTable("forecast_data", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(),
   serviceName: varchar("service_name", { length: 255 }),
@@ -359,6 +397,7 @@ export type ForecastData = typeof forecastData.$inferSelect;
 // Cost Optimization Recommendations (multi-cloud)
 export const optimizationRecommendations = pgTable("optimization_recommendations", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(),
   resourceId: varchar("resource_id", { length: 500 }),
@@ -384,6 +423,7 @@ export type OptimizationRecommendation = typeof optimizationRecommendations.$inf
 // Savings Plans / Reserved Instances Analysis
 export const savingsPlans = pgTable("savings_plans", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(), // 'aws', 'azure', 'gcp'
   accountId: varchar("account_id", { length: 255 }).notNull(),
   planType: varchar("plan_type", { length: 100 }).notNull(), // 'compute_savings_plan', 'ec2_ri', 'azure_ri', 'gcp_cud'
@@ -409,6 +449,7 @@ export type SavingsPlan = typeof savingsPlans.$inferSelect;
 // Anomaly Events - for root cause analysis
 export const anomalyEvents = pgTable("anomaly_events", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   provider: varchar("provider", { length: 20 }).notNull(),
   accountId: varchar("account_id", { length: 255 }).notNull(),
   detectedAt: timestamp("detected_at").notNull(),
@@ -435,6 +476,7 @@ export type AnomalyEvent = typeof anomalyEvents.$inferSelect;
 // Optimization Actions - Track AI-proposed and executed optimizations
 export const optimizationActions = pgTable("optimization_actions", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   planId: integer("plan_id"), // Foreign key to optimization_plans
   actionType: varchar("action_type", { length: 100 }).notNull(), // 'ec2_downsize', 's3_lifecycle', 'ri_purchase', 'delete_snapshot', etc.
   provider: varchar("provider", { length: 20 }).notNull(),
@@ -465,6 +507,7 @@ export type OptimizationAction = typeof optimizationActions.$inferSelect;
 // Optimization Plans - Multi-step AI-generated plans
 export const optimizationPlans = pgTable("optimization_plans", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   goal: text("goal").notNull(), // "Reduce AWS costs by 30%", "Optimize idle resources"
   provider: varchar("provider", { length: 20 }), // Specific provider or 'all' for multi-cloud
   targetSavings: numeric("target_savings", { precision: 10, scale: 2 }),
@@ -491,6 +534,7 @@ export type OptimizationPlan = typeof optimizationPlans.$inferSelect;
 // Action Feedback - Learning from outcomes
 export const actionFeedback = pgTable("action_feedback", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(),
   actionId: integer("action_id").notNull(), // Foreign key to optimization_actions
   actualSavings: numeric("actual_savings", { precision: 10, scale: 2 }),
   savingsVariance: numeric("savings_variance", { precision: 5, scale: 2 }), // % difference from estimate
@@ -511,6 +555,7 @@ export type ActionFeedback = typeof actionFeedback.$inferSelect;
 // Agent Configuration - Control AI behavior
 export const agentConfig = pgTable("agent_config", {
   id: serial("id").primaryKey(),
+  organizationId: organizationId(), // exactly one config row per tenant (unique index in 0006)
   autoExecuteEnabled: integer("auto_execute_enabled").default(0), // 0 = require approval, 1 = auto-execute
   requireApprovalFor: jsonb("require_approval_for"), // Array of action types that always need approval
   maxCostImpactWithoutApproval: numeric("max_cost_impact_without_approval", { precision: 10, scale: 2 }).default('100.00'),
@@ -531,7 +576,9 @@ export type AgentConfig = typeof agentConfig.$inferSelect;
 // Report Cache - persists generated FinOps reports in DB for fast retrieval
 export const reportCache = pgTable("report_cache", {
   id: serial("id").primaryKey(),
-  cacheKey: varchar("cache_key", { length: 500 }).notNull().unique(), // e.g. finops-report:aws:2026-04-01:2026-04-09
+  organizationId: organizationId(),
+  // Unique per tenant, not globally — see idx_report_cache_org_key in 0006.
+  cacheKey: varchar("cache_key", { length: 500 }).notNull(), // e.g. finops-report:aws:2026-04-01:2026-04-09
   provider: varchar("provider", { length: 20 }).notNull(),
   startDate: varchar("start_date", { length: 20 }).notNull(),
   endDate: varchar("end_date", { length: 20 }).notNull(),
@@ -547,13 +594,28 @@ export type ReportCache = typeof reportCache.$inferSelect;
 
 // ==================== USER MANAGEMENT ====================
 
+// Role vocabulary, least- to most-privileged. See server/rbac.ts for the
+// permission each one grants.
+export const USER_ROLES = ['viewer', 'engineer', 'finops', 'admin', 'owner'] as const;
+export type UserRole = typeof USER_ROLES[number];
+export const userRoleSchema = z.enum(USER_ROLES);
+
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
+  // A user's home tenant. Username stays globally unique so login needs no org
+  // selector — the tenant is derived from the authenticated user's row.
+  organizationId: organizationId(),
   username: varchar("username", { length: 100 }).notNull().unique(),
+  email: varchar("email", { length: 255 }),
+  fullName: varchar("full_name", { length: 255 }),
   passwordHash: text("password_hash").notNull(),
-  role: varchar("role", { length: 20 }).notNull().default('user'), // 'admin' | 'user'
+  role: varchar("role", { length: 20 }).notNull().default('viewer'),
+  // Cross-tenant support access. Lets CirrusLabs staff switch active org;
+  // every switch is audit-logged.
+  isPlatformAdmin: boolean("is_platform_admin").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true),
   createdBy: integer("created_by"), // admin user id who created this user
+  lastLoginAt: timestamp("last_login_at"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -561,3 +623,119 @@ export const users = pgTable("users", {
 export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
+
+// ==================== COST FACT STORE ====================
+
+// FOCUS 1.x charge categories. A report that sums Usage alongside Credit and Tax
+// without distinguishing them will not reconcile with the invoice.
+export const CHARGE_CATEGORIES = ['Usage', 'Purchase', 'Tax', 'Credit', 'Refund', 'Adjustment'] as const;
+export type ChargeCategory = typeof CHARGE_CATEGORIES[number];
+
+export const SERVICE_CATEGORIES = [
+  'Compute', 'Storage', 'Databases', 'Networking', 'Analytics',
+  'AI and Machine Learning', 'Security', 'Management and Governance',
+  'Developer Tools', 'Web', 'Other',
+] as const;
+export type ServiceCategory = typeof SERVICE_CATEGORIES[number];
+
+// One row per connector execution: the ingestion watermark, a record of API
+// spend, and what is needed to re-run a failed window.
+export const ingestionRuns = pgTable("ingestion_runs", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  cloudAccountId: integer("cloud_account_id"),
+  periodStart: timestamp("period_start", { mode: 'string' }).notNull(),
+  periodEnd: timestamp("period_end", { mode: 'string' }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default('running'), // running|success|failed|partial
+  trigger: varchar("trigger", { length: 20 }).notNull().default('scheduled'), // scheduled|manual|backfill
+  recordsIngested: integer("records_ingested").notNull().default(0),
+  recordsUpdated: integer("records_updated").notNull().default(0),
+  apiCalls: integer("api_calls").notNull().default(0),
+  error: text("error"),
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  finishedAt: timestamp("finished_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertIngestionRunSchema = createInsertSchema(ingestionRuns).omit({ id: true, createdAt: true });
+export type InsertIngestionRun = z.infer<typeof insertIngestionRunSchema>;
+export type IngestionRun = typeof ingestionRuns.$inferSelect;
+
+// The canonical cost store. Every read path queries this rather than calling a
+// provider billing API. Column names follow FOCUS 1.x — see migration 0008.
+export const costFacts = pgTable("cost_facts", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+
+  billingAccountId: varchar("billing_account_id", { length: 255 }),
+  billingAccountName: varchar("billing_account_name", { length: 255 }),
+  subAccountId: varchar("sub_account_id", { length: 255 }).notNull(),
+  subAccountName: varchar("sub_account_name", { length: 255 }),
+
+  chargePeriodStart: timestamp("charge_period_start").notNull(),
+  chargePeriodEnd: timestamp("charge_period_end").notNull(),
+  billingPeriodStart: timestamp("billing_period_start"),
+
+  serviceName: varchar("service_name", { length: 255 }).notNull(),
+  serviceCategory: varchar("service_category", { length: 100 }),
+  chargeCategory: varchar("charge_category", { length: 50 }).notNull().default('Usage'),
+  chargeDescription: text("charge_description"),
+  resourceId: varchar("resource_id", { length: 500 }),
+  resourceName: varchar("resource_name", { length: 255 }),
+  regionId: varchar("region_id", { length: 100 }),
+
+  // numeric() maps to string in drizzle to avoid float precision loss.
+  billedCost: numeric("billed_cost", { precision: 20, scale: 10 }).notNull().default('0'),
+  effectiveCost: numeric("effective_cost", { precision: 20, scale: 10 }),
+  listCost: numeric("list_cost", { precision: 20, scale: 10 }),
+  billingCurrency: varchar("billing_currency", { length: 10 }).notNull().default('USD'),
+
+  // Unconstrained precision — GCP reports storage in byte-seconds, which
+  // overflows any reasonable fixed precision. See migration 0009.
+  pricingQuantity: numeric("pricing_quantity"),
+  pricingUnit: varchar("pricing_unit", { length: 100 }),
+
+  tags: jsonb("tags"),
+  commitmentDiscountId: varchar("commitment_discount_id", { length: 255 }),
+
+  ingestionRunId: integer("ingestion_run_id"),
+  sourceHash: varchar("source_hash", { length: 64 }).notNull(),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const insertCostFactSchema = createInsertSchema(costFacts).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertCostFact = z.infer<typeof insertCostFactSchema>;
+export type CostFact = typeof costFacts.$inferSelect;
+
+// ==================== AUDIT LOG ====================
+
+// Append-only record of every state-changing request and every privileged
+// action. A database trigger (migration 0006) rejects UPDATE and DELETE, so an
+// application bug cannot rewrite history.
+export const auditLogs = pgTable("audit_logs", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  // Deliberately not a foreign key: audit history is retained after a tenant is
+  // deleted, and a cascading delete would be blocked by the append-only trigger
+  // anyway. See migration 0007.
+  organizationId: integer("organization_id").notNull(),
+  actorUserId: integer("actor_user_id"),
+  actorUsername: varchar("actor_username", { length: 100 }),
+  actorIp: varchar("actor_ip", { length: 64 }),
+  action: varchar("action", { length: 100 }).notNull(), // 'cloud_account.create', 'agent.action.execute', ...
+  resourceType: varchar("resource_type", { length: 100 }),
+  resourceId: varchar("resource_id", { length: 255 }),
+  method: varchar("method", { length: 10 }),
+  path: varchar("path", { length: 500 }),
+  statusCode: integer("status_code"),
+  outcome: varchar("outcome", { length: 20 }).notNull().default('success'), // 'success' | 'failure' | 'denied'
+  metadata: jsonb("metadata"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;

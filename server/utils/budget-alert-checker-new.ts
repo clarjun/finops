@@ -5,6 +5,8 @@
  */
 
 import { storage } from "../storage";
+import { pool } from "../db";
+import { runAsSystem } from "../tenant-context";
 import { EmailService } from "../email-service";
 import type { Budget, AlertRule, CloudProvider } from "@shared/schema";
 import { getServiceCost, fetchLiveCosts, aggregateCosts } from "./live-cost-fetcher";
@@ -414,27 +416,92 @@ export async function checkAllAlerts(): Promise<{
 }
 
 /**
+ * Run the alert check once for every active tenant.
+ *
+ * checkAllAlerts() reads whatever tenant is in the ambient context, so the
+ * scheduler cannot simply call it — there is no request to inherit a tenant
+ * from. Each organization gets its own runAsSystem() scope, which also means one
+ * tenant's failure cannot abort the others.
+ */
+export async function checkAllAlertsForAllTenants(): Promise<{
+  organizations: number;
+  checked: number;
+  alerted: number;
+  errors: string[];
+}> {
+  const orgs = await storage.listActiveOrganizations();
+  let checked = 0;
+  let alerted = 0;
+  const errors: string[] = [];
+
+  for (const org of orgs) {
+    try {
+      const results = await runAsSystem(org.id, () => checkAllAlerts());
+      checked += results.checked;
+      alerted += results.alerted;
+      errors.push(...results.errors.map(e => `[org ${org.id}] ${e}`));
+    } catch (err: any) {
+      errors.push(`[org ${org.id}] ${err?.message ?? err}`);
+    }
+  }
+
+  return { organizations: orgs.length, checked, alerted, errors };
+}
+
+// One arbitrary but stable key identifying this job across replicas.
+const ALERT_JOB_LOCK_KEY = 4711001;
+
+/**
+ * Runs `fn` only if no other replica holds the job lock.
+ *
+ * Azure Container Apps runs more than one replica, and a plain setInterval in
+ * each of them means every budget alert email is sent N times. A Postgres
+ * advisory lock is the cheapest correct fix short of a real job queue; the lock
+ * is held on one connection for the duration of the run and released after.
+ */
+async function withJobLock(fn: () => Promise<void>): Promise<void> {
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock($1) AS locked', [ALERT_JOB_LOCK_KEY]
+    );
+    if (!rows[0]?.locked) {
+      console.log('[Alert Scheduler] Another replica holds the lock, skipping this tick');
+      return;
+    }
+    try {
+      await fn();
+    } finally {
+      await client.query('SELECT pg_advisory_unlock($1)', [ALERT_JOB_LOCK_KEY]);
+    }
+  } catch (err: any) {
+    console.error('[Alert Scheduler] Job lock error:', err?.message ?? err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Start periodic alert checking (for production deployment)
  * Run this on a schedule (e.g., every hour or every 15 minutes)
  */
 export function startBudgetAlertScheduler(intervalMinutes: number = 60): NodeJS.Timeout {
   console.log(`[Alert Scheduler] Starting alert scheduler (checking every ${intervalMinutes} minutes)`);
-  
-  // Run initial check
-  checkAllAlerts().then(results => {
-    console.log(`[Alert Scheduler] Initial check: ${results.checked} items checked, ${results.alerted} alerts sent`);
-    if (results.errors.length > 0) {
-      console.error('[Alert Scheduler] Errors:', results.errors);
-    }
-  });
 
-  // Schedule periodic checks
-  return setInterval(async () => {
-    console.log(`[Alert Scheduler] Running scheduled alert check...`);
-    const results = await checkAllAlerts();
-    console.log(`[Alert Scheduler] Check complete: ${results.checked} items checked, ${results.alerted} alerts sent`);
-    if (results.errors.length > 0) {
-      console.error('[Alert Scheduler] Errors:', results.errors);
-    }
-  }, intervalMinutes * 60 * 1000);
+  const tick = async () => {
+    await withJobLock(async () => {
+      const results = await checkAllAlertsForAllTenants();
+      console.log(
+        `[Alert Scheduler] ${results.organizations} org(s): ` +
+        `${results.checked} items checked, ${results.alerted} alerts sent`
+      );
+      if (results.errors.length > 0) {
+        console.error('[Alert Scheduler] Errors:', results.errors);
+      }
+    });
+  };
+
+  void tick();
+
+  return setInterval(() => { void tick(); }, intervalMinutes * 60 * 1000);
 }

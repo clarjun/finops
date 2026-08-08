@@ -8,7 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AppSidebar } from "@/components/app-sidebar";
 import { DateRangeProvider } from "@/contexts/date-range-context";
-import { useAuth, useLogout } from "@/hooks/use-auth";
+import { useAuth, useLogout, ROLE_LABELS } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
 import Reports from "@/pages/reports";
 import AiQuery from "@/pages/ai-query";
@@ -120,7 +120,17 @@ function AuthWrapper({ style }: { style: Record<string, string> }) {
                   <DropdownMenuLabel>
                     <div>
                       <p className="font-medium">{user?.username}</p>
-                      <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {user?.role ? ROLE_LABELS[user.role] ?? user.role : ''}
+                        {user?.isPlatformAdmin && ' · platform admin'}
+                      </p>
+                      {/* Which tenant you are acting in — matters once a platform
+                          admin can switch organizations. */}
+                      {user?.organization && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {user.organization.name}
+                        </p>
+                      )}
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />

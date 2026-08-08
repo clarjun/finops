@@ -6,7 +6,8 @@ import { EC2Client,
 import { S3Client, PutBucketLifecycleConfigurationCommand } from "@aws-sdk/client-s3";
 import { db } from "./db";
 import { optimizationActions, actionFeedback, optimizationPlans } from "../shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { currentOrgId } from "./tenant-context";
 
 interface ExecutionResult {
   success: boolean;
@@ -44,7 +45,10 @@ export class AIActionExecutor {
   async executeAction(actionId: number): Promise<ExecutionResult> {
     try {
       // Get action from database
-      const [action] = await db.select().from(optimizationActions).where(eq(optimizationActions.id, actionId));
+      const [action] = await db.select().from(optimizationActions).where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
 
       if (!action) {
         return {
@@ -68,7 +72,10 @@ export class AIActionExecutor {
       // Update status to executing
       await db.update(optimizationActions)
         .set({ status: 'executing', executedAt: new Date() })
-        .where(eq(optimizationActions.id, actionId));
+        .where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
 
       // Execute based on action type
       let result: ExecutionResult;
@@ -135,10 +142,17 @@ export class AIActionExecutor {
             completedAt: new Date(),
             executionDetails: result.executionDetails as any
           })
-          .where(eq(optimizationActions.id, actionId));
+          .where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
 
         // Create positive feedback
+        // NOTE: actualSavings here is the *estimate*, recorded as though it
+        // were measured. Realized-savings measurement is not implemented yet,
+        // so treat this column as "expected" until it is.
         await db.insert(actionFeedback).values({
+          organizationId: currentOrgId(),
           actionId,
           actualSavings: action.estimatedSavings,
           performanceImpact: 'none',
@@ -150,7 +164,10 @@ export class AIActionExecutor {
             status: 'failed',
             executionError: result.error
           })
-          .where(eq(optimizationActions.id, actionId));
+          .where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
       }
 
       return result;
@@ -162,7 +179,10 @@ export class AIActionExecutor {
           status: 'failed',
           executionError: error.message
         })
-        .where(eq(optimizationActions.id, actionId));
+        .where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
 
       return {
         success: false,
@@ -374,7 +394,10 @@ export class AIActionExecutor {
     // Get all approved actions for this plan
     const actions = await db.select()
       .from(optimizationActions)
-      .where(eq(optimizationActions.planId, planId));
+      .where(and(
+        eq(optimizationActions.planId, planId),
+        eq(optimizationActions.organizationId, currentOrgId()),
+      ));
 
     if (actions.length === 0) {
       return {
@@ -387,7 +410,10 @@ export class AIActionExecutor {
     // Update plan status
     await db.update(optimizationPlans)
       .set({ status: 'executing', startedAt: new Date() })
-      .where(eq(optimizationPlans.id, planId));
+      .where(and(
+        eq(optimizationPlans.id, planId),
+        eq(optimizationPlans.organizationId, currentOrgId()),
+      ));
 
     const results: ExecutionResult[] = [];
     let allSuccess = true;
@@ -414,7 +440,10 @@ export class AIActionExecutor {
         completedSteps: results.filter(r => r.success).length,
         failedSteps: results.filter(r => !r.success).length
       })
-      .where(eq(optimizationPlans.id, planId));
+      .where(and(
+        eq(optimizationPlans.id, planId),
+        eq(optimizationPlans.organizationId, currentOrgId()),
+      ));
 
     return {
       success: allSuccess,
@@ -428,7 +457,10 @@ export class AIActionExecutor {
   async rollbackAction(actionId: number): Promise<ExecutionResult> {
     console.log(`[Action Executor] Rolling back action ${actionId}`);
 
-    const [action] = await db.select().from(optimizationActions).where(eq(optimizationActions.id, actionId));
+    const [action] = await db.select().from(optimizationActions).where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
 
     if (!action || action.status !== 'completed') {
       return {
@@ -451,7 +483,10 @@ export class AIActionExecutor {
             originalState: action.currentState
           } as any
         })
-        .where(eq(optimizationActions.id, actionId));
+        .where(and(
+          eq(optimizationActions.id, actionId),
+          eq(optimizationActions.organizationId, currentOrgId()),
+        ));
 
       return {
         success: true,

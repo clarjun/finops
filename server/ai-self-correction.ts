@@ -1,13 +1,14 @@
 import OpenAI from "openai";
 import { db } from "./db";
 import { optimizationActions, actionFeedback, InsertOptimizationAction } from "../shared/schema";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import { currentOrgId } from "./tenant-context";
 import { aiAgentPlanner } from "./ai-agent-planner";
 import { aiActionExecutor } from "./ai-action-executor";
 
 const openai = new OpenAI({
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY,
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
+  apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL,
 });
 
 interface RetryStrategy {
@@ -28,7 +29,10 @@ export class AISelfCorrectionEngine {
     console.log(`[Self-Correction] Analyzing failed action ${actionId}`);
 
     // Get the failed action
-    const [action] = await db.select().from(optimizationActions).where(eq(optimizationActions.id, actionId));
+    const [action] = await db.select().from(optimizationActions).where(and(
+      eq(optimizationActions.id, actionId),
+      eq(optimizationActions.organizationId, currentOrgId()),
+    ));
 
     if (!action || action.status !== 'failed') {
       return {
@@ -41,7 +45,10 @@ export class AISelfCorrectionEngine {
     // Get historical feedback for similar actions
     const similarActions = await db.select()
       .from(optimizationActions)
-      .where(eq(optimizationActions.actionType, action.actionType))
+      .where(and(
+        eq(optimizationActions.organizationId, currentOrgId()),
+        eq(optimizationActions.actionType, action.actionType),
+      ))
       .limit(10);
 
     const failureHistory = similarActions.filter(a => a.status === 'failed').length;
@@ -120,7 +127,10 @@ Respond in JSON format:
   async generateAlternativeStrategy(actionId: number): Promise<RetryStrategy | null> {
     console.log(`[Self-Correction] Generating alternative strategy for action ${actionId}`);
 
-    const [action] = await db.select().from(optimizationActions).where(eq(optimizationActions.id, actionId));
+    const [action] = await db.select().from(optimizationActions).where(and(
+      eq(optimizationActions.id, actionId),
+      eq(optimizationActions.organizationId, currentOrgId()),
+    ));
 
     if (!action) {
       return null;
@@ -197,7 +207,10 @@ Respond in JSON format:
   }> {
     console.log(`[Self-Correction] Attempting retry with correction for action ${actionId}`);
 
-    const [originalAction] = await db.select().from(optimizationActions).where(eq(optimizationActions.id, actionId));
+    const [originalAction] = await db.select().from(optimizationActions).where(and(
+      eq(optimizationActions.id, actionId),
+      eq(optimizationActions.organizationId, currentOrgId()),
+    ));
 
     if (!originalAction) {
       return {
@@ -209,7 +222,10 @@ Respond in JSON format:
     // Check if we've exceeded retry limit
     const retryCount = await db.select()
       .from(optimizationActions)
-      .where(eq(optimizationActions.resourceId, originalAction.resourceId || ''))
+      .where(and(
+        eq(optimizationActions.organizationId, currentOrgId()),
+        eq(optimizationActions.resourceId, originalAction.resourceId || ''),
+      ))
       .then(actions => actions.filter(a => a.status === 'failed').length);
 
     if (retryCount >= this.maxRetries) {
@@ -246,11 +262,12 @@ Respond in JSON format:
     };
 
     const [createdAction] = await db.insert(optimizationActions)
-      .values(newAction)
+      .values({ ...newAction, organizationId: currentOrgId() })
       .returning({ id: optimizationActions.id });
 
     // Record learning from the failure
     await db.insert(actionFeedback).values({
+      organizationId: currentOrgId(),
       actionId,
       performanceImpact: 'severe',
       performanceDetails: `Action failed: ${originalAction.executionError}`,
@@ -275,7 +292,10 @@ Respond in JSON format:
     // Get all failed actions from the last 24 hours
     const failedActions = await db.select()
       .from(optimizationActions)
-      .where(eq(optimizationActions.status, 'failed'));
+      .where(and(
+        eq(optimizationActions.organizationId, currentOrgId()),
+        eq(optimizationActions.status, 'failed'),
+      ));
 
     let retryAttempts = 0;
     let successfulCorrections = 0;
@@ -284,7 +304,10 @@ Respond in JSON format:
       // Check if this action already has a retry attempt
       const existingRetries = await db.select()
         .from(optimizationActions)
-        .where(eq(optimizationActions.resourceId, action.resourceId || ''));
+        .where(and(
+          eq(optimizationActions.organizationId, currentOrgId()),
+          eq(optimizationActions.resourceId, action.resourceId || ''),
+        ));
 
       const retryCount = existingRetries.filter(a => 
         a.status === 'failed' && 

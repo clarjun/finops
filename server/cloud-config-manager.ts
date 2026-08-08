@@ -2,8 +2,10 @@ import { db } from "./db";
 import { cloudAccounts } from "@shared/schema";
 import { eq, and } from "drizzle-orm";
 import { decrypt } from "./encryption";
+import { currentOrgId } from "./tenant-context";
 
 export interface CloudCredentials {
+  organizationId: number;
   provider: 'aws' | 'gcp' | 'azure';
   accountId: string;
   accountName: string;
@@ -11,27 +13,35 @@ export interface CloudCredentials {
 }
 
 /**
- * Get all active cloud accounts from database
+ * Active cloud accounts for the current tenant.
+ *
+ * This function returns decrypted customer cloud credentials, which makes it the
+ * single most dangerous place in the codebase to get tenancy wrong: an unscoped
+ * read here hands one customer another customer's AWS keys. The tenant predicate
+ * is unconditional and currentOrgId() throws when there is no context, so a
+ * caller outside a request or a runAsSystem() block gets an exception rather
+ * than every tenant's credentials.
  */
 export async function getActiveCloudAccounts(provider?: 'aws' | 'gcp' | 'azure'): Promise<CloudCredentials[]> {
   try {
-    const query = provider
-      ? db.select().from(cloudAccounts).where(
-          and(
-            eq(cloudAccounts.provider, provider),
-            eq(cloudAccounts.isActive, true)
-          )
-        )
-      : db.select().from(cloudAccounts).where(eq(cloudAccounts.isActive, true));
+    const orgId = currentOrgId();
 
-    const accounts = await query;
-    
-    console.log(`[CloudConfig] Found ${accounts.length} active ${provider || 'all'} account(s) in database`);
+    const conditions = [
+      eq(cloudAccounts.organizationId, orgId),
+      eq(cloudAccounts.isActive, true),
+    ];
+    if (provider) {
+      conditions.push(eq(cloudAccounts.provider, provider));
+    }
+
+    const accounts = await db.select().from(cloudAccounts).where(and(...conditions));
+
+    console.log(`[CloudConfig] Found ${accounts.length} active ${provider || 'all'} account(s) for org ${orgId}`);
 
     return accounts.map(account => {
       const decrypted = decryptCredentials(account.credentials);
-      console.log(`[CloudConfig] Decrypted credentials for ${account.provider} account: ${account.accountName}`);
       return {
+        organizationId: account.organizationId,
         provider: account.provider as 'aws' | 'gcp' | 'azure',
         accountId: account.accountId,
         accountName: account.accountName,
