@@ -12,6 +12,7 @@ import { db } from './db';
 import { users, organizations, USER_ROLES, type UserRole } from '@shared/schema';
 import { currentOrgId } from './tenant-context';
 import { normalizeRole, permissionsForRole } from './rbac';
+import { validatePassword, BCRYPT_ROUNDS } from '@shared/password-policy';
 import { requirePermission, requirePlatformAdmin } from './middleware/auth-guard';
 import { recordAudit } from './audit';
 
@@ -200,12 +201,13 @@ export function registerAuthRoutes(app: Express) {
       return res.status(403).json({ error: `You cannot grant '${role}' — it outranks your own role.` });
     }
 
-    if (typeof password !== 'string' || password.length < 12) {
-      return res.status(400).json({ error: 'Password must be at least 12 characters' });
+    const policy = validatePassword(password);
+    if (!policy.valid) {
+      return res.status(400).json({ error: policy.error });
     }
 
     try {
-      const hash = await bcrypt.hash(password, 12);
+      const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
       const [created] = await db.insert(users).values({
         organizationId: currentOrgId(),
         username,
@@ -248,8 +250,9 @@ export function registerAuthRoutes(app: Express) {
         return res.status(403).json({ error: `You cannot grant '${role}' — it outranks your own role.` });
       }
     }
-    if (password !== undefined && (typeof password !== 'string' || password.length < 12)) {
-      return res.status(400).json({ error: 'Password must be at least 12 characters' });
+    if (password !== undefined) {
+      const policy = validatePassword(password);
+      if (!policy.valid) return res.status(400).json({ error: policy.error });
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
@@ -258,7 +261,7 @@ export function registerAuthRoutes(app: Express) {
     if (fullName !== undefined) updates.fullName = fullName;
     if (role) updates.role = role;
     if (isActive !== undefined) updates.isActive = isActive;
-    if (password) updates.passwordHash = await bcrypt.hash(password, 12);
+    if (password) updates.passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     const [updated] = await db.update(users).set(updates)
       .where(and(eq(users.id, id), eq(users.organizationId, currentOrgId())))

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth, USER_ROLES, ROLE_LABELS, ROLE_DESCRIPTIONS, type UserRole } from "@/hooks/use-auth";
+import { MIN_PASSWORD_LENGTH, validatePassword } from "@shared/password-policy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -36,7 +37,7 @@ const ROLE_RANK: Record<UserRole, number> = {
   viewer: 0, engineer: 1, finops: 2, admin: 3, owner: 4,
 };
 
-const MIN_PASSWORD_LENGTH = 12;
+
 
 export default function UsersPage() {
   const { user: me } = useAuth();
@@ -195,9 +196,11 @@ export default function UsersPage() {
                 minLength={form.password ? MIN_PASSWORD_LENGTH : undefined}
                 placeholder={editing ? 'Leave blank to keep current' : `At least ${MIN_PASSWORD_LENGTH} characters`}
               />
-              {form.password && form.password.length < MIN_PASSWORD_LENGTH && (
+              {/* Same policy object the server uses, so the inline hint and the
+                  rejection message can never disagree. */}
+              {form.password && !validatePassword(form.password).valid && (
                 <p className="text-xs text-destructive">
-                  Must be at least {MIN_PASSWORD_LENGTH} characters.
+                  {validatePassword(form.password).error}.
                 </p>
               )}
             </div>

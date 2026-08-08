@@ -18,6 +18,7 @@ import "dotenv/config";
 import { randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import pkg from "pg";
+import { validatePassword, BCRYPT_ROUNDS } from "@shared/password-policy";
 
 const { Client } = pkg;
 
@@ -51,9 +52,19 @@ async function main() {
   }
 
   const username = arg('username') ?? 'admin';
-  const generated = !arg('password');
-  // 24 base64url chars — comfortably above the 12-char minimum the API enforces.
-  const password = arg('password') ?? randomBytes(18).toString('base64url');
+  const supplied = arg('password');
+  const generated = !supplied;
+  // 24 base64url chars — comfortably above the minimum.
+  const password = supplied ?? randomBytes(18).toString('base64url');
+
+  // The same policy the API enforces. Without this, seeding could create an
+  // account whose password the application's own user-management screen would
+  // reject — a credential that exists but cannot be re-entered.
+  const validation = validatePassword(password);
+  if (!validation.valid) {
+    console.error(`Refusing to set this password: ${validation.error}.`);
+    process.exit(1);
+  }
 
   const client = new Client({ connectionString: url });
   await client.connect();
@@ -70,7 +81,7 @@ async function main() {
       `SELECT setval('organizations_id_seq', GREATEST((SELECT MAX(id) FROM organizations), 1))`
     );
 
-    const hash = await bcrypt.hash(password, 12);
+    const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     const { rows } = await client.query(
       `INSERT INTO users (organization_id, username, password_hash, role, is_platform_admin, is_active)
