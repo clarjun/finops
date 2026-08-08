@@ -15,6 +15,7 @@ import { routePolicy, reportRoutePolicyGaps } from "./middleware/route-policy";
 import { auditMiddleware } from "./audit";
 import { registerAuditRoutes } from "./audit-routes";
 import { registerCostFactRoutes } from "./ingestion/routes";
+import { registerSavingsRoutes } from "./savings/routes";
 import { startIngestionScheduler } from "./ingestion/scheduler";
 import { log } from "./vite";
 import { serveStatic } from "./static";
@@ -91,6 +92,7 @@ app.use((req, res, next) => {
   registerAuthRoutes(app);
   registerAuditRoutes(app);
   registerCostFactRoutes(app);
+  registerSavingsRoutes(app);
 
   // Surfaces any endpoint that slipped past the policy table, in the boot log.
   reportRoutePolicyGaps(app);

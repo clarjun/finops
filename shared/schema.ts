@@ -711,6 +711,54 @@ export const insertCostFactSchema = createInsertSchema(costFacts).omit({ id: tru
 export type InsertCostFact = z.infer<typeof insertCostFactSchema>;
 export type CostFact = typeof costFacts.$inferSelect;
 
+// ==================== MEASURED SAVINGS ====================
+
+// A real before/after comparison of an executed optimization against ingested
+// cost data, replacing the previous behaviour of recording the estimate as
+// though it were the outcome. See migration 0010.
+export const savingsMeasurements = pgTable("savings_measurements", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  actionId: integer("action_id").notNull(),
+
+  provider: varchar("provider", { length: 20 }).notNull(),
+  subAccountId: varchar("sub_account_id", { length: 255 }),
+  serviceName: varchar("service_name", { length: 255 }),
+  regionId: varchar("region_id", { length: 100 }),
+  resourceId: varchar("resource_id", { length: 500 }),
+  granularity: varchar("granularity", { length: 20 }).notNull().default('service'),
+
+  baselineStart: timestamp("baseline_start", { mode: 'string' }),
+  baselineEnd: timestamp("baseline_end", { mode: 'string' }),
+  baselineDays: integer("baseline_days"),
+  baselineDailyCost: numeric("baseline_daily_cost", { precision: 20, scale: 10 }),
+  controlBaselineDailyCost: numeric("control_baseline_daily_cost", { precision: 20, scale: 10 }),
+
+  measureAfter: timestamp("measure_after").notNull(),
+  measurementStart: timestamp("measurement_start", { mode: 'string' }),
+  measurementEnd: timestamp("measurement_end", { mode: 'string' }),
+  measurementDays: integer("measurement_days"),
+  observedDailyCost: numeric("observed_daily_cost", { precision: 20, scale: 10 }),
+  controlObservedDailyCost: numeric("control_observed_daily_cost", { precision: 20, scale: 10 }),
+
+  expectedDailyCost: numeric("expected_daily_cost", { precision: 20, scale: 10 }),
+  realizedDailySavings: numeric("realized_daily_savings", { precision: 20, scale: 10 }),
+  realizedMonthlySavings: numeric("realized_monthly_savings", { precision: 20, scale: 10 }),
+  estimatedMonthlySavings: numeric("estimated_monthly_savings", { precision: 20, scale: 10 }),
+  variancePercent: numeric("variance_percent", { precision: 10, scale: 2 }),
+
+  confidence: varchar("confidence", { length: 20 }), // high | medium | low
+  status: varchar("status", { length: 20 }).notNull().default('pending'), // pending | measured | inconclusive | failed
+  notes: text("notes"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  measuredAt: timestamp("measured_at"),
+});
+
+export const insertSavingsMeasurementSchema = createInsertSchema(savingsMeasurements).omit({ id: true, createdAt: true });
+export type InsertSavingsMeasurement = z.infer<typeof insertSavingsMeasurementSchema>;
+export type SavingsMeasurement = typeof savingsMeasurements.$inferSelect;
+
 // ==================== AUDIT LOG ====================
 
 // Append-only record of every state-changing request and every privileged

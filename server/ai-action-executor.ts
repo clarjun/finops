@@ -148,16 +148,32 @@ export class AIActionExecutor {
         ));
 
         // Create positive feedback
-        // NOTE: actualSavings here is the *estimate*, recorded as though it
-        // were measured. Realized-savings measurement is not implemented yet,
-        // so treat this column as "expected" until it is.
+        // Capture the pre-change baseline and schedule a real measurement.
+        //
+        // This previously wrote actualSavings = estimatedSavings and
+        // performanceImpact 'none' — recording the prediction as the outcome,
+        // which made every savings report a restatement of the tool's own guess
+        // and pinned savingsVariance at zero forever. actualSavings now stays
+        // null until something has actually been measured; see
+        // server/savings/measurement.ts.
+        //
+        // The baseline must be captured now: once the change is live there is no
+        // way to reconstruct what the cost had been.
         await db.insert(actionFeedback).values({
           organizationId: currentOrgId(),
           actionId,
-          actualSavings: action.estimatedSavings,
           performanceImpact: 'none',
           wouldRecommendAgain: 1
         });
+
+        try {
+          const { scheduleSavingsMeasurement } = await import('./savings/measurement');
+          await scheduleSavingsMeasurement(actionId);
+        } catch (err: any) {
+          // Failing to schedule a measurement must not fail the action that
+          // already succeeded against the cloud provider.
+          console.error(`[Action Executor] Could not schedule savings measurement for ${actionId}:`, err?.message ?? err);
+        }
       } else {
         await db.update(optimizationActions)
           .set({

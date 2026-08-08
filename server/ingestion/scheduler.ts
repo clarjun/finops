@@ -13,6 +13,7 @@ import { pool } from "../db";
 import { storage } from "../storage";
 import { runAsSystem } from "../tenant-context";
 import { ingestAllProviders, defaultRange, type ProviderIngestResult } from "./ingest";
+import { runDueMeasurements } from "../savings/measurement";
 
 /** Distinct from the alert scheduler's key so the two jobs never block each other. */
 const INGEST_JOB_LOCK_KEY = 4711002;
@@ -44,12 +45,14 @@ export async function ingestAllTenants(): Promise<{
   organizations: number;
   records: number;
   apiCalls: number;
+  measurements: number;
   failures: string[];
 }> {
   const orgs = await storage.listActiveOrganizations();
   const range = defaultRange();
   let records = 0;
   let apiCalls = 0;
+  let measurements = 0;
   const failures: string[] = [];
 
   for (const org of orgs) {
@@ -65,12 +68,22 @@ export async function ingestAllTenants(): Promise<{
           failures.push(`org ${org.id} ${r.provider}: ${r.error}`);
         }
       }
+
+      // Measure realized savings immediately after ingesting, while the cost
+      // data backing the comparison is as fresh as it will get this cycle.
+      // A measurement failure must not mark the ingest as failed.
+      try {
+        const outcomes = await runAsSystem(org.id, () => runDueMeasurements());
+        measurements += outcomes.length;
+      } catch (err: any) {
+        failures.push(`org ${org.id} savings measurement: ${err?.message ?? err}`);
+      }
     } catch (err: any) {
       failures.push(`org ${org.id}: ${err?.message ?? err}`);
     }
   }
 
-  return { organizations: orgs.length, records, apiCalls, failures };
+  return { organizations: orgs.length, records, apiCalls, measurements, failures };
 }
 
 /**
@@ -88,7 +101,8 @@ export function startIngestionScheduler(intervalHours = 6): NodeJS.Timeout {
       const result = await ingestAllTenants();
       console.log(
         `[Ingest Scheduler] ${result.organizations} org(s): ` +
-        `${result.records} rows, ${result.apiCalls} API call(s)`
+        `${result.records} rows, ${result.apiCalls} API call(s), ` +
+        `${result.measurements} savings measurement(s)`
       );
       if (result.failures.length > 0) {
         console.error('[Ingest Scheduler] Failures:', result.failures);

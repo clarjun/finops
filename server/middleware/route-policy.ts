@@ -102,6 +102,10 @@ const RULES: Rule[] = [
   R(['GET'],  /^\/api\/multi-cloud\//,                        'cost:read'),
   R(['GET'],  /^\/api\/resources/,                            'cost:read'),
   R(['GET'],  /^\/api\/tags\//,                               'cost:read'),
+  // Running a measurement only reads ingested data and writes a result row, so
+  // it is not an infrastructure action — but it does change reported figures,
+  // which makes it more than a read.
+  R(['POST'], /^\/api\/savings\/measurements\/run$/,           'agent:propose'),
   R(['GET'],  /^\/api\/savings\//,                            'cost:read'),
   R(['GET'],  /^\/api\/aws\/account-summaries/,               'cost:read'),
 ];

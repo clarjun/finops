@@ -25,6 +25,7 @@ import {
   GetCostAndUsageCommand,
   type GetCostAndUsageCommandInput,
 } from "@aws-sdk/client-cost-explorer";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { getActiveCloudAccounts } from "../../cloud-config-manager";
 import { categorizeService } from "../service-category";
 import type { CostConnector, ConnectorResult, DateRange, NormalizedCostRecord } from "../types";
@@ -49,6 +50,50 @@ function monthStart(day: string): string {
 function num(v: string | undefined): number {
   const n = parseFloat(v ?? '0');
   return Number.isFinite(n) ? n : 0;
+}
+
+/** accessKeyId -> resolved 12-digit account id, for the process lifetime. */
+const accountIdCache = new Map<string, string>();
+
+/**
+ * The real AWS account id, from STS rather than from whatever was typed into
+ * the Configuration form.
+ *
+ * cloud_accounts.account_id is a user-supplied label and is not validated. In
+ * this deployment the AWS row holds an Azure-style billing-account string, so
+ * every AWS cost fact was keyed on a sub-account id that identifies nothing —
+ * which breaks per-account attribution and makes multi-account rollups
+ * meaningless. GetCallerIdentity is free and authoritative.
+ *
+ * Falls back to the stored value if STS is unreachable, so a permissions gap
+ * degrades attribution rather than stopping ingestion.
+ */
+async function resolveAccountId(
+  credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string; region?: string },
+  fallback: string,
+): Promise<string> {
+  const cached = accountIdCache.get(credentials.accessKeyId);
+  if (cached) return cached;
+
+  try {
+    const sts = new STSClient({
+      region: credentials.region || 'us-east-1',
+      credentials: {
+        accessKeyId: credentials.accessKeyId,
+        secretAccessKey: credentials.secretAccessKey,
+        ...(credentials.sessionToken ? { sessionToken: credentials.sessionToken } : {}),
+      },
+    });
+    const identity = await sts.send(new GetCallerIdentityCommand({}));
+    if (identity.Account) {
+      accountIdCache.set(credentials.accessKeyId, identity.Account);
+      return identity.Account;
+    }
+  } catch (err: any) {
+    console.warn(`[AWS] Could not resolve account id via STS, using stored value: ${err?.message ?? err}`);
+  }
+
+  return fallback;
 }
 
 export class AwsCostConnector implements CostConnector {
@@ -82,7 +127,10 @@ export class AwsCostConnector implements CostConnector {
       });
 
       try {
-        const accountRecords = await this.fetchForAccount(client, account, range, () => { apiCalls++; });
+        const accountId = await resolveAccountId(creds, account.accountId);
+        const accountRecords = await this.fetchForAccount(
+          client, { accountId, accountName: account.accountName }, range, () => { apiCalls++; }
+        );
         records.push(...accountRecords);
       } catch (err: any) {
         // One account failing must not lose the others' data; the run is marked
