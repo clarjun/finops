@@ -113,10 +113,17 @@ const RULES: Rule[] = [
 /** Routes the auth guard already lets through unauthenticated. */
 const EXEMPT = /^\/api\/(health$|auth\/)/;
 
-function findRule(method: string, path: string): Rule | undefined {
+/** Exported for tests: the authorization surface should be assertable directly. */
+export function findRule(method: string, path: string): Rule | undefined {
   return RULES.find(r =>
     (r.methods === '*' || (r.methods as string[]).includes(method)) && r.pattern.test(path)
   );
+}
+
+/** Exported for tests: which permission a request would require, if any. */
+export function requiredPermission(method: string, path: string): Permission | null {
+  if (EXEMPT.test(path)) return null;
+  return findRule(method, path)?.permission ?? null;
 }
 
 export function routePolicy(req: Request, res: Response, next: NextFunction) {

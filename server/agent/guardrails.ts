@@ -67,26 +67,29 @@ function asStringArray(value: unknown): string[] | null {
   return items.length > 0 ? items : null;
 }
 
+/** The subset of agent_config the decision depends on. */
+export interface GuardrailConfig {
+  dryRunMode: number | null;
+  safetyMode: number | null;
+  autoExecuteEnabled: number | null;
+  enabledProviders: unknown;
+  enabledActionTypes: unknown;
+  requireApprovalFor: unknown;
+  maxCostImpactWithoutApproval: string | null;
+}
+
 /**
  * Decide whether an action may execute.
  *
- * Fails closed: anything unrecognized, or any configuration that cannot be read,
- * results in a simulation rather than a real change.
+ * Pure: takes the config rather than reading it, so the rules can be tested
+ * exhaustively without a database. evaluate() is the wrapper that loads config
+ * for the current tenant.
  */
-export async function evaluate(action: OptimizationAction): Promise<GuardrailDecision> {
+export function decide(
+  action: Pick<OptimizationAction, 'provider' | 'actionType' | 'estimatedCostImpact' | 'approvedBy'>,
+  config: GuardrailConfig,
+): GuardrailDecision {
   const reasons: string[] = [];
-
-  let config;
-  try {
-    config = await getAgentConfig();
-  } catch (err: any) {
-    return {
-      outcome: 'simulate',
-      dryRun: true,
-      reasons: [`Could not read agent configuration (${err?.message ?? err}); simulating instead of executing.`],
-      config: { dryRunMode: true, safetyMode: true, autoExecuteEnabled: false },
-    };
-  }
 
   const dryRunMode = config.dryRunMode === 1;
   const safetyMode = config.safetyMode === 1;
@@ -145,6 +148,28 @@ export async function evaluate(action: OptimizationAction): Promise<GuardrailDec
 
   reasons.push('Passed all guardrails; executing for real.');
   return { outcome: 'allow', dryRun: false, reasons, config: snapshot };
+}
+
+/**
+ * Load the calling tenant's configuration and decide.
+ *
+ * Fails closed: if the config cannot be read at all, the action is simulated
+ * rather than executed.
+ */
+export async function evaluate(action: OptimizationAction): Promise<GuardrailDecision> {
+  let config;
+  try {
+    config = await getAgentConfig();
+  } catch (err: any) {
+    return {
+      outcome: 'simulate',
+      dryRun: true,
+      reasons: [`Could not read agent configuration (${err?.message ?? err}); simulating instead of executing.`],
+      config: { dryRunMode: true, safetyMode: true, autoExecuteEnabled: false },
+    };
+  }
+
+  return decide(action, config);
 }
 
 export function isDestructive(actionType: string): boolean {
