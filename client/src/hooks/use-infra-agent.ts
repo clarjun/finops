@@ -219,3 +219,71 @@ export function useRunStream(runId: number | null): { events: InfraEvent[]; conn
 
   return { events, connected };
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Knowledge: standard steps and blueprints                                   */
+/* -------------------------------------------------------------------------- */
+
+export interface LibraryStep {
+  id: number;
+  slug: string;
+  name: string;
+  provider: string;
+  logicalType: string;
+  resourceType: string | null;
+  version: number;
+  validationStatus: string;
+  usageCount: number;
+  successCount: number;
+  successRate: number;
+  lastValidatedAt: string | null;
+  /** Older than the freshness window — a prompt to re-check, not an error. */
+  stale: boolean;
+  implementation: string | null;
+}
+
+export interface Blueprint {
+  id: number;
+  name: string;
+  templateDescription: string | null;
+  provider: string | null;
+  region: string | null;
+  requirements: string;
+  estimatedMonthlyCost: string | null;
+  templateUseCount: number;
+  templateSourceRunId: number | null;
+  createdAt: string;
+}
+
+export function useSteps(provider?: string) {
+  return useQuery<{ steps: LibraryStep[] }>({
+    queryKey: ['/api/infra/steps', provider],
+    queryFn: () => json(`/api/infra/steps${provider ? `?provider=${provider}` : ''}`),
+  });
+}
+
+export function useStepDetail(slug: string | null) {
+  return useQuery<{
+    versions: Array<{ id: number; version: number; implementation: string | null; validationStatus: string; usageCount: number; successCount: number; lastValidatedAt: string | null }>;
+    provenance: Array<{ id: number; url: string; title: string | null; service: string | null; retrievedAt: string }>;
+  }>({
+    queryKey: ['/api/infra/steps', slug],
+    queryFn: () => json(`/api/infra/steps/${slug}`),
+    enabled: !!slug,
+  });
+}
+
+export function useBlueprints() {
+  return useQuery<{ templates: Blueprint[] }>({
+    queryKey: ['/api/infra/templates'],
+    queryFn: () => json('/api/infra/templates'),
+  });
+}
+
+export function useInstantiateBlueprint() {
+  const qc = useQueryClient();
+  return useMutation<{ planId: number }, Error, { templateId: number; name?: string }>({
+    mutationFn: ({ templateId, name }) => post(`/api/infra/templates/${templateId}/instantiate`, { name }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/templates'] }),
+  });
+}
