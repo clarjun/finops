@@ -29,7 +29,28 @@ const credentialledArgs = workspaceArgs.extend({
   cloudAccountId: z.number().int().positive(),
 });
 
+const planArgs = credentialledArgs.extend({
+  /**
+   * Resource addresses to narrow the plan to. The engine stages a deployment
+   * around approval gates with these; without them a plan containing one
+   * high-risk resource could only be approved or refused whole.
+   */
+  targets: z.array(z.string().min(1)).optional(),
+  /** Plan the removal of everything in state, rather than its creation. */
+  destroy: z.boolean().optional(),
+});
+
+/**
+ * Registers the Terraform tools, once.
+ *
+ * Idempotent so the execution path can guarantee the registry is populated
+ * without depending on server start-up order. That dependency is precisely why
+ * this layer went unused: nothing on the path could safely assume registration
+ * had happened, so nothing on the path used it.
+ */
 export function registerTerraformTools(): void {
+  if (infraToolRegistry.has('terraform_apply')) return;
+
   infraToolRegistry.register({
     name: 'terraform_init',
     description: 'Initialise a Terraform workspace and download providers. Local only; creates no cloud resources.',
@@ -70,7 +91,7 @@ export function registerTerraformTools(): void {
     name: 'terraform_plan',
     description:
       'Produce an execution plan and save it. Reads cloud state but changes nothing. Returns the resources that would be created, changed or destroyed.',
-    input: credentialledArgs,
+    input: planArgs,
     risk: 'medium',
     requiredPermission: 'account:read',
     idempotent: true,
@@ -81,11 +102,15 @@ export function registerTerraformTools(): void {
       const creds = await resolveTerraformCredentials(args.cloudAccountId);
       const r = await terraformExecutor.plan(args.workspacePath, creds, {
         signal: ctx.signal,
+        targets: args.targets,
+        destroy: args.destroy,
         onOutput: (chunk) => ctx.emit?.({ message: chunk.trim() }),
       });
 
       if (!r.ok) {
         const diag = r.diagnostics.map((d) => d.summary).join('; ');
+        // Carries the provider's own text: the caller classifies it to decide
+        // whether a retry is safe.
         throw new Error(`terraform plan failed: ${diag || r.stderr.slice(-600)}`);
       }
 

@@ -62,6 +62,12 @@ export class InfraToolRegistry {
 
   register<T>(tool: InfraTool<T>): void {
     if (this.tools.has(tool.name)) {
+      // Registration is idempotent so the execution path can guarantee the
+      // registry is populated without depending on server start-up order — a
+      // dependency that is exactly why the layer sat unused. Re-registering a
+      // *different* tool under a known name is still an error, since that would
+      // silently change what an approved call does.
+      if (this.tools.get(tool.name) === tool) return;
       throw new Error(`Infrastructure tool "${tool.name}" is already registered`);
     }
     if (!tool.idempotent && (tool.maxRetries ?? 0) > 0) {

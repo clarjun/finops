@@ -56,13 +56,39 @@ vi.mock('./tools/credentials', () => ({
 }));
 
 import { db, pool } from '../db';
-import { organizations, infraPlans, infraRuns, infraApprovals, infraDeployments } from '@shared/schema';
-import { runAsSystem } from '../tenant-context';
+import { organizations, users, infraPlans, infraRuns, infraApprovals, infraDeployments } from '@shared/schema';
+import { runAsSystem, runWithTenant } from '../tenant-context';
 import { advance, decideApproval } from './engine';
 import { startTeardown, advanceTeardown, TeardownError } from './teardown';
 
 const SLUG = 'itest-infra-teardown';
 let orgId: number;
+/**
+ * A run is authorized as the person who started it, so tests have to start
+ * runs as somebody. Driving the engine from a bare system context would leave
+ * no principal to authorize the apply, and every deployment would be correctly
+ * refused — which is the behaviour, not a test-harness detail to paper over.
+ */
+let operatorId: number;
+
+async function seedOperator(username: string): Promise<number> {
+  const [existing] = await db.select().from(users).where(eq(users.username, username));
+  if (existing) return existing.id;
+
+  const [created] = await db.insert(users).values({
+    organizationId: orgId,
+    username,
+    passwordHash: 'itest-not-a-real-hash',
+    role: 'owner',
+    isActive: true,
+  }).returning();
+  return created.id;
+}
+
+/** Runs `fn` as the operator, the way an API request would. */
+const asOperator = <T>(fn: () => T): T =>
+  runWithTenant({ organizationId: orgId, userId: operatorId, username: 'itest-operator', role: 'owner' }, fn);
+
 
 // Unique per seeded deployment. Sharing one path would make each test's
 // teardown collide with the previous test's, via the very in-flight guard one
@@ -131,9 +157,11 @@ beforeAll(async () => {
     const [existing] = await db.select().from(organizations).where(eq(organizations.slug, SLUG));
     orgId = existing.id;
   }
+  operatorId = await seedOperator('itest-teardown-operator');
 });
 
 afterAll(async () => {
+  await db.delete(users).where(eq(users.username, 'itest-teardown-operator'));
   await db.delete(organizations).where(eq(organizations.slug, SLUG));
   try { await pool.end(); } catch { /* shared pool, already closed */ }
 });
@@ -154,28 +182,28 @@ beforeEach(() => {
 
 describe('starting a teardown', () => {
   it('refuses a simulation, which created nothing', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId } = await seedDeployedRun({ executionMode: 'simulate' });
       await expect(startTeardown(runId)).rejects.toThrow(/simulation/i);
     });
   });
 
   it('refuses a run with no workspace, since its state cannot be read', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId } = await seedDeployedRun({ workspacePath: null });
       await expect(startTeardown(runId)).rejects.toThrow(/workspace/i);
     });
   });
 
   it('refuses to tear down a teardown', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId } = await seedDeployedRun({ mode: 'destroy' });
       await expect(startTeardown(runId)).rejects.toThrow(/itself a teardown/i);
     });
   });
 
   it('refuses a second teardown of the same workspace', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId } = await seedDeployedRun();
       await startTeardown(runId);
       // Two destroys against one state file race each other, each reading a set
@@ -185,7 +213,7 @@ describe('starting a teardown', () => {
   });
 
   it('creates a destroy run pointing at the deployment’s own state', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId: sourceId, workspace } = await seedDeployedRun();
       const { teardownRunId } = await startTeardown(sourceId);
 
@@ -198,7 +226,7 @@ describe('starting a teardown', () => {
   });
 
   it('destroys nothing when it is merely started', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       await startTeardown((await seedDeployedRun()).runId);
       expect(applyCalls).toHaveLength(0);
     });
@@ -212,7 +240,7 @@ describe('the deploy engine and a teardown run', () => {
     // The single most dangerous confusion in this system. Both kinds of run
     // live in infra_runs with the same statuses, and advance() applies the
     // plan — so being handed a teardown would recreate what was being removed.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
 
       const result = await advance(teardownRunId);
@@ -228,7 +256,7 @@ describe('the deploy engine and a teardown run', () => {
 
 describe('proposing the destroy', () => {
   it('stops for approval listing every address, and destroys nothing', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
 
       const result = await advanceTeardown(teardownRunId);
@@ -248,7 +276,7 @@ describe('proposing the destroy', () => {
   it('succeeds without an approval when there is nothing to destroy', async () => {
     // Already removed by hand, or never created. The end state holds, so
     // demanding a signature for a no-op would only teach people to click through.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tf.destroyChanges = [];
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
 
@@ -261,7 +289,7 @@ describe('proposing the destroy', () => {
   });
 
   it('stays waiting while the approval is undecided', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
       await advanceTeardown(teardownRunId);
 
@@ -277,7 +305,7 @@ describe('proposing the destroy', () => {
 
 describe('executing the approved destroy', () => {
   it('applies the saved plan once approved', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
       await advanceTeardown(teardownRunId);
 
@@ -292,7 +320,7 @@ describe('executing the approved destroy', () => {
   });
 
   it('marks the deployment destroyed', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId: sourceId } = await seedDeployedRun();
       const { teardownRunId } = await startTeardown(sourceId);
       await advanceTeardown(teardownRunId);
@@ -306,7 +334,7 @@ describe('executing the approved destroy', () => {
   });
 
   it('destroys nothing when the approval is rejected', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
       await advanceTeardown(teardownRunId);
       await decideApproval((await pendingApproval(teardownRunId)).ref, 'rejected', 'still in use');
@@ -321,7 +349,7 @@ describe('executing the approved destroy', () => {
   it('refuses when a resource appeared after the approval', async () => {
     // The reason the plan is taken twice. Someone approved destroying a bucket
     // and a VPC; by the time they clicked, a database had joined the plan.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
       await advanceTeardown(teardownRunId);
       await decideApproval((await pendingApproval(teardownRunId)).ref, 'approved');
@@ -338,7 +366,7 @@ describe('executing the approved destroy', () => {
 
   it('proceeds when a resource disappeared after the approval', async () => {
     // Narrowing is safe: the teardown does less than was approved.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
       await advanceTeardown(teardownRunId);
       await decideApproval((await pendingApproval(teardownRunId)).ref, 'approved');
@@ -356,7 +384,7 @@ describe('executing the approved destroy', () => {
     // Terraform can exit zero having left a resource behind — a bucket with
     // objects, a database with deletion protection. Reporting success would
     // tell someone their bill had stopped when it had not.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { teardownRunId } = await startTeardown((await seedDeployedRun()).runId);
       await advanceTeardown(teardownRunId);
       await decideApproval((await pendingApproval(teardownRunId)).ref, 'approved');
@@ -371,7 +399,7 @@ describe('executing the approved destroy', () => {
   });
 
   it('reports a failed destroy instead of marking the deployment gone', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const { runId: sourceId } = await seedDeployedRun();
       const { teardownRunId } = await startTeardown(sourceId);
       await advanceTeardown(teardownRunId);

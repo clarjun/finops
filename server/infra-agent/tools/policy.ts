@@ -50,6 +50,16 @@ export interface InvokeOptions {
   approvalId?: number;
   /** Skips the approval gate. Only for a run the operator marked as simulate. */
   simulate?: boolean;
+  /**
+   * States that a human decision was not required for this call, and why.
+   *
+   * Distinct from `simulate`, which asserts nothing will reach the cloud. A
+   * waiver asserts something else entirely: the action is real, and an upstream
+   * policy — the deployment engine's per-resource risk assessment — determined
+   * it needs no signature. It is recorded, so an absent approval is still
+   * attributable to the policy that decided it.
+   */
+  approvalWaiver?: { by: string; reason: string };
   context?: Partial<InfraToolContext>;
 }
 
@@ -96,16 +106,33 @@ export async function invokeTool(
   if (GATED_RISK.has(tool.risk) && !options.simulate) {
     const decided = options.approvalId ? await loadApproval(options.approvalId, organizationId) : null;
 
-    if (!decided) {
+    if (!decided && options.approvalWaiver) {
+      // The gate is satisfied by a stated upstream decision rather than a
+      // signature. Recorded before the call runs, so a waiver that turns out to
+      // have been wrong is visible in the audit trail either way.
+      await recordAudit({
+        action: 'infra.tool.approval_waived',
+        outcome: 'success',
+        resourceType: 'infra_tool',
+        resourceId: tool.name,
+        metadata: {
+          risk: tool.risk,
+          waivedBy: options.approvalWaiver.by,
+          reason: options.approvalWaiver.reason,
+          runId: options.context?.runId,
+          nodeKey: options.context?.nodeKey,
+        },
+      });
+    } else if (!decided) {
       const held = await createApproval(tool, parsed.data as Record<string, unknown>, options.context);
       return { status: 'held', reason: 'awaiting_approval', approvalRef: held.ref, approvalId: held.id };
     }
 
-    if (decided.status === 'rejected') {
+    if (decided?.status === 'rejected') {
       return deny('approval_rejected', `A human rejected this action: ${decided.decisionReason ?? 'no reason given'}`, invocation);
     }
 
-    if (decided.status !== 'approved') {
+    if (decided && decided.status !== 'approved') {
       return deny('awaiting_approval', `Approval ${decided.ref} has not been decided.`, invocation);
     }
   }

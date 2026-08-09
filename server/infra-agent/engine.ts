@@ -31,6 +31,7 @@ import { generateTerraform } from './terraform/generator';
 import { awsMapper } from './providers/aws';
 import { terraformExecutor } from './terraform/executor';
 import { resolveTerraformCredentials } from './tools/credentials';
+import { runTool, authorizingRole, ToolDenied, type ApprovalEvidence } from './tools/invoke';
 import { extractStepsFromRun } from './knowledge/step-library';
 import { attachProvenanceForRun } from './knowledge/docs';
 import {
@@ -41,6 +42,35 @@ import type { Clarifications, EstimatorLayer, LamNode, LogicalArchitecture } fro
 
 /** How long a worker may hold a run before another may take it over. */
 export const LEASE_MS = 5 * 60_000;
+
+/** What terraform_plan returns, which the staging logic reads. */
+interface PlanResult {
+  toAdd: number;
+  toChange: number;
+  toDestroy: number;
+  changes: Array<{ address: string; action: string }>;
+  destructive: Array<{ address: string; action: string }>;
+}
+
+/**
+ * Approval evidence for calls that cannot create infrastructure.
+ *
+ * init and validate never contact a cloud, and a plan reads without changing —
+ * gating a plan would mean approving before seeing what would happen, which
+ * inverts the point of the plan/apply split. Both are still schema-checked,
+ * authorized, timed out and audited; only the signature is not required.
+ */
+const WAIVED_LOCAL = {
+  kind: 'waived' as const,
+  by: 'tool-risk-policy',
+  reason: 'local operation; contacts no cloud and creates nothing',
+};
+
+const WAIVED_READ = {
+  kind: 'waived' as const,
+  by: 'tool-risk-policy',
+  reason: 'read-only plan; approving before the plan exists would invert the plan/apply split',
+};
 
 export type RunStatus =
   | 'queued' | 'initializing' | 'planning' | 'awaiting_approval'
@@ -159,6 +189,10 @@ export async function advance(runId: number): Promise<AdvanceResult> {
       return { runId, status: run.status as RunStatus, action: 'run already finished', done: true };
     }
 
+    // Every tool call this run makes is authorized as the person who started
+    // it, not as the worker. Revoking their permission stops the next stage.
+    const role = await authorizingRole(runId, organizationId);
+
     const { plan, architecture, nodes } = await loadPlanContext(run.planId, organizationId);
     const { stages, errors } = computeStages(nodes);
     if (errors.length > 0) {
@@ -187,11 +221,22 @@ export async function advance(runId: number): Promise<AdvanceResult> {
       await setRunStatus(runId, 'initializing');
       await appendEvent({ runId, eventType: 'PLAN_CREATED', message: 'Preparing Terraform workspace…' });
 
-      const init = await terraformExecutor.init(workspace);
-      if (!init.ok) return failRun(runId, `terraform init failed: ${init.stderr.slice(-500)}`);
-
-      const validate = await terraformExecutor.validate(workspace);
-      if (!validate.ok) return failRun(runId, `terraform validate failed: ${validate.stderr.slice(-500)}`);
+      // Through the policy engine, like everything else that touches a
+      // workspace. Both are local and low risk, so neither is gated — but both
+      // are schema-checked, authorized, timed out and audited.
+      try {
+        await runTool('terraform_init', { workspacePath: workspace }, {
+          runId, organizationId, role,
+          approval: WAIVED_LOCAL,
+          context: { emit: (e) => void appendEvent({ runId, eventType: 'PLAN_CREATED', level: e.level, message: e.message }) },
+        });
+        await runTool('terraform_validate', { workspacePath: workspace }, {
+          runId, organizationId, role, approval: WAIVED_LOCAL,
+        });
+      } catch (err) {
+        if (err instanceof ToolDenied) return failRun(runId, err.message);
+        return handleStageFailure(runId, stages[0], 'plan', (err as Error)?.message ?? String(err));
+      }
 
       await appendEvent({ runId, eventType: 'PLAN_VALIDATED', message: 'Configuration validated.' });
       await setRunStatus(runId, 'planning');
@@ -225,7 +270,10 @@ export async function advance(runId: number): Promise<AdvanceResult> {
       );
     }
 
-    const existing = new Set(await terraformExecutor.listState(workspace, creds));
+    const existing = new Set(await runTool<{ addresses: string[] }>('terraform_state_list', {
+      workspacePath: workspace,
+      cloudAccountId: plan.cloudAccountId!,
+    }, { runId, organizationId, role, approval: WAIVED_LOCAL }).then((r) => r.addresses).catch(() => []));
     if (existing.size > 0) {
       const already = Object.entries(generated.addressByNode)
         .filter(([, address]) => existing.has(address))
@@ -248,7 +296,7 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     const stage = nextStage(stages, nodeStatus);
 
     if (!stage) {
-      return completeRun(runId, run.planId, plan, workspace, creds, run.executionMode);
+      return completeRun(runId, run.planId, plan, workspace, role, run.executionMode);
     }
 
     const targets = stageTargets(stage, generated.addressByNode);
@@ -284,10 +332,25 @@ export async function advance(runId: number): Promise<AdvanceResult> {
       data: { stage: stage.index, targets },
     });
 
-    const planned = await terraformExecutor.plan(workspace, creds, { targets });
-    if (!planned.ok) {
-      const detail = [planned.diagnostics.map((d) => d.summary).join('; '), planned.stderr].filter(Boolean).join('\n');
-      return handleStageFailure(runId, stage, 'plan', detail);
+    let planned: PlanResult;
+    try {
+      planned = await runTool<PlanResult>('terraform_plan', {
+        workspacePath: workspace,
+        cloudAccountId: plan.cloudAccountId!,
+        targets,
+      }, {
+        runId, organizationId, role,
+        // Planning is explicitly not gated: approving before seeing what would
+        // happen inverts the point of the plan/apply split.
+        approval: WAIVED_READ,
+        context: {
+          nodeKey: stage.nodeKeys[0],
+          emit: (e) => void appendEvent({ runId, eventType: 'RESOURCE_CREATING', level: e.level, message: e.message.slice(0, 500) }),
+        },
+      });
+    } catch (err) {
+      if (err instanceof ToolDenied) return failRun(runId, err.message);
+      return handleStageFailure(runId, stage, 'plan', (err as Error)?.message ?? String(err));
     }
 
     await db.update(infraRuns).set({
@@ -317,8 +380,13 @@ export async function advance(runId: number): Promise<AdvanceResult> {
 
     /* --- approval gate --------------------------------------------------- */
 
+    // Held so the apply below can name the decision that permitted it, rather
+    // than asserting to the tool layer that one exists somewhere.
+    let gateApproval: Awaited<ReturnType<typeof pendingOrNewApproval>> | null = null;
+
     if (stage.requiresApproval || planned.destructive.length > 0) {
       const approval = await pendingOrNewApproval(runId, stage, planned.destructive.length, planned.toAdd);
+      gateApproval = approval;
 
       if (approval.status === 'pending') {
         await markNodes(runId, stage.nodeKeys, 'awaiting_approval');
@@ -347,19 +415,40 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     /* --- apply ----------------------------------------------------------- */
 
     await setRunStatus(runId, 'applying');
-    const applied = await terraformExecutor.apply(workspace, creds!, {
-      onOutput: (chunk) => {
-        const line = chunk.trim();
-        if (line) void appendEvent({ runId, eventType: 'RESOURCE_CREATING', message: line.slice(0, 500) });
-      },
-    });
 
-    if (!applied.ok) {
+    // The one call that creates real infrastructure, and the only place the
+    // approval evidence is a human decision rather than a policy waiver.
+    const evidence: ApprovalEvidence = gateApproval
+      ? { kind: 'granted', approvalId: Number(gateApproval.id) }
+      : {
+          kind: 'waived',
+          by: 'staging-policy',
+          reason: `stage ${stage.index + 1} assessed as ${stage.riskLevel} risk by the compiler; no resource in it requires approval`,
+        };
+
+    try {
+      await runTool('terraform_apply', {
+        workspacePath: workspace,
+        cloudAccountId: plan.cloudAccountId!,
+      }, {
+        runId, organizationId, role,
+        approval: evidence,
+        context: {
+          nodeKey: stage.nodeKeys[0],
+          emit: (e) => void appendEvent({ runId, eventType: 'RESOURCE_CREATING', level: e.level, message: e.message.slice(0, 500) }),
+        },
+      });
+    } catch (err) {
+      if (err instanceof ToolDenied) {
+        // Refused, not failed: the system declined to act. Recorded as a
+        // failure of the run so it cannot be mistaken for a completed stage.
+        return failRun(runId, err.message);
+      }
       // Retrying an apply means re-planning first, never re-running the saved
       // plan: after a partial apply the saved plan describes a world that no
       // longer exists. Returning done:false sends the worker back through the
       // plan step above, which is what makes a retry safe here.
-      return handleStageFailure(runId, stage, 'apply', applied.stderr);
+      return handleStageFailure(runId, stage, 'apply', (err as Error)?.message ?? String(err));
     }
 
     await markNodes(runId, stage.nodeKeys, 'applied');
@@ -490,9 +579,11 @@ async function completeRun(
   planId: number,
   plan: typeof infraPlans.$inferSelect,
   workspace: string,
-  creds: Awaited<ReturnType<typeof resolveTerraformCredentials>>,
+  role: Awaited<ReturnType<typeof authorizingRole>>,
   executionMode: string,
 ) {
+  const organizationId = currentOrgId();
+  const auth = { runId, organizationId, role };
   await setRunStatus(runId, 'verifying');
 
   // Final untargeted apply. HashiCorp is explicit that a workspace where
@@ -505,21 +596,49 @@ async function completeRun(
   // created. Every stage below correctly skipped applying; the convergence step
   // did not, and only a test caught it.
   if (executionMode !== 'simulate') {
-    const finalPlan = await terraformExecutor.plan(workspace, creds);
-    if (finalPlan.ok && (finalPlan.toAdd > 0 || finalPlan.toChange > 0)) {
-      await appendEvent({
-        runId, eventType: 'RESOURCE_CREATING',
-        message: `Converging: ${finalPlan.toAdd} to add, ${finalPlan.toChange} to change after staged apply.`,
-      });
-      const applied = await terraformExecutor.apply(workspace, creds);
-      if (!applied.ok) return failRun(runId, `final convergence apply failed: ${applied.stderr.slice(-400)}`);
+    try {
+      const finalPlan = await runTool<PlanResult>('terraform_plan', {
+        workspacePath: workspace,
+        cloudAccountId: plan.cloudAccountId!,
+      }, { ...auth, approval: WAIVED_READ });
+
+      if (finalPlan.toAdd > 0 || finalPlan.toChange > 0) {
+        await appendEvent({
+          runId, eventType: 'RESOURCE_CREATING',
+          message: `Converging: ${finalPlan.toAdd} to add, ${finalPlan.toChange} to change after staged apply.`,
+        });
+
+        // Real infrastructure, so it goes through the policy engine like every
+        // other apply. The waiver names the reason no separate signature is
+        // required: every resource here was already approved as part of a
+        // stage, and this run only reconciles what -target left behind.
+        await runTool('terraform_apply', {
+          workspacePath: workspace,
+          cloudAccountId: plan.cloudAccountId!,
+        }, {
+          ...auth,
+          approval: {
+            kind: 'waived',
+            by: 'staging-policy',
+            reason: 'convergence of resources already approved stage by stage; -target leaves no new resource unapproved',
+          },
+        });
+      }
+    } catch (err) {
+      if (err instanceof ToolDenied) return failRun(runId, err.message);
+      return failRun(runId, `final convergence apply failed: ${(err as Error)?.message ?? err}`);
     }
   }
 
   // In a simulation nothing was created, so the resource list must be empty
   // rather than whatever state happens to contain — otherwise the summary would
   // report resources the user does not have.
-  const addresses = executionMode === 'simulate' ? [] : await terraformExecutor.listState(workspace, creds);
+  const addresses = executionMode === 'simulate'
+    ? []
+    : await runTool<{ addresses: string[] }>('terraform_state_list', {
+        workspacePath: workspace,
+        cloudAccountId: plan.cloudAccountId!,
+      }, { ...auth, approval: WAIVED_LOCAL }).then((r) => r.addresses).catch(() => []);
 
   const [run] = await db.select().from(infraRuns).where(eq(infraRuns.id, runId));
   const durationSeconds = run?.startedAt ? Math.round((Date.now() - run.startedAt.getTime()) / 1000) : null;

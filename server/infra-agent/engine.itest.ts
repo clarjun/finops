@@ -59,14 +59,40 @@ vi.mock('./tools/credentials', () => ({
 }));
 
 import { db, pool } from '../db';
-import { organizations, infraPlans, infraPlanNodes, infraRuns, infraRunNodes, infraApprovals } from '@shared/schema';
-import { runAsSystem } from '../tenant-context';
+import { organizations, users, infraPlans, infraPlanNodes, infraRuns, infraRunNodes, infraApprovals } from '@shared/schema';
+import { runAsSystem, runWithTenant } from '../tenant-context';
 import { createRun, advance, decideApproval } from './engine';
 import { compileArchitecture } from './compiler';
 import type { EstimatorLayer } from './types';
 
 const SLUG = 'itest-infra-engine';
 let orgId: number;
+/**
+ * A run is authorized as the person who started it, so tests have to start
+ * runs as somebody. Driving the engine from a bare system context would leave
+ * no principal to authorize the apply, and every deployment would be correctly
+ * refused — which is the behaviour, not a test-harness detail to paper over.
+ */
+let operatorId: number;
+
+async function seedOperator(username: string): Promise<number> {
+  const [existing] = await db.select().from(users).where(eq(users.username, username));
+  if (existing) return existing.id;
+
+  const [created] = await db.insert(users).values({
+    organizationId: orgId,
+    username,
+    passwordHash: 'itest-not-a-real-hash',
+    role: 'owner',
+    isActive: true,
+  }).returning();
+  return created.id;
+}
+
+/** Runs `fn` as the operator, the way an API request would. */
+const asOperator = <T>(fn: () => T): T =>
+  runWithTenant({ organizationId: orgId, userId: operatorId, username: 'itest-operator', role: 'owner' }, fn);
+
 
 /** A small plan: one ungated stage, then one gated. */
 function architecture() {
@@ -138,6 +164,7 @@ beforeAll(async () => {
     const [existing] = await db.select().from(organizations).where(eq(organizations.slug, SLUG));
     orgId = existing.id;
   }
+  operatorId = await seedOperator('itest-engine-operator');
 });
 
 afterAll(async () => {
@@ -145,6 +172,7 @@ afterAll(async () => {
   // file to finish would otherwise close it under the others. Ending it is
   // best-effort and idempotent.
   const closePool = async () => { try { await pool.end(); } catch { /* already closed */ } };
+  await db.delete(users).where(eq(users.username, 'itest-engine-operator'));
   await db.delete(organizations).where(eq(organizations.slug, SLUG));
   await closePool();
 });
@@ -163,7 +191,7 @@ beforeEach(() => {
 
 describe('run creation', () => {
   it('persists one node row per plan node, so resume has something to read', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const planId = await seedPlan();
       const runId = await createRun({ planId, executionMode: 'live' });
 
@@ -176,7 +204,7 @@ describe('run creation', () => {
   });
 
   it('refuses a plan with no compiled nodes', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const [plan] = await db.insert(infraPlans).values({
         organizationId: orgId, name: 'empty', requirements: 'x',
         clarifications: {} as never, status: 'compiled',
@@ -189,7 +217,7 @@ describe('run creation', () => {
 
 describe('approval gates', () => {
   it('pauses at a gate instead of applying', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       const result = await drive(runId);
 
@@ -205,7 +233,7 @@ describe('approval gates', () => {
   });
 
   it('stays paused when advanced again — a gate is not a speed bump', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       await drive(runId);
 
@@ -220,7 +248,7 @@ describe('approval gates', () => {
   it('does not create a second approval for the same stage', async () => {
     // A duplicate would let one click approve a step twice, or strand the run
     // behind a gate nobody is looking at.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       await drive(runId);
       await advance(runId);
@@ -233,7 +261,7 @@ describe('approval gates', () => {
   });
 
   it('resumes after approval and eventually completes', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
 
       // Work through every gate the plan raises.
@@ -251,7 +279,7 @@ describe('approval gates', () => {
   });
 
   it('stops the deployment when a gate is rejected', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       await drive(runId);
 
@@ -267,7 +295,7 @@ describe('approval gates', () => {
 
   it('refuses to decide the same approval twice', async () => {
     // Otherwise a double-click would re-run a stage.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       await drive(runId);
 
@@ -280,7 +308,7 @@ describe('approval gates', () => {
   });
 
   it('records who decided and why', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       await drive(runId);
 
@@ -300,7 +328,7 @@ describe('idempotent resume', () => {
   it('marks resources that already exist as applied instead of recreating them', async () => {
     // The property that makes a resumed deployment safe. Terraform state is the
     // source of truth for what is real.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const planId = await seedPlan();
       const runId = await createRun({ planId, executionMode: 'live' });
 
@@ -315,7 +343,7 @@ describe('idempotent resume', () => {
   });
 
   it('does not roll an applied node back to pending on a later pass', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       tfState.addresses = ['aws_s3_bucket.storage_object'];
 
@@ -332,7 +360,7 @@ describe('simulation', () => {
   it('never applies, and says so', async () => {
     const executor = await import('./terraform/executor');
 
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'simulate' });
       await drive(runId);
 
@@ -352,7 +380,7 @@ describe('failure handling', () => {
     // The error text matters now: a failure only ends the run when the
     // configuration itself has to change. An unrecognised error pauses instead,
     // which is asserted separately below.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       tfState.planFails = true;
       tfState.error = 'Unsupported argument: an argument named "foo" is not expected here';
@@ -367,7 +395,7 @@ describe('failure handling', () => {
   });
 
   it('does not advance a run that already finished', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       tfState.planFails = true;
       // Permanent, so the run genuinely ends. A paused run is deliberately not
@@ -389,7 +417,7 @@ describe('leasing', () => {
     // three concurrent calls: with Terraform mocked each call finishes in
     // milliseconds, so a race would usually see the lease already released and
     // prove nothing.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
 
       await db.update(infraRuns).set({
@@ -406,7 +434,7 @@ describe('leasing', () => {
 
   it('takes over a run whose lease has expired', async () => {
     // A worker that dies mid-step must not strand the deployment forever.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
 
       await db.update(infraRuns).set({
@@ -420,7 +448,7 @@ describe('leasing', () => {
   });
 
   it('releases the lease so the next call proceeds', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       await advance(runId);
 
@@ -456,7 +484,7 @@ describe('failure handling', () => {
 
   it('retries a throttled apply and then succeeds', async () => {
     // A throttle is not a reason to abandon a half-built environment.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'RequestLimitExceeded: Request limit exceeded.';
       tfState.applyFailuresLeft = 1;
 
@@ -469,7 +497,7 @@ describe('failure handling', () => {
   });
 
   it('records the attempt against the node, so a retry is visible', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'RequestLimitExceeded';
       tfState.applyFailuresLeft = 1;
 
@@ -481,7 +509,7 @@ describe('failure handling', () => {
   });
 
   it('fails a permanent error without retrying it', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'InvalidParameterValue: Invalid DB instance class';
       tfState.applyFails = true;
 
@@ -497,7 +525,7 @@ describe('failure handling', () => {
   it('pauses rather than fails when a quota blocks it', async () => {
     // The plan is fine and whatever was created still exists. "Failed" would
     // suggest there is nothing left to do, when a quota increase finishes it.
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'VcpuLimitExceeded: more vCPU capacity than your quota allows';
       tfState.applyFails = true;
 
@@ -510,7 +538,7 @@ describe('failure handling', () => {
   });
 
   it('pauses on an unrecognised error instead of retrying blindly', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'Error: something nobody has seen before';
       tfState.applyFails = true;
 
@@ -523,7 +551,7 @@ describe('failure handling', () => {
   });
 
   it('resumes a paused run once the cause is fixed elsewhere', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'AccessDenied: not authorized to perform ec2:CreateVpc';
       tfState.applyFails = true;
 
@@ -538,7 +566,7 @@ describe('failure handling', () => {
   });
 
   it('says why it stopped', async () => {
-    await runAsSystem(orgId, async () => {
+    await asOperator(async () => {
       tfState.error = 'ExpiredToken: the security token is expired';
       tfState.applyFails = true;
 
@@ -546,6 +574,68 @@ describe('failure handling', () => {
       await driveThroughGates(runId);
 
       expect((await runRow(runId)).error).toMatch(/expired/i);
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('tool authorization', () => {
+  /**
+   * The property the tool layer exists for. A run carries the authority of
+   * whoever started it, checked at the moment the tool runs rather than only
+   * when the run was created — so authority lost in between stops the next
+   * stage instead of being assumed to still hold.
+   */
+  it('refuses to apply for a run started by someone without agent:execute', async () => {
+    const [viewer] = await db.insert(users).values({
+      organizationId: orgId,
+      username: 'itest-engine-viewer',
+      passwordHash: 'itest-not-a-real-hash',
+      role: 'viewer',
+      isActive: true,
+    }).returning();
+
+    try {
+      await runWithTenant({ organizationId: orgId, userId: viewer.id, username: 'itest-engine-viewer', role: 'viewer' }, async () => {
+        const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+
+        for (let i = 0; i < 12; i++) {
+          const r = await drive(runId);
+          if (r.done) {
+            expect(r.status).toBe('failed');
+            expect(r.action).toMatch(/agent:execute|refused/i);
+            return;
+          }
+          if (r.status === 'awaiting_approval' && r.awaitingApprovalRef) {
+            await decideApproval(r.awaitingApprovalRef, 'approved');
+            continue;
+          }
+          break;
+        }
+        throw new Error('the run was not refused');
+      });
+    } finally {
+      await db.delete(users).where(eq(users.username, 'itest-engine-viewer'));
+    }
+  });
+
+  it('applies for a run started by someone who does have it', async () => {
+    // The counterpart, so the test above is not passing because everything is
+    // broken.
+    await asOperator(async () => {
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+
+      for (let i = 0; i < 12; i++) {
+        const r = await drive(runId);
+        if (r.done) { expect(r.status).toBe('succeeded'); return; }
+        if (r.status === 'awaiting_approval' && r.awaitingApprovalRef) {
+          await decideApproval(r.awaitingApprovalRef, 'approved');
+          continue;
+        }
+        break;
+      }
+      throw new Error('the run did not settle');
     });
   });
 });

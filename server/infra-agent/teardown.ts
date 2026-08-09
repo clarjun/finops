@@ -34,6 +34,7 @@ import { terraformExecutor } from './terraform/executor';
 import { resolveTerraformCredentials } from './tools/credentials';
 import { acquireLease, releaseLease, type AdvanceResult, type RunStatus } from './engine';
 import { destroyAddresses, unapprovedAdditions } from './teardown-safety';
+import { runTool, authorizingRole, ToolDenied } from './tools/invoke';
 
 /** Runs created by this module. The deploy engine refuses to touch them. */
 export const TEARDOWN_MODE = 'destroy';
@@ -179,12 +180,21 @@ export async function advanceTeardown(runId: number): Promise<AdvanceResult> {
     const [plan] = await db.select().from(infraPlans)
       .where(and(eq(infraPlans.id, run.planId), eq(infraPlans.organizationId, organizationId)));
 
-    const creds = plan?.cloudAccountId
-      ? await resolveTerraformCredentials(plan.cloudAccountId)
-      : undefined;
-    if (!creds) {
-      return fail(runId, 'No usable cloud credentials for this account; a destroy cannot be planned without them.');
+    if (!plan?.cloudAccountId) {
+      return fail(runId, 'This plan names no cloud account, so a destroy cannot be planned.');
     }
+
+    // Resolved here to fail early with a clear message; the tools resolve their
+    // own credentials from the account id and never receive them from us.
+    try {
+      await resolveTerraformCredentials(plan.cloudAccountId);
+    } catch (err) {
+      return fail(runId, `No usable cloud credentials for this account: ${(err as Error)?.message ?? err}`);
+    }
+
+    // Authorized as whoever asked for the teardown, not as the worker.
+    const role = await authorizingRole(runId, organizationId);
+    const auth = { runId, organizationId, role, cloudAccountId: plan.cloudAccountId };
 
     const [approval] = await db.select().from(infraApprovals)
       .where(and(eq(infraApprovals.runId, runId), eq(infraApprovals.organizationId, organizationId)))
@@ -193,7 +203,7 @@ export async function advanceTeardown(runId: number): Promise<AdvanceResult> {
 
     /* --- 1. propose ------------------------------------------------------- */
 
-    if (!approval) return proposeDestroy(runId, workspace, creds);
+    if (!approval) return proposeDestroy(runId, workspace, auth);
 
     if (approval.status === 'pending') {
       return { runId, status: 'awaiting_approval', action: 'waiting for a decision', awaitingApprovalRef: approval.ref, done: false };
@@ -210,7 +220,7 @@ export async function advanceTeardown(runId: number): Promise<AdvanceResult> {
 
     /* --- 2. execute the approved set -------------------------------------- */
 
-    return executeDestroy(runId, workspace, creds, approval);
+    return executeDestroy(runId, workspace, auth, approval);
   } catch (err) {
     return fail(runId, (err as Error)?.message ?? String(err));
   } finally {
@@ -218,22 +228,41 @@ export async function advanceTeardown(runId: number): Promise<AdvanceResult> {
   }
 }
 
+interface TeardownAuth {
+  runId: number;
+  organizationId: number;
+  role: Awaited<ReturnType<typeof authorizingRole>>;
+  cloudAccountId: number;
+}
+
+/** Reading state and planning a destroy change nothing, so neither is gated. */
+const WAIVED_READ = {
+  kind: 'waived' as const,
+  by: 'tool-risk-policy',
+  reason: 'read-only: planning a destroy removes nothing',
+};
+
 /** Plans the destroy and stops for a human. */
 async function proposeDestroy(
   runId: number,
   workspace: string,
-  creds: Awaited<ReturnType<typeof resolveTerraformCredentials>>,
+  auth: TeardownAuth,
 ): Promise<AdvanceResult> {
   await setStatus(runId, 'planning');
   await appendEvent({ runId, eventType: 'PLAN_CREATED', message: 'Reading current state and planning the destroy…' });
 
-  const init = await terraformExecutor.init(workspace, creds);
-  if (!init.ok) return fail(runId, `terraform init failed: ${init.stderr.slice(-500)}`);
-
-  const planned = await terraformExecutor.plan(workspace, creds, { destroy: true });
-  if (!planned.ok) return fail(runId, `terraform plan -destroy failed: ${planned.stderr.slice(-500)}`);
-
-  const addresses = destroyAddresses(planned);
+  let addresses: string[];
+  try {
+    await runTool('terraform_init', { workspacePath: workspace }, { ...auth, approval: WAIVED_READ });
+    const planned = await runTool<{ changes: Array<{ address: string; action: string }> }>('terraform_plan', {
+      workspacePath: workspace,
+      cloudAccountId: auth.cloudAccountId,
+      destroy: true,
+    }, { ...auth, approval: WAIVED_READ });
+    addresses = destroyAddresses(planned);
+  } catch (err) {
+    return fail(runId, (err as Error)?.message ?? String(err));
+  }
 
   if (addresses.length === 0) {
     // Already gone — destroyed by hand, or never created. Succeeding is honest;
@@ -286,7 +315,7 @@ async function proposeDestroy(
 async function executeDestroy(
   runId: number,
   workspace: string,
-  creds: Awaited<ReturnType<typeof resolveTerraformCredentials>>,
+  auth: TeardownAuth,
   approval: typeof infraApprovals.$inferSelect,
 ): Promise<AdvanceResult> {
   await setStatus(runId, 'applying');
@@ -295,10 +324,17 @@ async function executeDestroy(
     ? ((approval.proposedAction as { destroy: string[] }).destroy)
     : [];
 
-  const replanned = await terraformExecutor.plan(workspace, creds, { destroy: true });
-  if (!replanned.ok) return fail(runId, `terraform plan -destroy failed: ${replanned.stderr.slice(-500)}`);
-
-  const current = destroyAddresses(replanned);
+  let current: string[];
+  try {
+    const replanned = await runTool<{ changes: Array<{ address: string; action: string }> }>('terraform_plan', {
+      workspacePath: workspace,
+      cloudAccountId: auth.cloudAccountId,
+      destroy: true,
+    }, { ...auth, approval: WAIVED_READ });
+    current = destroyAddresses(replanned);
+  } catch (err) {
+    return fail(runId, (err as Error)?.message ?? String(err));
+  }
 
   // Only additions are a problem. A resource that has since disappeared means
   // the destroy does less than approved, which cannot surprise anyone.
@@ -328,27 +364,36 @@ async function executeDestroy(
     data: { addresses: current },
   });
 
-  const applied = await terraformExecutor.apply(workspace, creds, {
-    onOutput: (line) => {
-      if (line) void appendEvent({ runId, eventType: 'RESOURCE_CREATING', message: line.slice(0, 500) });
-    },
-  });
+  try {
+    // The saved destroy plan, applied through the policy engine citing the
+    // approval that was granted for exactly this set.
+    await runTool('terraform_apply', {
+      workspacePath: workspace,
+      cloudAccountId: auth.cloudAccountId,
+    }, {
+      ...auth,
+      approval: { kind: 'granted', approvalId: Number(approval.id) },
+      context: {
+        emit: (e) => void appendEvent({ runId, eventType: 'RESOURCE_CREATING', level: e.level, message: e.message.slice(0, 500) }),
+      },
+    });
+  } catch (err) {
+    if (err instanceof ToolDenied) return fail(runId, err.message);
 
-  if (!applied.ok) {
     // Partial destroy is the normal failure here: a bucket with objects, a
     // database with deletion protection. State still holds whatever survived,
     // so the remaining resources are reported rather than assumed gone.
-    const remaining = await terraformExecutor.listState(workspace, creds);
+    const left = await listRemaining(workspace, auth);
     await appendEvent({
       runId, eventType: 'RESOURCE_FAILED', level: 'error',
-      message: `Destroy failed with ${remaining.length} resource(s) still present.`,
-      data: { remaining },
+      message: `Destroy failed with ${left.length} resource(s) still present.`,
+      data: { remaining: left },
     });
-    return fail(runId, `terraform destroy failed: ${applied.stderr.slice(-500)}`);
+    return fail(runId, (err as Error)?.message ?? String(err));
   }
 
   await setStatus(runId, 'verifying');
-  const remaining = await terraformExecutor.listState(workspace, creds);
+  const remaining = await listRemaining(workspace, auth);
 
   if (remaining.length > 0) {
     // Terraform exited zero but state is not empty. Reporting success here
@@ -384,6 +429,21 @@ async function executeDestroy(
 }
 
 /* -------------------------------------------------------------------------- */
+
+/** What Terraform still believes exists. Empty is the only success. */
+async function listRemaining(workspace: string, auth: TeardownAuth): Promise<string[]> {
+  try {
+    const r = await runTool<{ addresses: string[] }>('terraform_state_list', {
+      workspacePath: workspace,
+      cloudAccountId: auth.cloudAccountId,
+    }, { ...auth, approval: WAIVED_READ });
+    return r.addresses;
+  } catch {
+    // Unable to read state. Reported as "something may remain" rather than as
+    // an empty list, which would be read as a clean teardown.
+    return ['<state could not be read>'];
+  }
+}
 
 async function markDeploymentDestroyed(workspace: string): Promise<void> {
   await db.update(infraDeployments)
