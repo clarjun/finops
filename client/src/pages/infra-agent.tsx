@@ -19,6 +19,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { ArchitectureGraph, type GraphNode } from "@/components/infra/architecture-graph";
 import { AgentActivity } from "@/components/infra/agent-activity";
 import { ApprovalCard } from "@/components/infra/approval-card";
+import { DeploymentSummaryCard } from "@/components/infra/deployment-summary";
 import {
   useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream,
   type ClarificationQuestion, type CompileResult, type NodeStatus,
@@ -217,6 +218,11 @@ export default function InfraAgentPage() {
           }}
         />
       ))}
+
+      {/* Terminal state: the summary replaces the live stats. */}
+      {runId && (runStatus === 'succeeded' || runStatus === 'failed') && (
+        <DeploymentSummaryCard runId={runId} />
+      )}
 
       {/* Live deployment */}
       {runId && (

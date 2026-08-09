@@ -84,6 +84,10 @@ const RULES: Rule[] = [
   R(['POST'], /^\/api\/infra\/runs\/\d+\/advance$/,           'agent:execute'),
   R(['POST'], /^\/api\/infra\/approvals\/[^/]+\/decide$/,     'agent:approve'),
   R(['POST'], /^\/api\/infra\/plans\/\d+\/compile$/,          'agent:propose'),
+  // Saving a blueprint and cloning one are proposals: they create plans, never
+  // infrastructure.
+  R(['POST'], /^\/api\/infra\/runs\/\d+\/save-as-template$/,  'agent:propose'),
+  R(['POST'], /^\/api\/infra\/templates\/\d+\/instantiate$/,  'agent:propose'),
   R(['POST'], /^\/api\/infra\/plans$/,                        'agent:propose'),
   R(['GET'],  /^\/api\/infra\/accounts$/,                     'account:read'),
   R(['GET'],  /^\/api\/infra\//,                              'cost:read'),

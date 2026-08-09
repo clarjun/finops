@@ -29,6 +29,7 @@ import { createRun, decideApproval } from './engine';
 import { listEvents, subscribe } from './events';
 import { scheduleAdvance } from './worker';
 import { listSteps, matchSteps, getStepHistory, getProvenance } from './knowledge/step-library';
+import { getDeploymentSummary, saveAsTemplate, listTemplates, instantiateTemplate } from './summary';
 import type { Clarifications, EstimatorLayer } from './types';
 
 const dayRe = /^\d{4}-\d{2}-\d{2}$/;
@@ -369,6 +370,40 @@ export function registerInfraAgentRoutes(app: Express) {
 
       res.json(result);
     } catch (err) { fail(res, err, 'record the approval decision'); }
+  });
+
+  /* ---- Deployment summary and blueprints --------------------------------- */
+
+  app.get('/api/infra/runs/:id/summary', async (req, res) => {
+    try {
+      const summary = await getDeploymentSummary(Number(req.params.id));
+      if (!summary) return res.status(404).json({ error: 'Run not found' });
+      res.json(summary);
+    } catch (err) { fail(res, err, 'load the deployment summary'); }
+  });
+
+  app.post('/api/infra/runs/:id/save-as-template', async (req, res) => {
+    try {
+      const body = z.object({
+        name: z.string().min(1).max(200),
+        description: z.string().max(1000).optional(),
+      }).parse(req.body);
+
+      res.json(await saveAsTemplate({ runId: Number(req.params.id), ...body }));
+    } catch (err) { fail(res, err, 'save this deployment as a blueprint'); }
+  });
+
+  app.get('/api/infra/templates', async (_req, res) => {
+    try {
+      res.json({ templates: await listTemplates() });
+    } catch (err) { fail(res, err, 'list blueprints'); }
+  });
+
+  app.post('/api/infra/templates/:id/instantiate', async (req, res) => {
+    try {
+      const body = z.object({ name: z.string().max(200).optional() }).parse(req.body ?? {});
+      res.json(await instantiateTemplate(Number(req.params.id), body.name));
+    } catch (err) { fail(res, err, 'create a plan from the blueprint'); }
   });
 
   /* ---- Standard Step Library --------------------------------------------- */

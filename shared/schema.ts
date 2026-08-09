@@ -783,6 +783,12 @@ export const infraPlans = pgTable("infra_plans", {
   version: integer("version").notNull().default(1),
   supersedesPlanId: integer("supersedes_plan_id"),
   status: varchar("status", { length: 32 }).notNull().default('draft'),
+  // A saved blueprint: a compiled topology kept to seed future deployments.
+  // A flag rather than a status because a template has no lifecycle. See 0016.
+  isTemplate: boolean("is_template").notNull().default(false),
+  templateDescription: text("template_description"),
+  templateSourceRunId: integer("template_source_run_id"),
+  templateUseCount: integer("template_use_count").notNull().default(0),
   createdByUserId: integer("created_by_user_id"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
