@@ -243,6 +243,20 @@ export async function advance(runId: number): Promise<AdvanceResult> {
       // Every node in this stage is one the mapper cannot build; skip it rather
       // than plan with no targets, which Terraform would read as "everything".
       await markNodes(runId, stage.nodeKeys, 'skipped');
+      // Recorded, and at warn level. Without this the stage leaves no trace in
+      // the event stream at all: someone watching a deployment of seventeen
+      // resources sees twelve stages go by and a green "succeeded", with
+      // nothing anywhere saying the database was never built. The compile-time
+      // warning is on a screen they may never have looked at.
+      await appendEvent({
+        runId,
+        eventType: 'RESOURCE_SKIPPED',
+        level: 'warn',
+        message:
+          `Stage ${stage.index + 1} skipped — the mapper cannot build ${stage.nodeKeys.join(', ')}. ` +
+          `Nothing was deployed for these resources.`,
+        data: { nodeKeys: stage.nodeKeys },
+      });
       return { runId, status: 'planning', action: `stage ${stage.index} skipped (unsupported resources)`, done: false };
     }
 

@@ -412,7 +412,7 @@ export async function attachProvenanceForRun(runId: number): Promise<void> {
     if (result.recorded > 0) {
       await appendEvent({
         runId,
-        eventType: 'KNOWLEDGE_SAVED',
+        eventType: 'DOCUMENTATION_RETRIEVED',
         message: `Cited provider documentation for ${result.recorded} step(s).`,
         data: { recorded: result.recorded, unavailable: result.unavailable },
       });
@@ -421,7 +421,7 @@ export async function attachProvenanceForRun(runId: number): Promise<void> {
     if (result.unavailable.length > 0) {
       await appendEvent({
         runId,
-        eventType: 'KNOWLEDGE_SAVED',
+        eventType: 'DOCUMENTATION_RETRIEVED',
         level: 'warn',
         message:
           `Could not retrieve documentation for ${result.unavailable.length} step(s); ` +
@@ -433,7 +433,7 @@ export async function attachProvenanceForRun(runId: number): Promise<void> {
     for (const report of result.drift) {
       await appendEvent({
         runId,
-        eventType: 'KNOWLEDGE_SAVED',
+        eventType: 'DOCUMENTATION_RETRIEVED',
         level: 'warn',
         message:
           `${report.resourceType} sets ${report.undocumented.join(', ')}, which the ` +
