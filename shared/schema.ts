@@ -825,7 +825,9 @@ export const infraRuns = pgTable("infra_runs", {
   approvalsGranted: integer("approvals_granted").notNull().default(0),
   error: text("error"),
   leaseOwner: varchar("lease_owner", { length: 128 }),
-  leaseExpiresAt: timestamp("lease_expires_at"),
+  // timestamptz: a lease is an instant, and comparing a timezone-less column
+  // against now() was off by the session offset. See migration 0013.
+  leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
   startedByUserId: integer("started_by_user_id"),
   startedAt: timestamp("started_at"),
   finishedAt: timestamp("finished_at"),
@@ -849,7 +851,10 @@ export const infraRunNodes = pgTable("infra_run_nodes", {
 
 export const infraEvents = pgTable("infra_events", {
   id: bigserial("id", { mode: 'number' }).primaryKey(),
-  organizationId: organizationId(),
+  // Deliberately not a foreign key: deployment history outlives the tenant, and
+  // an append-only table cannot be the target of a cascading delete. Same
+  // correction as audit_logs. See migration 0014.
+  organizationId: integer("organization_id").notNull(),
   runId: integer("run_id").notNull(),
   eventType: varchar("event_type", { length: 64 }).notNull(),
   nodeKey: varchar("node_key", { length: 128 }),

@@ -233,7 +233,7 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     const stage = nextStage(stages, nodeStatus);
 
     if (!stage) {
-      return completeRun(runId, run.planId, plan, workspace, creds);
+      return completeRun(runId, run.planId, plan, workspace, creds, run.executionMode);
     }
 
     const targets = stageTargets(stage, generated.addressByNode);
@@ -460,13 +460,20 @@ async function completeRun(
   plan: typeof infraPlans.$inferSelect,
   workspace: string,
   creds: Awaited<ReturnType<typeof resolveTerraformCredentials>>,
+  executionMode: string,
 ) {
   await setRunStatus(runId, 'verifying');
 
   // Final untargeted apply. HashiCorp is explicit that a workspace where
   // -target has been used should be converged with a full run; without this the
   // configuration and the real infrastructure can quietly diverge.
-  {
+  //
+  // Guarded on executionMode. Without the guard a simulation reaching this point
+  // performs a real apply and creates real infrastructure — the single worst
+  // thing this system could do, because the user was told nothing would be
+  // created. Every stage below correctly skipped applying; the convergence step
+  // did not, and only a test caught it.
+  if (executionMode !== 'simulate') {
     const finalPlan = await terraformExecutor.plan(workspace, creds);
     if (finalPlan.ok && (finalPlan.toAdd > 0 || finalPlan.toChange > 0)) {
       await appendEvent({
@@ -478,7 +485,10 @@ async function completeRun(
     }
   }
 
-  const addresses = await terraformExecutor.listState(workspace, creds);
+  // In a simulation nothing was created, so the resource list must be empty
+  // rather than whatever state happens to contain — otherwise the summary would
+  // report resources the user does not have.
+  const addresses = executionMode === 'simulate' ? [] : await terraformExecutor.listState(workspace, creds);
 
   const [run] = await db.select().from(infraRuns).where(eq(infraRuns.id, runId));
   const durationSeconds = run?.startedAt ? Math.round((Date.now() - run.startedAt.getTime()) / 1000) : null;
@@ -608,6 +618,10 @@ async function acquireLease(runId: number, organizationId: number, owner: string
     .where(and(
       eq(infraRuns.id, runId),
       eq(infraRuns.organizationId, organizationId),
+      // lease_expires_at is timestamptz (migration 0013), so now() compares
+      // instant to instant. It was previously a timezone-less timestamp, which
+      // Postgres cast using the session zone — off by 5.5 hours here, so a held
+      // lease read as expired and two workers could drive one deployment.
       sql`(${infraRuns.leaseOwner} is null or ${infraRuns.leaseExpiresAt} < now())`,
     ))
     .returning({ id: infraRuns.id });

@@ -87,7 +87,7 @@ export async function sweepStalledRuns(): Promise<{ picked: number }> {
     .where(and(
       inArray(infraRuns.status, ACTIVE as unknown as string[]),
       // Only runs nobody currently holds. A live lease means another worker is
-      // mid-step and must not be interrupted.
+      // mid-step and must not be interrupted. timestamptz since 0013.
       sql`(${infraRuns.leaseOwner} is null or ${infraRuns.leaseExpiresAt} < now())`,
     ))
     .limit(25);

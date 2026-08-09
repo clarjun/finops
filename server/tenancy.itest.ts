@@ -67,9 +67,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The pool is shared by every integration file in this worker, so the first
+  // file to finish would otherwise close it under the others. Ending it is
+  // best-effort and idempotent.
+  const closePool = async () => { try { await pool.end(); } catch { /* already closed */ } };
   await destroyOrg(SLUG_A);
   await destroyOrg(SLUG_B);
-  await pool.end();
+  await closePool();
 });
 
 describe('tenant context', () => {
