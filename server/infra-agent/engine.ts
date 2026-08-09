@@ -32,6 +32,7 @@ import { awsMapper } from './providers/aws';
 import { terraformExecutor } from './terraform/executor';
 import { resolveTerraformCredentials } from './tools/credentials';
 import { extractStepsFromRun } from './knowledge/step-library';
+import { attachProvenanceForRun } from './knowledge/docs';
 import type { Clarifications, EstimatorLayer, LamNode, LogicalArchitecture } from './types';
 
 /** How long a worker may hold a run before another may take it over. */
@@ -524,6 +525,9 @@ async function completeRun(
   // deployment that produced it — the infrastructure exists either way.
   try {
     await extractStepsFromRun(runId);
+    // Then find the provider documentation for whatever was just learned, so a
+    // step arrives in the library with a source rather than acquiring one later.
+    await attachProvenanceForRun(runId);
   } catch (err) {
     console.error(`[Engine] Could not extract steps from run ${runId}:`, (err as Error)?.message ?? err);
   }

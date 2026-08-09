@@ -13,7 +13,7 @@
 import { useState } from "react";
 import { useLocation } from "wouter";
 import {
-  Library, Layers, PackageCheck, AlertTriangle, Loader2, Rocket, ExternalLink, Clock,
+  Library, Layers, PackageCheck, AlertTriangle, Loader2, Rocket, ExternalLink, Clock, BookOpen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +22,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  useSteps, useStepDetail, useBlueprints, useInstantiateBlueprint,
+  useSteps, useStepDetail, useBlueprints, useInstantiateBlueprint, useResearchDocs,
   type LibraryStep,
 } from "@/hooks/use-infra-agent";
 
@@ -140,9 +140,25 @@ function Blueprints() {
 /* -------------------------------------------------------------------------- */
 
 function Steps() {
+  const { toast } = useToast();
+  const { can } = useAuth();
   const { data, isLoading } = useSteps();
+  const research = useResearchDocs();
   const [openSlug, setOpenSlug] = useState<string | null>(null);
   const steps = data?.steps ?? [];
+  const uncited = steps.length > 0;
+
+  const runResearch = () => research.mutate(undefined, {
+    onSuccess: (r) => {
+      // Reports what it could not find. A research pass that only announces
+      // successes would leave uncited steps looking researched.
+      const parts = [`Cited ${r.recorded} of ${r.researched} step(s).`];
+      if (r.unavailable.length) parts.push(`${r.unavailable.length} had no retrievable document.`);
+      if (r.drift.length) parts.push(`${r.drift.length} use arguments the current provider no longer documents.`);
+      toast({ title: 'Documentation research complete', description: parts.join(' ') });
+    },
+    onError: (e) => toast({ title: 'Research failed', description: e.message, variant: 'destructive' }),
+  });
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading steps…</p>;
 
@@ -163,6 +179,17 @@ function Steps() {
 
   return (
     <div className="space-y-2">
+      {uncited && can('agent:propose') && (
+        <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+          <p className="text-sm text-muted-foreground">
+            Look up the provider documentation for steps that have no source, and check their arguments against it.
+          </p>
+          <Button size="sm" variant="outline" className="gap-2 shrink-0" disabled={research.isPending} onClick={runResearch} data-testid="button-research-docs">
+            {research.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <BookOpen className="h-4 w-4" />}
+            Research documentation
+          </Button>
+        </div>
+      )}
       {steps.map((step) => (
         <StepRow
           key={step.slug}

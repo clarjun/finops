@@ -29,6 +29,7 @@ import { createRun, decideApproval } from './engine';
 import { listEvents, subscribe } from './events';
 import { scheduleAdvance } from './worker';
 import { listSteps, matchSteps, getStepHistory, getProvenance } from './knowledge/step-library';
+import { researchSteps } from './knowledge/docs';
 import { getDeploymentSummary, saveAsTemplate, listTemplates, instantiateTemplate } from './summary';
 import type { Clarifications, EstimatorLayer } from './types';
 
@@ -422,6 +423,19 @@ export function registerInfraAgentRoutes(app: Express) {
       if (versions.length === 0) return res.status(404).json({ error: 'Step not found' });
       res.json({ versions, provenance: await getProvenance(Number(versions[0].id)) });
     } catch (err) { fail(res, err, 'load the step'); }
+  });
+
+  /**
+   * Finds provider documentation for steps that have none.
+   *
+   * Reports what it could not retrieve rather than leaving those steps looking
+   * researched — the library distinguishes a cited step from an uncited one, and
+   * that distinction is only worth anything if this endpoint is honest about it.
+   */
+  app.post('/api/infra/steps/research', async (_req, res) => {
+    try {
+      res.json(await researchSteps({}));
+    } catch (err) { fail(res, err, 'research documentation'); }
   });
 
   /* ---- Deployments and accounts ------------------------------------------ */

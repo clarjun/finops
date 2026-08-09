@@ -287,3 +287,19 @@ export function useInstantiateBlueprint() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/templates'] }),
   });
 }
+
+export interface ResearchResult {
+  researched: number;
+  recorded: number;
+  /** Steps whose documentation could not be retrieved — reported, not hidden. */
+  unavailable: string[];
+  drift: Array<{ resourceType: string; version: string; url: string; undocumented: string[] }>;
+}
+
+export function useResearchDocs() {
+  const qc = useQueryClient();
+  return useMutation<ResearchResult, Error, void>({
+    mutationFn: () => post('/api/infra/steps/research', {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/steps'] }),
+  });
+}

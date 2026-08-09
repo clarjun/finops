@@ -88,6 +88,9 @@ const RULES: Rule[] = [
   // infrastructure.
   R(['POST'], /^\/api\/infra\/runs\/\d+\/save-as-template$/,  'agent:propose'),
   R(['POST'], /^\/api\/infra\/templates\/\d+\/instantiate$/,  'agent:propose'),
+  // Reading public provider documentation and citing it against a step creates
+  // no infrastructure and spends nothing; it is a knowledge action.
+  R(['POST'], /^\/api\/infra\/steps\/research$/,              'agent:propose'),
   R(['POST'], /^\/api\/infra\/plans$/,                        'agent:propose'),
   R(['GET'],  /^\/api\/infra\/accounts$/,                     'account:read'),
   R(['GET'],  /^\/api\/infra\//,                              'cost:read'),
