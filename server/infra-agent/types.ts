@@ -79,6 +79,12 @@ export interface LamNode {
   dependsOn: string[];
   risk: RiskAssessment;
   /**
+   * Whether a human must approve before this is created. Derived from risk by
+   * the compiler and read by the stager, which isolates each approval-requiring
+   * node into its own stage.
+   */
+  requiresApproval: boolean;
+  /**
    * Whether the estimator asked for this, or the compiler added it because the
    * requested resources cannot exist without it. Surfaced in the UI so the user
    * can see what the agent inferred rather than being silently charged for it.

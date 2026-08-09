@@ -165,10 +165,24 @@ export class TerraformExecutor {
    * The saved file is what apply consumes, which is what makes "the approved
    * plan is the applied plan" true rather than aspirational.
    */
-  async plan(dir: string, creds: TerraformCredentials | undefined, opts: ExecOptions = {}): Promise<TfPlanResult> {
+  async plan(
+    dir: string,
+    creds: TerraformCredentials | undefined,
+    opts: ExecOptions & { targets?: string[] } = {},
+  ): Promise<TfPlanResult> {
+    // -target narrows a plan to specific resources and their dependencies.
+    // HashiCorp documents it as exceptional-use, and they are right that it is
+    // wrong for routine work — but staging a deployment around a human approval
+    // gate is exactly the exception: without it, a plan containing one
+    // high-risk resource could only be approved or refused in its entirety.
+    // The engine always finishes with an untargeted plan/apply so the workspace
+    // converges on the full configuration, which is the practice HashiCorp
+    // prescribes when -target has been used.
+    const targetArgs = (opts.targets ?? []).flatMap((t) => ['-target', t]);
+
     const result = await this.run(
       dir,
-      ['plan', '-no-color', '-input=false', `-out=${PLAN_FILE}`],
+      ['plan', '-no-color', '-input=false', `-out=${PLAN_FILE}`, ...targetArgs],
       creds,
       opts,
     );
