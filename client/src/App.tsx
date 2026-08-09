@@ -22,6 +22,7 @@ import Settings from "@/pages/settings";
 import CostEstimator from "@/pages/cost-estimator";
 import UsersPage from "@/pages/users";
 import AuditPage from "@/pages/audit";
+import InfraAgentPage from "@/pages/infra-agent";
 import Login from "@/pages/login";
 import NotFound from "@/pages/not-found";
 import { Button } from "@/components/ui/button";
@@ -48,6 +49,7 @@ function ProtectedRouter() {
       <Route path="/alerts" component={Alerts} />
       <Route path="/optimization" component={Optimization} />
       <Route path="/agent" component={AgentDashboard} />
+      <Route path="/infra-agent" component={InfraAgentPage} />
       <Route path="/configuration" component={Configuration} />
       <Route path="/settings" component={Settings} />
       {/* Permission-gated routes. The API enforces these independently; this
