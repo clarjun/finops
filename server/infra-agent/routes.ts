@@ -266,16 +266,22 @@ export function registerInfraAgentRoutes(app: Express) {
         .where(and(eq(infraRuns.id, runId), eq(infraRuns.organizationId, currentOrgId())));
       if (!run) return res.status(404).json({ error: 'Run not found' });
 
-      const [nodes, approvals, planNodes] = await Promise.all([
+      const [nodes, approvals, planNodes, plans] = await Promise.all([
         db.select().from(infraRunNodes).where(and(
           eq(infraRunNodes.runId, runId), eq(infraRunNodes.organizationId, currentOrgId()))),
         db.select().from(infraApprovals).where(and(
           eq(infraApprovals.runId, runId), eq(infraApprovals.organizationId, currentOrgId()))),
         db.select().from(infraPlanNodes).where(and(
           eq(infraPlanNodes.planId, run.planId), eq(infraPlanNodes.organizationId, currentOrgId()))),
+        // Provider and region live on the plan, not the run. Without them the
+        // console can only label a reloaded deployment from answers still held
+        // in browser state, which a refresh throws away.
+        db.select({ name: infraPlans.name, provider: infraPlans.provider, region: infraPlans.region })
+          .from(infraPlans)
+          .where(and(eq(infraPlans.id, run.planId), eq(infraPlans.organizationId, currentOrgId()))),
       ]);
 
-      res.json({ run, nodes, approvals, planNodes });
+      res.json({ run, nodes, approvals, planNodes, plan: plans[0] ?? null });
     } catch (err) { fail(res, err, 'load the run'); }
   });
 

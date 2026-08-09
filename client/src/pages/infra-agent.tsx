@@ -112,20 +112,34 @@ export default function InfraAgentPage() {
 
   /* ---- Live run -------------------------------------------------------- */
 
+  // Timing and error come from the run; shape and cost come from the plan.
+  const runNodeByKey = new Map((run.data?.nodes ?? []).map((n) => [n.nodeKey, n]));
   const statusByNode = new Map<string, NodeStatus>(
     (run.data?.nodes ?? []).map((n) => [n.nodeKey, n.status]),
   );
+
+  const runFacts = (key: string) => {
+    const r = runNodeByKey.get(key);
+    return { startedAt: r?.startedAt ?? null, finishedAt: r?.finishedAt ?? null, error: r?.error ?? null };
+  };
 
   const graphNodes: GraphNode[] = compiled
     ? compiled.nodes.map((n) => ({
         key: n.key, label: n.label, logicalType: n.logicalType, dependsOn: n.dependsOn,
         requiresApproval: n.requiresApproval, riskLevel: n.risk.level,
         status: statusByNode.get(n.key) ?? 'pending',
+        estimatedMonthlyCost: n.estimatedMonthlyCost ?? null,
+        ...runFacts(n.key),
       }))
     : (run.data?.planNodes ?? []).map((n) => ({
         key: n.nodeKey, label: n.label, logicalType: n.logicalType, dependsOn: n.dependsOn ?? [],
         requiresApproval: n.requiresApproval, riskLevel: n.riskLevel,
         status: statusByNode.get(n.nodeKey) ?? 'pending',
+        // Postgres returns numeric as a string; NaN would render as "$NaN/mo".
+        estimatedMonthlyCost: n.estimatedMonthlyCost != null && Number.isFinite(Number(n.estimatedMonthlyCost))
+          ? Number(n.estimatedMonthlyCost)
+          : null,
+        ...runFacts(n.nodeKey),
       }));
 
   const pendingApprovals = (run.data?.approvals ?? []).filter((a) => a.status === 'pending');
@@ -187,7 +201,7 @@ export default function InfraAgentPage() {
               </div>
             ))}
 
-            <ArchitectureGraph nodes={graphNodes} />
+            <ArchitectureGraph nodes={graphNodes} provider={run.data?.plan?.provider ?? (typeof answers.provider === 'string' ? answers.provider : undefined)} />
 
             <div className="flex flex-wrap gap-2 pt-2">
               <Button variant="outline" onClick={() => onDeploy('simulate')} disabled={startRun.isPending}>
@@ -258,7 +272,7 @@ export default function InfraAgentPage() {
           <div className="grid gap-4 lg:grid-cols-5">
             <Card className="lg:col-span-3">
               <CardHeader><CardTitle className="text-base">Architecture</CardTitle></CardHeader>
-              <CardContent><ArchitectureGraph nodes={graphNodes} /></CardContent>
+              <CardContent><ArchitectureGraph nodes={graphNodes} provider={run.data?.plan?.provider ?? (typeof answers.provider === 'string' ? answers.provider : undefined)} /></CardContent>
             </Card>
 
             <Card className="lg:col-span-2">

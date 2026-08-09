@@ -76,13 +76,25 @@ export interface RunDetail {
     resourcesCreated: number; approvalsRequired: number; approvalsGranted: number;
     error: string | null; startedAt: string | null; finishedAt: string | null;
   };
-  nodes: Array<{ nodeKey: string; status: NodeStatus; error: string | null }>;
+  // startedAt/finishedAt are recorded by the engine, so the graph can show a
+  // real duration after a reload rather than timing from when the page opened.
+  nodes: Array<{
+    nodeKey: string; status: NodeStatus; error: string | null;
+    startedAt: string | null; finishedAt: string | null;
+  }>;
   approvals: Array<{
     id: number; ref: string; nodeKey: string | null; summary: string; details: string | null;
     riskLevel: string; riskReasons: string[]; status: string; estimatedCostImpact: string | null;
     decidedBy: string | null; decisionReason: string | null;
   }>;
-  planNodes: Array<{ nodeKey: string; label: string; logicalType: string; dependsOn: string[]; riskLevel: string; requiresApproval: boolean }>;
+  /** Provider and region live on the plan; the run carries neither. */
+  plan: { name: string; provider: string | null; region: string | null } | null;
+  planNodes: Array<{
+    nodeKey: string; label: string; logicalType: string; dependsOn: string[];
+    riskLevel: string; requiresApproval: boolean;
+    /** Numeric in the database; Postgres returns it as a string. */
+    estimatedMonthlyCost: string | null;
+  }>;
 }
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {

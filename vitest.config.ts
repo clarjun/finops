@@ -22,7 +22,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['server/**/*.test.ts', 'shared/**/*.test.ts'],
+    include: ['server/**/*.test.ts', 'shared/**/*.test.ts', 'client/**/*.test.ts'],
     // Integration tests are opted into explicitly.
     exclude: ['**/node_modules/**', '**/dist/**', '**/*.itest.ts'],
     globals: false,
