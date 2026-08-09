@@ -21,8 +21,9 @@ import { ArchitectureGraph, type GraphNode } from "@/components/infra/architectu
 import { AgentActivity } from "@/components/infra/agent-activity";
 import { ApprovalCard } from "@/components/infra/approval-card";
 import { DeploymentSummaryCard } from "@/components/infra/deployment-summary";
+import { EstimatePanel } from "@/components/infra/estimate-panel";
 import {
-  useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun, useDiagnosis,
+  useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun, useDiagnosis, usePlan,
   type ClarificationQuestion, type CompileResult, type NodeStatus,
 } from "@/hooks/use-infra-agent";
 
@@ -49,6 +50,9 @@ export default function InfraAgentPage() {
   const compile = useCompilePlan();
   const startRun = useStartRun();
   const run = useRun(runId);
+  // Known from the handoff before a run exists, and from the run afterwards, so
+  // the estimate stays on screen for the whole deployment.
+  const planDetail = usePlan(handoff?.planId ?? run.data?.run.planId ?? null);
   const { events, connected } = useRunStream(runId);
 
   // The estimator hands off through sessionStorage rather than the URL: a
@@ -144,8 +148,20 @@ export default function InfraAgentPage() {
       }));
 
   const pendingApprovals = (run.data?.approvals ?? []).filter((a) => a.status === 'pending');
+  const simulating = run.data?.run.executionMode === 'simulate';
   const applied = graphNodes.filter((n) => n.status === 'applied').length;
-  const progress = graphNodes.length > 0 ? Math.round((applied / graphNodes.length) * 100) : 0;
+
+  // A simulation applies nothing, so counting applies reported 0% progress on a
+  // run that had finished successfully. What it settles is how much of the
+  // architecture has been planned.
+  const settled = graphNodes.filter((n) =>
+    simulating ? n.status !== 'pending' && n.status !== 'ready' && n.status !== 'running' : n.status === 'applied',
+  ).length;
+
+  // Resources the mapper cannot build are excluded from the denominator: a run
+  // cannot reach 100% against a target it was never able to attempt.
+  const attemptable = graphNodes.filter((n) => n.status !== 'unsupported').length;
+  const progress = attemptable > 0 ? Math.round((Math.min(settled, attemptable) / attemptable) * 100) : 0;
   const runStatus = run.data?.run.status;
 
   return (
@@ -154,6 +170,17 @@ export default function InfraAgentPage() {
         name={handoff?.name}
         status={runStatus}
         executionMode={run.data?.run.executionMode}
+      />
+
+      {/* What the Cost Estimator produced, so the plan below can be checked
+          against what was actually asked for. */}
+      <EstimatePanel
+        source={planDetail.data ? {
+          name: planDetail.data.plan.name,
+          requirements: planDetail.data.plan.requirements,
+          estimate: planDetail.data.plan.estimatorOutput as never,
+          estimatedMonthlyCost: planDetail.data.plan.estimatedMonthlyCost,
+        } : null}
       />
 
       {/* Clarify */}
@@ -247,7 +274,11 @@ export default function InfraAgentPage() {
       {runId && (
         <>
           <div className="grid gap-4 md:grid-cols-4">
-            <Stat icon={Server} label="Resources created" value={`${applied} / ${graphNodes.length}`} />
+            <Stat
+              icon={Server}
+              label={simulating ? 'Resources planned' : 'Resources created'}
+              value={`${simulating ? Math.min(settled, attemptable) : applied} / ${attemptable}`}
+            />
             <Stat icon={GitBranch} label="Progress" value={`${progress}%`} />
             <Stat icon={ShieldAlert} label="Approvals" value={`${run.data?.run.approvalsGranted ?? 0} / ${run.data?.run.approvalsRequired ?? 0}`} />
             <Stat

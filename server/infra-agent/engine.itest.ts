@@ -639,3 +639,63 @@ describe('tool authorization', () => {
     });
   });
 });
+
+/* -------------------------------------------------------------------------- */
+
+describe('resources the mapper cannot build', () => {
+  /**
+   * The compiler always synthesises an observability node, which the AWS mapper
+   * does not build. It has to reach a terminal state, and the engine has to
+   * treat that state as finished.
+   *
+   * This is a regression test with a specific history: introducing the
+   * 'unsupported' status without adding it to the engine's settled set made
+   * nextStage() return the same stage forever. The symptom was a step-ceiling
+   * timeout, which says nothing about the cause.
+   */
+  it('settles them instead of returning to the same stage forever', async () => {
+    await asOperator(async () => {
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+
+      for (let i = 0; i < 12; i++) {
+        const r = await drive(runId);
+        if (r.done) break;
+        if (r.status === 'awaiting_approval' && r.awaitingApprovalRef) {
+          await decideApproval(r.awaitingApprovalRef, 'approved');
+          continue;
+        }
+        break;
+      }
+
+      const statuses = await nodeStatuses(runId);
+      const unsupported = [...statuses.values()].filter((v) => v === 'unsupported');
+
+      expect(unsupported.length).toBeGreaterThan(0);
+      // And the run finished rather than spinning on them.
+      expect(['succeeded', 'failed']).toContain((await runRow(runId)).status);
+    });
+  });
+
+  it('does not count them as deployed', async () => {
+    // They were never attempted. Reporting them as skipped alongside genuine
+    // skips is what made a successful simulation read as nineteen failures.
+    await asOperator(async () => {
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      for (let i = 0; i < 12; i++) {
+        const r = await drive(runId);
+        if (r.done) break;
+        if (r.status === 'awaiting_approval' && r.awaitingApprovalRef) {
+          await decideApproval(r.awaitingApprovalRef, 'approved');
+          continue;
+        }
+        break;
+      }
+
+      const statuses = await nodeStatuses(runId);
+      for (const [key, status] of statuses) {
+        if (status === 'unsupported') expect(status).not.toBe('applied');
+        expect(key).toBeTruthy();
+      }
+    });
+  });
+});

@@ -26,7 +26,11 @@ export interface DeploymentSummary {
   executionMode: string;
   status: string;
   resourcesCreated: number;
+  /** Planned but deliberately not applied, because the run was a simulation. */
+  resourcesPlanned: number;
   resourcesSkipped: number;
+  /** Excluded because the provider mapper cannot build them. */
+  resourcesUnsupported: number;
   resourcesFailed: number;
   approvalsRequired: number;
   approvalsGranted: number;
@@ -71,7 +75,12 @@ export async function getDeploymentSummary(runId: number): Promise<DeploymentSum
     executionMode: run.executionMode,
     status: run.status,
     resourcesCreated: count('applied'),
+    // A simulation applies nothing, so 'applied' is always zero and reporting
+    // it as "would create" told the user their plan would build nothing. The
+    // planned count is what a simulation actually establishes.
+    resourcesPlanned: count('skipped'),
     resourcesSkipped: count('skipped'),
+    resourcesUnsupported: count('unsupported'),
     resourcesFailed: count('failed'),
     approvalsRequired: run.approvalsRequired,
     approvalsGranted: approvals.filter((a) => a.status === 'approved').length,

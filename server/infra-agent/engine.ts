@@ -255,10 +255,14 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     // and stop", not "pretend without talking to the cloud", which is also the
     // only version worth showing someone: a fabricated plan is exactly what
     // must never be presented as a deployment.
-    let creds: Awaited<ReturnType<typeof resolveTerraformCredentials>> | undefined;
+    //
+    // Resolved and discarded: the tools resolve their own from the account id,
+    // so the value is never held here. Doing it anyway turns a missing
+    // credential into one clear failure at the start rather than an obscure one
+    // several minutes into a deployment.
     if (plan.cloudAccountId) {
       try {
-        creds = await resolveTerraformCredentials(plan.cloudAccountId);
+        await resolveTerraformCredentials(plan.cloudAccountId);
       } catch (err) {
         return failRun(runId, `Cloud credentials unavailable: ${(err as Error).message}`);
       }
@@ -303,7 +307,11 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     if (targets.length === 0) {
       // Every node in this stage is one the mapper cannot build; skip it rather
       // than plan with no targets, which Terraform would read as "everything".
-      await markNodes(runId, stage.nodeKeys, 'skipped');
+      // Its own status rather than 'skipped'. A simulation marks every node
+      // skipped by design, so sharing one value made "19 not deployed
+      // (unsupported or skipped)" the only thing the summary could say — which
+      // reads as nineteen failures on a run that did exactly what was asked.
+      await markNodes(runId, stage.nodeKeys, 'unsupported');
       // Recorded, and at warn level. Without this the stage leaves no trace in
       // the event stream at all: someone watching a deployment of seventeen
       // resources sees twelve stages go by and a green "succeeded", with
@@ -529,9 +537,22 @@ export async function decideApproval(
 /* -------------------------------------------------------------------------- */
 
 /** The first stage with any node not yet applied or skipped. */
+/**
+ * Node statuses the engine will not revisit.
+ *
+ * Every terminal outcome must be listed here. A status missing from this set
+ * makes nextStage() return the same stage forever, because the engine keeps
+ * looking for work on nodes it has already finished with — which is exactly
+ * what happened when 'unsupported' was introduced and only the summary was
+ * taught about it.
+ */
+const SETTLED_NODE_STATUS = ['applied', 'skipped', 'unsupported'] as const;
+
 function nextStage(stages: Stage[], status: Map<string, string>): Stage | null {
   for (const stage of stages) {
-    const settled = stage.nodeKeys.every((k) => ['applied', 'skipped'].includes(status.get(k) ?? 'pending'));
+    const settled = stage.nodeKeys.every((k) =>
+      (SETTLED_NODE_STATUS as readonly string[]).includes(status.get(k) ?? 'pending'),
+    );
     if (!settled) return stage;
   }
   return null;

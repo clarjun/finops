@@ -12,7 +12,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 export type NodeStatus =
   | 'pending' | 'ready' | 'running' | 'awaiting_approval'
-  | 'applied' | 'failed' | 'skipped' | 'rolled_back';
+  | 'applied' | 'failed' | 'skipped' | 'rolled_back'
+  /** The provider mapper cannot build this resource; it was excluded. */
+  | 'unsupported';
 
 export type RunStatus =
   | 'queued' | 'initializing' | 'planning' | 'awaiting_approval'
@@ -368,5 +370,30 @@ export function useDiagnosis(runId: number | null, enabled: boolean) {
     queryKey: ['/api/infra/runs', runId, 'diagnosis'],
     queryFn: () => json(`/api/infra/runs/${runId}/diagnosis`),
     enabled: runId != null && enabled,
+  });
+}
+
+export interface PlanDetail {
+  plan: {
+    id: number;
+    name: string;
+    requirements: string | null;
+    /** The Cost Estimator's priced line items, as handed over. */
+    estimatorOutput: Array<Record<string, unknown>> | null;
+    estimatedMonthlyCost: string | null;
+    provider: string | null;
+    region: string | null;
+    environment: string | null;
+  };
+}
+
+/** The plan behind a run, including what the estimator originally produced. */
+export function usePlan(planId: number | null) {
+  return useQuery<PlanDetail>({
+    queryKey: ['/api/infra/plans', planId],
+    queryFn: () => json(`/api/infra/plans/${planId}`),
+    enabled: planId != null,
+    // The requirement and the estimate do not change once the plan exists.
+    staleTime: Infinity,
   });
 }

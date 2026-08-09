@@ -74,6 +74,9 @@ const STATUS_STYLE: Record<NodeStatus, { ring: string; text: string; label: stri
   applied:           { ring: 'border-green-500',   text: 'text-green-600',        label: 'Created',           edge: 'stroke-green-500' },
   failed:            { ring: 'border-destructive', text: 'text-destructive',      label: 'Failed',            edge: 'stroke-destructive' },
   skipped:           { ring: 'border-border',      text: 'text-muted-foreground', label: 'Not deployed',      edge: 'stroke-border' },
+  // Distinct from 'Not deployed': this one was never buildable, and saying so
+  // is the difference between a gap in the product and a fault in the run.
+  unsupported:       { ring: 'border-border',      text: 'text-muted-foreground', label: 'Not supported yet', edge: 'stroke-border' },
   rolled_back:       { ring: 'border-destructive', text: 'text-destructive',      label: 'Rolled back',       edge: 'stroke-destructive' },
 };
 
@@ -82,7 +85,7 @@ function StatusIcon({ status }: { status: NodeStatus }) {
   if (status === 'failed' || status === 'rolled_back') return <XCircle className="h-3.5 w-3.5 text-destructive" />;
   if (status === 'running') return <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />;
   if (status === 'awaiting_approval') return <Lock className="h-3.5 w-3.5 text-yellow-600" />;
-  if (status === 'skipped') return <MinusCircle className="h-3.5 w-3.5 text-muted-foreground" />;
+  if (status === 'skipped' || status === 'unsupported') return <MinusCircle className="h-3.5 w-3.5 text-muted-foreground" />;
   return <div className="h-3.5 w-3.5 rounded-full border border-muted-foreground/40" />;
 }
 

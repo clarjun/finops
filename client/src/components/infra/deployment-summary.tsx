@@ -28,7 +28,9 @@ export interface DeploymentSummaryData {
   executionMode: string;
   status: string;
   resourcesCreated: number;
+  resourcesPlanned: number;
   resourcesSkipped: number;
+  resourcesUnsupported: number;
   resourcesFailed: number;
   approvalsRequired: number;
   approvalsGranted: number;
@@ -130,7 +132,14 @@ export function DeploymentSummaryCard({ runId }: { runId: number }) {
         )}
 
         <div className="grid gap-4 sm:grid-cols-4">
-          <Metric icon={Server} label={simulated ? 'Would create' : 'Resources created'} value={String(data.resourcesCreated)} />
+          <Metric
+            icon={Server}
+            label={simulated ? 'Would create' : 'Resources created'}
+            // A simulation creates nothing, so the created count is always zero
+            // — reporting it under "would create" said the plan would build
+            // nothing at all.
+            value={String(simulated ? data.resourcesPlanned : data.resourcesCreated)}
+          />
           <Metric icon={ShieldCheck} label="Approvals" value={`${data.approvalsGranted} / ${data.approvalsRequired}`} />
           <Metric icon={Clock} label="Duration" value={duration(data.durationSeconds)} />
           <Metric
@@ -140,9 +149,11 @@ export function DeploymentSummaryCard({ runId }: { runId: number }) {
           />
         </div>
 
-        {(data.resourcesSkipped > 0 || data.resourcesFailed > 0) && (
+        {(data.resourcesUnsupported > 0 || data.resourcesFailed > 0 || (!simulated && data.resourcesSkipped > 0)) && (
           <p className="text-sm text-muted-foreground">
-            {data.resourcesSkipped > 0 && `${data.resourcesSkipped} not deployed (unsupported or skipped). `}
+            {data.resourcesUnsupported > 0 &&
+              `${data.resourcesUnsupported} excluded — the ${data.provider.toUpperCase()} mapper cannot build them yet. `}
+            {!simulated && data.resourcesSkipped > 0 && `${data.resourcesSkipped} not deployed. `}
             {data.resourcesFailed > 0 && `${data.resourcesFailed} failed.`}
           </p>
         )}
