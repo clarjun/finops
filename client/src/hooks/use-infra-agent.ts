@@ -344,3 +344,29 @@ export function useResumeRun() {
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['/api/infra/runs', v.runId] }),
   });
 }
+
+export interface Remedy {
+  code: string;
+  title: string;
+  explanation: string;
+  docUrl?: string;
+  change?: { field: string; to: string; describes: string };
+  manualSteps?: string[];
+}
+
+export interface Diagnosis {
+  status: RunStatus;
+  error?: string;
+  classification: { kind: string; reason: string; retryable: boolean } | null;
+  /** Null when the failure is not one we can explain better than the raw text. */
+  remedy: Remedy | null;
+  currentAnswers?: Record<string, unknown>;
+}
+
+export function useDiagnosis(runId: number | null, enabled: boolean) {
+  return useQuery<Diagnosis>({
+    queryKey: ['/api/infra/runs', runId, 'diagnosis'],
+    queryFn: () => json(`/api/infra/runs/${runId}/diagnosis`),
+    enabled: runId != null && enabled,
+  });
+}

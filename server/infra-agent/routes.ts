@@ -31,6 +31,8 @@ import { scheduleAdvance } from './worker';
 import { listSteps, matchSteps, getStepHistory, getProvenance } from './knowledge/step-library';
 import { researchSteps } from './knowledge/docs';
 import { startTeardown, TeardownError } from './teardown';
+import { diagnose } from './remedies';
+import { classifyFailure } from './failure';
 import { getDeploymentSummary, saveAsTemplate, listTemplates, instantiateTemplate } from './summary';
 import type { Clarifications, EstimatorLayer } from './types';
 
@@ -463,6 +465,39 @@ export function registerInfraAgentRoutes(app: Express) {
       if (err instanceof TeardownError) return res.status(err.status).json({ error: err.message });
       fail(res, err, 'start the teardown');
     }
+  });
+
+  /**
+   * What went wrong on a stopped run, and what to do about it.
+   *
+   * Returns `remedy: null` when the error is not one we can say anything more
+   * useful about than the raw text. A confident wrong diagnosis sends someone
+   * looking in the wrong place, which is worse than leaving them with the error.
+   */
+  app.get('/api/infra/runs/:id/diagnosis', async (req, res) => {
+    try {
+      const runId = Number(req.params.id);
+      const [run] = await db.select().from(infraRuns)
+        .where(and(eq(infraRuns.id, runId), eq(infraRuns.organizationId, currentOrgId())));
+      if (!run) return res.status(404).json({ error: 'Run not found' });
+
+      if (!run.error) return res.json({ status: run.status, classification: null, remedy: null });
+
+      const [plan] = await db.select().from(infraPlans)
+        .where(and(eq(infraPlans.id, run.planId), eq(infraPlans.organizationId, currentOrgId())));
+
+      const clarifications = (plan?.clarifications as Clarifications) ?? {};
+
+      res.json({
+        status: run.status,
+        error: run.error,
+        classification: classifyFailure(run.error),
+        remedy: diagnose(run.error, { clarifications }),
+        // What the remedy would change, so the client can show the answer as it
+        // stands beside the one being proposed.
+        currentAnswers: clarifications,
+      });
+    } catch (err) { fail(res, err, 'diagnose the run'); }
   });
 
   /* ---- Deployments and accounts ------------------------------------------ */

@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { useStartTeardown } from "@/hooks/use-infra-agent";
+import { useStartTeardown, useDiagnosis } from "@/hooks/use-infra-agent";
 
 export interface DeploymentSummaryData {
   runId: number;
@@ -115,9 +115,18 @@ export function DeploymentSummaryCard({ runId }: { runId: number }) {
         )}
 
         {data.error && (
-          <p className="text-sm rounded-md border border-destructive/50 bg-destructive/10 p-3 break-words">
-            {data.error}
-          </p>
+          <div className="space-y-2">
+            {/* The diagnosis first: the raw error is evidence, not an
+                explanation, and a failed deployment is read by whoever has to
+                decide what to do next. */}
+            <FailureDiagnosis runId={runId} />
+            <details>
+              <summary className="text-sm font-medium cursor-pointer text-muted-foreground">The full error</summary>
+              <p className="mt-2 text-sm rounded-md border border-destructive/50 bg-destructive/10 p-3 break-words">
+                {data.error}
+              </p>
+            </details>
+          </div>
         )}
 
         <div className="grid gap-4 sm:grid-cols-4">
@@ -265,6 +274,31 @@ function TeardownAction({ runId }: { runId: number }) {
         <Button variant="outline" size="sm" className="gap-2" onClick={() => setConfirming(true)} data-testid="button-teardown">
           <Trash2 className="h-4 w-4" /> Tear this deployment down
         </Button>
+      )}
+    </div>
+  );
+}
+
+/** The same diagnosis the paused card shows, for a run that ended in failure. */
+function FailureDiagnosis({ runId }: { runId: number }) {
+  const { data } = useDiagnosis(runId, true);
+  const remedy = data?.remedy;
+
+  if (!remedy) return null;
+
+  return (
+    <div className="rounded-md border p-3 space-y-2">
+      <p className="text-sm font-medium">{remedy.title}</p>
+      <p className="text-sm text-muted-foreground">{remedy.explanation}</p>
+      {remedy.manualSteps && remedy.manualSteps.length > 0 && (
+        <ol className="text-sm list-decimal ml-5 space-y-0.5">
+          {remedy.manualSteps.map((step, i) => <li key={i}>{step}</li>)}
+        </ol>
+      )}
+      {remedy.docUrl && (
+        <a href={remedy.docUrl} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline">
+          Provider documentation
+        </a>
       )}
     </div>
   );

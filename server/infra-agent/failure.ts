@@ -77,6 +77,13 @@ const RULES: Rule[] = [
     match: /Unsupported|does not support|NotAvailableInRegion|InvalidAMIID|no matching .* found|Unsupported operation/i },
   { kind: 'permanent', reason: 'the configuration itself is invalid',
     match: /Invalid (function|index|reference|template)|Unsupported argument|Missing required argument|Reference to undeclared/i },
+  // The topology does not satisfy a provider requirement — a subnet group that
+  // does not span two zones, a resource in the wrong scope. remedies.ts can
+  // explain these and often name the answer that would fix them, so leaving
+  // them `unknown` would have the two modules disagreeing about an error they
+  // both recognise, and would pause a run whose plan has to change regardless.
+  { kind: 'permanent', reason: 'the topology does not meet a provider requirement',
+    match: /DoesNotCoverEnoughAZs|does not cover at least two|requires at least two subnets|InvalidSubnet\.Conflict|must be in (a different|at least)/i },
 ];
 
 /** Attempts allowed for a transient failure, including the first. */

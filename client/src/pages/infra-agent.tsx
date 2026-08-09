@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { useSearch } from "wouter";
 import {
   Rocket, Loader2, AlertTriangle, CheckCircle2, XCircle, ShieldAlert, Server, DollarSign, GitBranch,
-  PauseCircle, PlayCircle,
+  PauseCircle, PlayCircle, Stethoscope, ExternalLink, Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +22,7 @@ import { AgentActivity } from "@/components/infra/agent-activity";
 import { ApprovalCard } from "@/components/infra/approval-card";
 import { DeploymentSummaryCard } from "@/components/infra/deployment-summary";
 import {
-  useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun,
+  useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun, useDiagnosis,
   type ClarificationQuestion, type CompileResult, type NodeStatus,
 } from "@/hooks/use-infra-agent";
 
@@ -418,10 +418,15 @@ function PausedCard({ runId, error }: { runId: number; error: string | null }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
+        <Diagnosis runId={runId} />
+
         {error && (
-          <pre className="text-xs whitespace-pre-wrap break-words rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
-            {error}
-          </pre>
+          <details>
+            <summary className="text-xs font-medium cursor-pointer text-muted-foreground">The full error</summary>
+            <pre className="mt-2 text-xs whitespace-pre-wrap break-words rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
+              {error}
+            </pre>
+          </details>
         )}
 
         {can('agent:execute') ? (
@@ -444,5 +449,55 @@ function PausedCard({ runId, error }: { runId: number; error: string | null }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * What went wrong, in terms someone can act on.
+ *
+ * Renders nothing at all when the agent cannot say more than the raw error
+ * already does. A panel headed "diagnosis" that only restates the message
+ * teaches people to stop reading it.
+ */
+function Diagnosis({ runId }: { runId: number }) {
+  const { data } = useDiagnosis(runId, true);
+  const remedy = data?.remedy;
+
+  if (!remedy) return null;
+
+  return (
+    <div className="rounded-md border p-3 space-y-2">
+      <p className="text-sm font-medium flex items-center gap-2">
+        <Stethoscope className="h-4 w-4" /> {remedy.title}
+      </p>
+      <p className="text-sm text-muted-foreground">{remedy.explanation}</p>
+
+      {remedy.change && (
+        <p className="text-sm flex items-start gap-2 rounded border border-primary/40 bg-primary/5 p-2">
+          <Wrench className="h-4 w-4 mt-0.5 shrink-0" />
+          <span>
+            Proposed change: set <strong>{remedy.change.field}</strong> to <strong>{remedy.change.to}</strong> — {remedy.change.describes}.
+            {' '}Recompile the plan from the Cost Estimator to apply it.
+          </span>
+        </p>
+      )}
+
+      {remedy.manualSteps && remedy.manualSteps.length > 0 && (
+        <ol className="text-sm list-decimal ml-5 space-y-0.5">
+          {remedy.manualSteps.map((step, i) => <li key={i}>{step}</li>)}
+        </ol>
+      )}
+
+      {remedy.docUrl && (
+        <a
+          href={remedy.docUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="text-xs text-primary inline-flex items-center gap-1 hover:underline"
+        >
+          Provider documentation <ExternalLink className="h-3 w-3" />
+        </a>
+      )}
+    </div>
   );
 }

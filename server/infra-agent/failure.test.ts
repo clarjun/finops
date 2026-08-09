@@ -86,6 +86,14 @@ describe('classifyFailure — permanent', () => {
       .toBe('permanent');
   });
 
+  it('recognises a topology the provider will not accept', () => {
+    // remedies.ts can explain this one and name the answer that fixes it.
+    // Leaving it unrecognised would have the two modules disagreeing about an
+    // error they both understand.
+    expect(classifyFailure('DBSubnetGroupDoesNotCoverEnoughAZs: The DB subnet group does not cover at least two availability zones').kind)
+      .toBe('permanent');
+  });
+
   it('recognises a broken configuration', () => {
     expect(classifyFailure('Error: Unsupported argument. An argument named "foo" is not expected here.').kind)
       .toBe('permanent');
