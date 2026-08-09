@@ -764,6 +764,195 @@ export const insertSavingsMeasurementSchema = createInsertSchema(savingsMeasurem
 export type InsertSavingsMeasurement = z.infer<typeof insertSavingsMeasurementSchema>;
 export type SavingsMeasurement = typeof savingsMeasurements.$inferSelect;
 
+// ==================== INFRASTRUCTURE DEPLOYMENT AGENT ====================
+// Mirrors migration 0012. See that file for the design rationale.
+
+export const infraPlans = pgTable("infra_plans", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  name: varchar("name", { length: 255 }).notNull(),
+  requirements: text("requirements").notNull(),
+  estimatorOutput: jsonb("estimator_output"),
+  clarifications: jsonb("clarifications").notNull().default({}),
+  provider: varchar("provider", { length: 20 }),
+  cloudAccountId: integer("cloud_account_id"),
+  region: varchar("region", { length: 64 }),
+  environment: varchar("environment", { length: 32 }),
+  logicalModel: jsonb("logical_model"),
+  estimatedMonthlyCost: numeric("estimated_monthly_cost", { precision: 14, scale: 2 }),
+  version: integer("version").notNull().default(1),
+  supersedesPlanId: integer("supersedes_plan_id"),
+  status: varchar("status", { length: 32 }).notNull().default('draft'),
+  createdByUserId: integer("created_by_user_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const infraPlanNodes = pgTable("infra_plan_nodes", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  planId: integer("plan_id").notNull(),
+  nodeKey: varchar("node_key", { length: 128 }).notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  logicalType: varchar("logical_type", { length: 64 }).notNull(),
+  providerType: varchar("provider_type", { length: 128 }),
+  resourceAddress: varchar("resource_address", { length: 255 }),
+  config: jsonb("config").notNull().default({}),
+  dependsOn: jsonb("depends_on").notNull().default([]),
+  riskLevel: varchar("risk_level", { length: 20 }).notNull().default('low'),
+  riskReasons: jsonb("risk_reasons").notNull().default([]),
+  requiresApproval: boolean("requires_approval").notNull().default(false),
+  estimatedMonthlyCost: numeric("estimated_monthly_cost", { precision: 14, scale: 2 }),
+  standardStepId: integer("standard_step_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const infraRuns = pgTable("infra_runs", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  planId: integer("plan_id").notNull(),
+  mode: varchar("mode", { length: 20 }).notNull().default('plan'),
+  executionMode: varchar("execution_mode", { length: 20 }).notNull().default('live'),
+  status: varchar("status", { length: 32 }).notNull().default('queued'),
+  workspacePath: text("workspace_path"),
+  terraformVersion: varchar("terraform_version", { length: 32 }),
+  planSummary: jsonb("plan_summary"),
+  resourcesToAdd: integer("resources_to_add"),
+  resourcesToChange: integer("resources_to_change"),
+  resourcesToDestroy: integer("resources_to_destroy"),
+  resourcesCreated: integer("resources_created").notNull().default(0),
+  approvalsRequired: integer("approvals_required").notNull().default(0),
+  approvalsGranted: integer("approvals_granted").notNull().default(0),
+  error: text("error"),
+  leaseOwner: varchar("lease_owner", { length: 128 }),
+  leaseExpiresAt: timestamp("lease_expires_at"),
+  startedByUserId: integer("started_by_user_id"),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const infraRunNodes = pgTable("infra_run_nodes", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  runId: integer("run_id").notNull(),
+  nodeKey: varchar("node_key", { length: 128 }).notNull(),
+  status: varchar("status", { length: 32 }).notNull().default('pending'),
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error"),
+  outputs: jsonb("outputs"),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const infraEvents = pgTable("infra_events", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  runId: integer("run_id").notNull(),
+  eventType: varchar("event_type", { length: 64 }).notNull(),
+  nodeKey: varchar("node_key", { length: 128 }),
+  level: varchar("level", { length: 16 }).notNull().default('info'),
+  message: text("message").notNull(),
+  data: jsonb("data"),
+  sequence: integer("sequence").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const infraApprovals = pgTable("infra_approvals", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  runId: integer("run_id").notNull(),
+  nodeKey: varchar("node_key", { length: 128 }),
+  ref: varchar("ref", { length: 64 }).notNull().unique(),
+  summary: text("summary").notNull(),
+  details: text("details"),
+  riskLevel: varchar("risk_level", { length: 20 }).notNull().default('medium'),
+  riskReasons: jsonb("risk_reasons").notNull().default([]),
+  proposedAction: jsonb("proposed_action"),
+  estimatedCostImpact: numeric("estimated_cost_impact", { precision: 14, scale: 2 }),
+  status: varchar("status", { length: 20 }).notNull().default('pending'),
+  decidedByUserId: integer("decided_by_user_id"),
+  decidedBy: varchar("decided_by", { length: 255 }),
+  decisionReason: text("decision_reason"),
+  decidedAt: timestamp("decided_at"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const standardSteps = pgTable("standard_steps", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  // Nullable: platform-wide knowledge by default, tenant-private when set.
+  organizationId: integer("organization_id"),
+  slug: varchar("slug", { length: 160 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  service: varchar("service", { length: 128 }).notNull(),
+  logicalType: varchar("logical_type", { length: 64 }).notNull(),
+  resourceType: varchar("resource_type", { length: 128 }),
+  description: text("description"),
+  inputs: jsonb("inputs").notNull().default({}),
+  outputs: jsonb("outputs").notNull().default({}),
+  dependencies: jsonb("dependencies").notNull().default([]),
+  implementation: text("implementation"),
+  requiredPermissions: jsonb("required_permissions").notNull().default([]),
+  securityRequirements: jsonb("security_requirements").notNull().default([]),
+  approvalLevel: varchar("approval_level", { length: 20 }).notNull().default('none'),
+  version: integer("version").notNull().default(1),
+  validationStatus: varchar("validation_status", { length: 20 }).notNull().default('draft'),
+  usageCount: integer("usage_count").notNull().default(0),
+  successCount: integer("success_count").notNull().default(0),
+  lastValidatedAt: timestamp("last_validated_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const docSources = pgTable("doc_sources", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  standardStepId: integer("standard_step_id"),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  service: varchar("service", { length: 128 }),
+  title: varchar("title", { length: 500 }),
+  url: text("url").notNull(),
+  docVersion: varchar("doc_version", { length: 64 }),
+  excerpt: text("excerpt"),
+  retrievedAt: timestamp("retrieved_at").notNull().defaultNow(),
+  runId: integer("run_id"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const infraDeployments = pgTable("infra_deployments", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  planId: integer("plan_id"),
+  runId: integer("run_id"),
+  name: varchar("name", { length: 255 }).notNull(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  accountId: varchar("account_id", { length: 255 }),
+  region: varchar("region", { length: 64 }),
+  environment: varchar("environment", { length: 32 }),
+  executionMode: varchar("execution_mode", { length: 20 }).notNull().default('live'),
+  resources: jsonb("resources").notNull().default([]),
+  resourceCount: integer("resource_count").notNull().default(0),
+  estimatedMonthlyCost: numeric("estimated_monthly_cost", { precision: 14, scale: 2 }),
+  stateRef: text("state_ref"),
+  durationSeconds: integer("duration_seconds"),
+  status: varchar("status", { length: 32 }).notNull().default('active'),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export type InfraPlan = typeof infraPlans.$inferSelect;
+export type InfraPlanNode = typeof infraPlanNodes.$inferSelect;
+export type InfraRun = typeof infraRuns.$inferSelect;
+export type InfraRunNode = typeof infraRunNodes.$inferSelect;
+export type InfraEvent = typeof infraEvents.$inferSelect;
+export type InfraApproval = typeof infraApprovals.$inferSelect;
+export type StandardStep = typeof standardSteps.$inferSelect;
+export type DocSource = typeof docSources.$inferSelect;
+export type InfraDeployment = typeof infraDeployments.$inferSelect;
+
 // ==================== AUDIT LOG ====================
 
 // Append-only record of every state-changing request and every privileged
