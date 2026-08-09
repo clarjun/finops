@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { useSearch } from "wouter";
 import {
   Rocket, Loader2, AlertTriangle, CheckCircle2, XCircle, ShieldAlert, Server, DollarSign, GitBranch,
+  PauseCircle, PlayCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,7 +22,7 @@ import { AgentActivity } from "@/components/infra/agent-activity";
 import { ApprovalCard } from "@/components/infra/approval-card";
 import { DeploymentSummaryCard } from "@/components/infra/deployment-summary";
 import {
-  useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream,
+  useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun,
   type ClarificationQuestion, type CompileResult, type NodeStatus,
 } from "@/hooks/use-infra-agent";
 
@@ -234,6 +235,10 @@ export default function InfraAgentPage() {
       ))}
 
       {/* Terminal state: the summary replaces the live stats. */}
+      {runId && runStatus === 'paused' && (
+        <PausedCard runId={runId} error={run.data?.run.error ?? null} />
+      )}
+
       {runId && (runStatus === 'succeeded' || runStatus === 'failed') && (
         <DeploymentSummaryCard runId={runId} />
       )}
@@ -292,6 +297,7 @@ export default function InfraAgentPage() {
 function Header({ name, status, executionMode }: { name?: string; status?: string; executionMode?: string }) {
   const done = status === 'succeeded';
   const failed = status === 'failed';
+  const paused = status === 'paused';
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -309,7 +315,10 @@ function Header({ name, status, executionMode }: { name?: string; status?: strin
           <Badge variant={done ? 'default' : failed ? 'destructive' : 'secondary'} className="gap-1">
             {done && <CheckCircle2 className="h-3 w-3" />}
             {failed && <XCircle className="h-3 w-3" />}
-            {!done && !failed && <Loader2 className="h-3 w-3 animate-spin" />}
+            {paused && <PauseCircle className="h-3 w-3" />}
+            {/* A spinner on a paused run would say work is happening when it
+                has stopped and is waiting for someone. */}
+            {!done && !failed && !paused && <Loader2 className="h-3 w-3 animate-spin" />}
             {status.replace(/_/g, ' ')}
           </Badge>
         </div>
@@ -380,5 +389,60 @@ function Question({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * A run that stopped for a person.
+ *
+ * Distinct from failure on purpose: whatever was created still exists, and the
+ * cause — a quota, a permission, an expired credential — is usually fixed
+ * outside this system. Showing the reason and a way to carry on is the whole
+ * point of pausing rather than failing.
+ */
+function PausedCard({ runId, error }: { runId: number; error: string | null }) {
+  const { toast } = useToast();
+  const { can } = useAuth();
+  const resume = useResumeRun();
+
+  return (
+    <Card className="border-yellow-500/60">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <PauseCircle className="h-5 w-5 text-yellow-600" />
+          Stopped, waiting for you
+        </CardTitle>
+        <CardDescription>
+          Nothing was rolled back. Everything created so far still exists, and the deployment continues from where it
+          stopped.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error && (
+          <pre className="text-xs whitespace-pre-wrap break-words rounded-md border border-yellow-500/40 bg-yellow-500/10 p-3">
+            {error}
+          </pre>
+        )}
+
+        {can('agent:execute') ? (
+          <Button
+            className="gap-2"
+            disabled={resume.isPending}
+            onClick={() => resume.mutate({ runId }, {
+              onSuccess: () => toast({ title: 'Resuming', description: 'The agent is re-planning the stage that stopped.' }),
+              onError: (e: Error) => toast({ title: 'Could not resume', description: e.message, variant: 'destructive' }),
+            })}
+            data-testid="button-resume-run"
+          >
+            {resume.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />}
+            Resume the deployment
+          </Button>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Resuming requires the <code>agent:execute</code> permission.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

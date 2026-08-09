@@ -20,7 +20,15 @@ import { and, eq } from 'drizzle-orm';
 /* ---- Terraform double ---------------------------------------------------- */
 
 /** State the fake executor reports, so a test can simulate resources existing. */
-const tfState = { addresses: [] as string[], planFails: false, applyFails: false };
+const tfState = {
+  addresses: [] as string[],
+  planFails: false,
+  applyFails: false,
+  /** Error text the fake tool emits, so a test can choose how it is classified. */
+  error: 'boom',
+  /** Applies that fail before succeeding, for exercising retry. */
+  applyFailuresLeft: 0,
+};
 
 vi.mock('./terraform/executor', () => ({
   terraformExecutor: {
@@ -29,11 +37,17 @@ vi.mock('./terraform/executor', () => ({
     validate: vi.fn(async () => ({ ok: true, exitCode: 0, stdout: 'valid', stderr: '', durationMs: 1, aborted: false })),
     fmt: vi.fn(async () => ({ ok: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1, aborted: false })),
     plan: vi.fn(async () => tfState.planFails
-      ? { ok: false, exitCode: 1, stdout: '', stderr: 'boom', durationMs: 1, aborted: false, changes: [], toAdd: 0, toChange: 0, toDestroy: 0, destructive: [], diagnostics: [{ severity: 'error', summary: 'planned failure' }] }
+      ? { ok: false, exitCode: 1, stdout: '', stderr: tfState.error, durationMs: 1, aborted: false, changes: [], toAdd: 0, toChange: 0, toDestroy: 0, destructive: [], diagnostics: [{ severity: 'error', summary: tfState.error }] }
       : { ok: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1, aborted: false, changes: [], toAdd: 1, toChange: 0, toDestroy: 0, destructive: [], diagnostics: [] }),
-    apply: vi.fn(async () => tfState.applyFails
-      ? { ok: false, exitCode: 1, stdout: '', stderr: 'apply exploded', durationMs: 1, aborted: false }
-      : { ok: true, exitCode: 0, stdout: 'applied', stderr: '', durationMs: 1, aborted: false }),
+    apply: vi.fn(async () => {
+      if (tfState.applyFailuresLeft > 0) {
+        tfState.applyFailuresLeft--;
+        return { ok: false, exitCode: 1, stdout: '', stderr: tfState.error, durationMs: 1, aborted: false };
+      }
+      return tfState.applyFails
+        ? { ok: false, exitCode: 1, stdout: '', stderr: tfState.error, durationMs: 1, aborted: false }
+        : { ok: true, exitCode: 0, stdout: 'applied', stderr: '', durationMs: 1, aborted: false };
+    }),
     listState: vi.fn(async () => tfState.addresses),
     destroy: vi.fn(async () => ({ ok: true, exitCode: 0, stdout: '', stderr: '', durationMs: 1, aborted: false })),
   },
@@ -139,6 +153,8 @@ beforeEach(() => {
   tfState.addresses = [];
   tfState.planFails = false;
   tfState.applyFails = false;
+  tfState.error = 'boom';
+  tfState.applyFailuresLeft = 0;
   // The executor mock is module-level, so call history leaks between tests.
   // Without this, "simulate never applies" passes or fails depending on which
   // live-run test happened to run before it.
@@ -332,16 +348,20 @@ describe('simulation', () => {
 });
 
 describe('failure handling', () => {
-  it('fails the run and records why when planning fails', async () => {
+  it('fails the run and records why when planning fails permanently', async () => {
+    // The error text matters now: a failure only ends the run when the
+    // configuration itself has to change. An unrecognised error pauses instead,
+    // which is asserted separately below.
     await runAsSystem(orgId, async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       tfState.planFails = true;
+      tfState.error = 'Unsupported argument: an argument named "foo" is not expected here';
 
       const result = await drive(runId);
       expect(result.status).toBe('failed');
 
       const run = await runRow(runId);
-      expect(run.error).toMatch(/planned failure|plan failed/i);
+      expect(run.error).toMatch(/plan failed/i);
       expect(run.finishedAt).toBeTruthy();
     });
   });
@@ -350,6 +370,9 @@ describe('failure handling', () => {
     await runAsSystem(orgId, async () => {
       const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
       tfState.planFails = true;
+      // Permanent, so the run genuinely ends. A paused run is deliberately not
+      // terminal — advancing one is how a resume works.
+      tfState.error = 'InvalidParameterValue: not a valid instance class';
       await drive(runId);
 
       const again = await advance(runId);
@@ -406,6 +429,123 @@ describe('leasing', () => {
 
       const next = await advance(runId);
       expect(next.action).not.toMatch(/another worker/);
+    });
+  });
+});
+/* -------------------------------------------------------------------------- */
+
+describe('failure handling', () => {
+  /** Approves every gate so the run reaches the apply step. */
+  async function driveThroughGates(runId: number, maxRounds = 12) {
+    for (let i = 0; i < maxRounds; i++) {
+      const r = await drive(runId);
+      if (r.done) return r;
+      if (r.status === 'awaiting_approval' && r.awaitingApprovalRef) {
+        await decideApproval(r.awaitingApprovalRef, 'approved');
+        continue;
+      }
+      return r;
+    }
+    throw new Error('run did not settle');
+  }
+
+  const attemptsFor = async (runId: number) => {
+    const rows = await db.select().from(infraRunNodes).where(eq(infraRunNodes.runId, runId));
+    return Math.max(0, ...rows.map((r) => r.attempts ?? 0));
+  };
+
+  it('retries a throttled apply and then succeeds', async () => {
+    // A throttle is not a reason to abandon a half-built environment.
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'RequestLimitExceeded: Request limit exceeded.';
+      tfState.applyFailuresLeft = 1;
+
+      const result = await driveThroughGates(
+        await createRun({ planId: await seedPlan(), executionMode: 'live' }),
+      );
+
+      expect(result.status).toBe('succeeded');
+    });
+  });
+
+  it('records the attempt against the node, so a retry is visible', async () => {
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'RequestLimitExceeded';
+      tfState.applyFailuresLeft = 1;
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      await driveThroughGates(runId);
+
+      expect(await attemptsFor(runId)).toBeGreaterThan(0);
+    });
+  });
+
+  it('fails a permanent error without retrying it', async () => {
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'InvalidParameterValue: Invalid DB instance class';
+      tfState.applyFails = true;
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      const result = await driveThroughGates(runId);
+
+      expect(result.status).toBe('failed');
+      // One attempt, not three: the configuration has to change first.
+      expect(await attemptsFor(runId)).toBe(1);
+    });
+  });
+
+  it('pauses rather than fails when a quota blocks it', async () => {
+    // The plan is fine and whatever was created still exists. "Failed" would
+    // suggest there is nothing left to do, when a quota increase finishes it.
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'VcpuLimitExceeded: more vCPU capacity than your quota allows';
+      tfState.applyFails = true;
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      const result = await driveThroughGates(runId);
+
+      expect(result.status).toBe('paused');
+      expect((await runRow(runId)).status).toBe('paused');
+    });
+  });
+
+  it('pauses on an unrecognised error instead of retrying blindly', async () => {
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'Error: something nobody has seen before';
+      tfState.applyFails = true;
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      const result = await driveThroughGates(runId);
+
+      expect(result.status).toBe('paused');
+      expect(await attemptsFor(runId)).toBe(1);
+    });
+  });
+
+  it('resumes a paused run once the cause is fixed elsewhere', async () => {
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'AccessDenied: not authorized to perform ec2:CreateVpc';
+      tfState.applyFails = true;
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      await driveThroughGates(runId);
+      expect((await runRow(runId)).status).toBe('paused');
+
+      // The permission is granted outside this system; the run continues.
+      tfState.applyFails = false;
+      expect((await driveThroughGates(runId)).status).toBe('succeeded');
+    });
+  });
+
+  it('says why it stopped', async () => {
+    await runAsSystem(orgId, async () => {
+      tfState.error = 'ExpiredToken: the security token is expired';
+      tfState.applyFails = true;
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      await driveThroughGates(runId);
+
+      expect((await runRow(runId)).error).toMatch(/expired/i);
     });
   });
 });

@@ -329,3 +329,18 @@ export function useStartTeardown() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/deployments'] }),
   });
 }
+
+/**
+ * Nudges a run forward.
+ *
+ * The worker does this on its own for a run that is still working. It is
+ * exposed because a paused run deliberately is not swept: it stopped for a
+ * person, and it resumes when that person says the cause is dealt with.
+ */
+export function useResumeRun() {
+  const qc = useQueryClient();
+  return useMutation<{ runId: number; scheduled: boolean }, Error, { runId: number }>({
+    mutationFn: ({ runId }) => post(`/api/infra/runs/${runId}/advance`, {}),
+    onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ['/api/infra/runs', v.runId] }),
+  });
+}

@@ -33,6 +33,10 @@ import { terraformExecutor } from './terraform/executor';
 import { resolveTerraformCredentials } from './tools/credentials';
 import { extractStepsFromRun } from './knowledge/step-library';
 import { attachProvenanceForRun } from './knowledge/docs';
+import {
+  classifyFailure, shouldRetry, retryDelayMs, terminalStatusFor, MAX_ATTEMPTS,
+  type Classification,
+} from './failure';
 import type { Clarifications, EstimatorLayer, LamNode, LogicalArchitecture } from './types';
 
 /** How long a worker may hold a run before another may take it over. */
@@ -282,8 +286,8 @@ export async function advance(runId: number): Promise<AdvanceResult> {
 
     const planned = await terraformExecutor.plan(workspace, creds, { targets });
     if (!planned.ok) {
-      await markNodes(runId, stage.nodeKeys, 'failed', planned.stderr.slice(-400));
-      return failRun(runId, `terraform plan failed: ${planned.diagnostics.map((d) => d.summary).join('; ') || planned.stderr.slice(-400)}`);
+      const detail = [planned.diagnostics.map((d) => d.summary).join('; '), planned.stderr].filter(Boolean).join('\n');
+      return handleStageFailure(runId, stage, 'plan', detail);
     }
 
     await db.update(infraRuns).set({
@@ -351,9 +355,11 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     });
 
     if (!applied.ok) {
-      await markNodes(runId, stage.nodeKeys, 'failed', applied.stderr.slice(-400));
-      await appendEvent({ runId, eventType: 'RESOURCE_FAILED', level: 'error', message: `Apply failed: ${applied.stderr.slice(-300)}` });
-      return failRun(runId, `terraform apply failed: ${applied.stderr.slice(-500)}`);
+      // Retrying an apply means re-planning first, never re-running the saved
+      // plan: after a partial apply the saved plan describes a world that no
+      // longer exists. Returning done:false sends the worker back through the
+      // plan step above, which is what makes a retry safe here.
+      return handleStageFailure(runId, stage, 'apply', applied.stderr);
     }
 
     await markNodes(runId, stage.nodeKeys, 'applied');
@@ -565,6 +571,125 @@ async function completeRun(
 
   return { runId, status: 'succeeded' as RunStatus, action: 'deployment complete', done: true };
 }
+
+/**
+ * Decides what a failed stage means and what happens next.
+ *
+ * Replaces the previous behaviour, which was to stop on anything. A throttled
+ * request is not a reason to abandon a half-built environment, and an invalid
+ * instance type will not fix itself on the third attempt — so the answer depends
+ * on what actually went wrong.
+ */
+async function handleStageFailure(
+  runId: number,
+  stage: Stage,
+  phase: 'plan' | 'apply',
+  detail: string,
+): Promise<AdvanceResult> {
+  const classification = classifyFailure(detail);
+  const attemptsSoFar = (await maxAttempts(runId, stage.nodeKeys)) + 1;
+  await bumpAttempts(runId, stage.nodeKeys);
+
+  const summary = detail.trim().slice(-400) || `terraform ${phase} failed`;
+
+  if (shouldRetry(classification, attemptsSoFar)) {
+    const wait = retryDelayMs(attemptsSoFar);
+
+    await appendEvent({
+      runId,
+      eventType: 'RETRY_STARTED',
+      level: 'warn',
+      nodeKey: stage.nodeKeys[0],
+      message:
+        `${phase === 'plan' ? 'Plan' : 'Apply'} failed because ${classification.reason}. ` +
+        `Retrying in ${Math.round(wait / 1000)}s (attempt ${attemptsSoFar + 1} of ${MAX_ATTEMPTS}).`,
+      data: { phase, kind: classification.kind, reason: classification.reason, attempt: attemptsSoFar, detail: summary },
+    });
+
+    // Waiting here holds the lease, which is the point: no other worker should
+    // pick this run up mid-retry. The delays are far shorter than the lease.
+    await delay(wait);
+
+    // Back to a working status so the next advance() re-plans this stage. The
+    // nodes stay 'running' rather than 'failed' — they are still in progress.
+    await setRunStatus(runId, 'planning');
+    return { runId, status: 'planning', action: `retrying stage ${stage.index} after a transient failure`, done: false };
+  }
+
+  await markNodes(runId, stage.nodeKeys, 'failed', summary);
+  await appendEvent({
+    runId,
+    eventType: 'RESOURCE_FAILED',
+    level: 'error',
+    nodeKey: stage.nodeKeys[0],
+    message: `${phase === 'plan' ? 'Plan' : 'Apply'} failed: ${classification.reason}.`,
+    data: { phase, kind: classification.kind, attempts: attemptsSoFar, detail: summary },
+  });
+
+  const status = terminalStatusFor(classification.kind);
+
+  if (status === 'failed') return failRun(runId, `terraform ${phase} failed: ${summary}`);
+
+  // Paused, not failed. Whatever was created still exists, the cause may be
+  // fixable outside this system — a quota increase, a permission — and the run
+  // can then be resumed. Reporting "failed" would suggest there is nothing left
+  // to do and would strand a half-built environment.
+  return pauseRun(runId, classification, phase, summary, attemptsSoFar);
+}
+
+async function pauseRun(
+  runId: number,
+  classification: Classification,
+  phase: string,
+  detail: string,
+  attempts: number,
+): Promise<AdvanceResult> {
+  const message =
+    classification.kind === 'unknown'
+      ? `Stopped during ${phase}: ${classification.reason}. Nothing further will be attempted automatically.`
+      : `Stopped during ${phase} because ${classification.reason}. ` +
+        `Fix it and resume — what has already been created is untouched.`;
+
+  await setRunStatus(runId, 'paused', { error: `${message}\n\n${detail}` });
+  await appendEvent({ runId, eventType: 'RUN_PAUSED', level: 'warn', message, data: { kind: classification.kind, attempts, detail } });
+
+  await recordAudit({
+    action: 'infra.deployment.paused',
+    outcome: 'failure',
+    resourceType: 'infra_run',
+    resourceId: String(runId),
+    metadata: { kind: classification.kind, reason: classification.reason, phase, attempts },
+  });
+
+  // done: the run has stopped and a human owns it. Without this the worker loop
+  // would call advance() again immediately and retry what was just classified
+  // as not worth retrying.
+  return { runId, status: 'paused', action: message, done: true };
+}
+
+/** Highest attempt count recorded against any node in a stage. */
+async function maxAttempts(runId: number, nodeKeys: string[]): Promise<number> {
+  const rows = await db.select({ attempts: infraRunNodes.attempts }).from(infraRunNodes)
+    .where(and(
+      eq(infraRunNodes.runId, runId),
+      eq(infraRunNodes.organizationId, currentOrgId()),
+      inArray(infraRunNodes.nodeKey, nodeKeys),
+    ));
+  return rows.reduce((max, r) => Math.max(max, r.attempts ?? 0), 0);
+}
+
+async function bumpAttempts(runId: number, nodeKeys: string[]): Promise<void> {
+  if (nodeKeys.length === 0) return;
+  await db.update(infraRunNodes)
+    .set({ attempts: sql`${infraRunNodes.attempts} + 1`, updatedAt: new Date() })
+    .where(and(
+      eq(infraRunNodes.runId, runId),
+      eq(infraRunNodes.organizationId, currentOrgId()),
+      inArray(infraRunNodes.nodeKey, nodeKeys),
+    ));
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 async function failRun(runId: number, error: string): Promise<AdvanceResult> {
   await setRunStatus(runId, 'failed', { finishedAt: new Date(), error });
