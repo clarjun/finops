@@ -31,6 +31,7 @@ import { generateTerraform } from './terraform/generator';
 import { awsMapper } from './providers/aws';
 import { terraformExecutor } from './terraform/executor';
 import { resolveTerraformCredentials } from './tools/credentials';
+import { extractStepsFromRun } from './knowledge/step-library';
 import type { Clarifications, EstimatorLayer, LamNode, LogicalArchitecture } from './types';
 
 /** How long a worker may hold a run before another may take it over. */
@@ -518,6 +519,14 @@ async function completeRun(
     message: `Deployment complete: ${addresses.length} resource(s) exist.`,
     data: { resources: addresses, durationSeconds },
   });
+
+  // Learn from what worked. Failing to record knowledge must never fail the
+  // deployment that produced it — the infrastructure exists either way.
+  try {
+    await extractStepsFromRun(runId);
+  } catch (err) {
+    console.error(`[Engine] Could not extract steps from run ${runId}:`, (err as Error)?.message ?? err);
+  }
 
   await recordAudit({
     action: 'infra.deployment.completed',

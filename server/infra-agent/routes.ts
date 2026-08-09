@@ -28,6 +28,7 @@ import { buildQuestions, applyInferences } from './clarify';
 import { createRun, decideApproval } from './engine';
 import { listEvents, subscribe } from './events';
 import { scheduleAdvance } from './worker';
+import { listSteps, matchSteps, getStepHistory, getProvenance } from './knowledge/step-library';
 import type { Clarifications, EstimatorLayer } from './types';
 
 const dayRe = /^\d{4}-\d{2}-\d{2}$/;
@@ -145,6 +146,11 @@ export function registerInfraAgentRoutes(app: Express) {
 
       const { stages } = computeStages(architecture.nodes);
 
+      // What the agent already knows how to build. Reported, not substituted:
+      // the generator stays the single source of the HCL, so the plan a human
+      // reviews is the plan the compiler produced.
+      const reused = await matchSteps(clarifications.provider ?? 'aws', architecture.nodes);
+
       // Replace previous nodes: recompiling after changed answers must not leave
       // resources from the earlier topology behind.
       await db.delete(infraPlanNodes).where(and(
@@ -183,11 +189,16 @@ export function registerInfraAgentRoutes(app: Express) {
         stages,
         warnings: architecture.warnings,
         waves: graph.waves,
+        reusedSteps: reused.map((r) => ({
+          nodeKey: r.nodeKey, slug: r.step.slug, version: r.step.version,
+          usageCount: r.step.usageCount, successRate: r.step.successRate, stale: r.step.stale,
+        })),
         summary: {
           total: architecture.nodes.length,
           fromEstimate: architecture.nodes.filter((n) => n.source === 'estimator').length,
           synthesized: architecture.nodes.filter((n) => n.source === 'synthesized').length,
           approvalGates: stages.filter((s) => s.requiresApproval).length,
+          knownSteps: reused.length,
         },
       });
     } catch (err) { fail(res, err, 'compile the architecture'); }
@@ -358,6 +369,24 @@ export function registerInfraAgentRoutes(app: Express) {
 
       res.json(result);
     } catch (err) { fail(res, err, 'record the approval decision'); }
+  });
+
+  /* ---- Standard Step Library --------------------------------------------- */
+
+  app.get('/api/infra/steps', async (req, res) => {
+    try {
+      const provider = typeof req.query.provider === 'string' ? req.query.provider : undefined;
+      res.json({ steps: await listSteps(provider) });
+    } catch (err) { fail(res, err, 'list standard steps'); }
+  });
+
+  /** Every version of a step, plus where its knowledge came from. */
+  app.get('/api/infra/steps/:slug', async (req, res) => {
+    try {
+      const versions = await getStepHistory(req.params.slug);
+      if (versions.length === 0) return res.status(404).json({ error: 'Step not found' });
+      res.json({ versions, provenance: await getProvenance(Number(versions[0].id)) });
+    } catch (err) { fail(res, err, 'load the step'); }
   });
 
   /* ---- Deployments and accounts ------------------------------------------ */
