@@ -9,13 +9,15 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CheckCircle2, XCircle, Clock, Server, ShieldCheck, DollarSign, Save, Loader2, FlaskConical,
+  CheckCircle2, XCircle, Clock, Server, ShieldCheck, DollarSign, Save, Loader2, FlaskConical, Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/hooks/use-auth";
+import { useStartTeardown } from "@/hooks/use-infra-agent";
 
 export interface DeploymentSummaryData {
   runId: number;
@@ -197,6 +199,11 @@ export function DeploymentSummaryCard({ runId }: { runId: number }) {
             </p>
           </div>
         )}
+
+        {/* Only a real deployment has anything to remove. A simulation offering
+            a teardown would imply resources exist, which is the confusion
+            simulate mode exists to prevent. */}
+        {!simulated && data.resourcesCreated > 0 && <TeardownAction runId={runId} />}
       </CardContent>
     </Card>
   );
@@ -207,6 +214,58 @@ function Metric({ icon: Icon, label, value }: { icon: typeof Server; label: stri
     <div>
       <p className="text-xs text-muted-foreground flex items-center gap-1.5"><Icon className="h-3.5 w-3.5" />{label}</p>
       <p className="text-xl font-semibold mt-0.5">{value}</p>
+    </div>
+  );
+}
+
+/**
+ * Requests removal of everything this run built.
+ *
+ * Two steps on purpose. This button only asks the agent to work out what would
+ * be destroyed; the destroy itself waits behind an approval that lists every
+ * resource by address. A single click that deleted a production database would
+ * be the one irreversible action in the product.
+ */
+function TeardownAction({ runId }: { runId: number }) {
+  const { toast } = useToast();
+  const { can } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const teardown = useStartTeardown();
+
+  if (!can('agent:execute')) return null;
+
+  const start = () => teardown.mutate({ runId }, {
+    onSuccess: () => {
+      setConfirming(false);
+      toast({
+        title: 'Working out what would be destroyed',
+        description: 'Nothing has been removed. You will be asked to approve the exact list.',
+      });
+    },
+    onError: (e) => toast({ title: 'Could not start the teardown', description: e.message, variant: 'destructive' }),
+  });
+
+  return (
+    <div className="border-t pt-4">
+      {confirming ? (
+        <div className="space-y-2">
+          <p className="text-sm">
+            This plans the removal of everything this deployment created. Nothing is destroyed until you approve the
+            list of resources it produces.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="destructive" size="sm" className="gap-2" disabled={teardown.isPending} onClick={start} data-testid="button-confirm-teardown">
+              {teardown.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              Plan the teardown
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>Cancel</Button>
+          </div>
+        </div>
+      ) : (
+        <Button variant="outline" size="sm" className="gap-2" onClick={() => setConfirming(true)} data-testid="button-teardown">
+          <Trash2 className="h-4 w-4" /> Tear this deployment down
+        </Button>
+      )}
     </div>
   );
 }

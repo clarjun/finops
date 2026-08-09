@@ -30,6 +30,7 @@ import { listEvents, subscribe } from './events';
 import { scheduleAdvance } from './worker';
 import { listSteps, matchSteps, getStepHistory, getProvenance } from './knowledge/step-library';
 import { researchSteps } from './knowledge/docs';
+import { startTeardown, TeardownError } from './teardown';
 import { getDeploymentSummary, saveAsTemplate, listTemplates, instantiateTemplate } from './summary';
 import type { Clarifications, EstimatorLayer } from './types';
 
@@ -442,6 +443,26 @@ export function registerInfraAgentRoutes(app: Express) {
     try {
       res.json(await researchSteps({}));
     } catch (err) { fail(res, err, 'research documentation'); }
+  });
+
+  /**
+   * Starts a teardown of what a run deployed.
+   *
+   * Creates the run and returns; it plans the destroy in the background and
+   * stops for an approval that lists every resource by address. Nothing is
+   * destroyed by this call.
+   */
+  app.post('/api/infra/runs/:id/teardown', async (req, res) => {
+    try {
+      const { teardownRunId } = await startTeardown(Number(req.params.id));
+      scheduleAdvance(teardownRunId, currentOrgId());
+      res.status(202).json({ teardownRunId, streamUrl: `/api/infra/runs/${teardownRunId}/stream` });
+    } catch (err) {
+      // A refusal is a stated reason, not a 500: every one of them is a
+      // condition the caller can understand and act on.
+      if (err instanceof TeardownError) return res.status(err.status).json({ error: err.message });
+      fail(res, err, 'start the teardown');
+    }
   });
 
   /* ---- Deployments and accounts ------------------------------------------ */

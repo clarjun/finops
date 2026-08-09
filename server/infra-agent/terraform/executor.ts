@@ -168,8 +168,13 @@ export class TerraformExecutor {
   async plan(
     dir: string,
     creds: TerraformCredentials | undefined,
-    opts: ExecOptions & { targets?: string[] } = {},
+    opts: ExecOptions & { targets?: string[]; destroy?: boolean } = {},
   ): Promise<TfPlanResult> {
+    // `plan -destroy -out` then `apply <file>` is the only way a teardown can
+    // promise that what was approved is what runs. `terraform destroy` re-plans
+    // at apply time, so anything that appeared in the account between the
+    // approval and the decision would be destroyed without anyone seeing it.
+    const destroyArgs = opts.destroy ? ['-destroy'] : [];
     // -target narrows a plan to specific resources and their dependencies.
     // HashiCorp documents it as exceptional-use, and they are right that it is
     // wrong for routine work — but staging a deployment around a human approval
@@ -182,7 +187,7 @@ export class TerraformExecutor {
 
     const result = await this.run(
       dir,
-      ['plan', '-no-color', '-input=false', `-out=${PLAN_FILE}`, ...targetArgs],
+      ['plan', '-no-color', '-input=false', `-out=${PLAN_FILE}`, ...destroyArgs, ...targetArgs],
       creds,
       opts,
     );

@@ -16,11 +16,12 @@
  * Both funnel into engine.advance(), which takes the lease. Overlapping calls
  * are therefore safe: one proceeds, the others return immediately.
  */
-import { and, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, pool } from '../db';
 import { infraRuns } from '@shared/schema';
 import { runAsSystem } from '../tenant-context';
 import { advance } from './engine';
+import { advanceTeardown, TEARDOWN_MODE } from './teardown';
 
 /** Statuses that still have work to do. `awaiting_approval` deliberately does not. */
 const ACTIVE = ['queued', 'initializing', 'planning', 'applying', 'verifying'] as const;
@@ -55,6 +56,21 @@ export function scheduleAdvance(runId: number, organizationId: number): void {
  * step's lease short and lets the run be taken over cleanly if this process
  * dies mid-deployment.
  */
+/**
+ * Routes a run to the engine that owns it.
+ *
+ * Deploy and teardown share infra_runs, and the deploy engine applies the
+ * plan's configuration. Handing it a teardown would recreate the infrastructure
+ * someone asked to remove, so the mode decides — never the status.
+ */
+async function advanceByMode(runId: number): Promise<ReturnType<typeof advance>> {
+  const [row] = await db.select({ mode: infraRuns.mode }).from(infraRuns)
+    .where(eq(infraRuns.id, runId))
+    .limit(1);
+
+  return row?.mode === TEARDOWN_MODE ? advanceTeardown(runId) : advance(runId);
+}
+
 async function driveToPause(runId: number, organizationId: number): Promise<void> {
   // A generous ceiling that still cannot spin forever if a step stops making
   // progress. Reaching it means a bug, and the run is left for the sweep.
@@ -62,7 +78,7 @@ async function driveToPause(runId: number, organizationId: number): Promise<void
 
   for (let step = 0; step < MAX_STEPS; step++) {
     try {
-      const result = await runAsSystem(organizationId, () => advance(runId));
+      const result = await runAsSystem(organizationId, () => advanceByMode(runId));
 
       if (result.done) return;
       if (result.status === 'awaiting_approval') return;   // a human now owns it

@@ -36,7 +36,7 @@ import { attachProvenanceForRun } from './knowledge/docs';
 import type { Clarifications, EstimatorLayer, LamNode, LogicalArchitecture } from './types';
 
 /** How long a worker may hold a run before another may take it over. */
-const LEASE_MS = 5 * 60_000;
+export const LEASE_MS = 5 * 60_000;
 
 export type RunStatus =
   | 'queued' | 'initializing' | 'planning' | 'awaiting_approval'
@@ -141,6 +141,15 @@ export async function advance(runId: number): Promise<AdvanceResult> {
   try {
     const run = await loadRun(runId, organizationId);
     if (!run) throw new Error(`Run ${runId} not found`);
+
+    // A teardown run shares this table and these statuses, and this function
+    // applies the plan's configuration. Driving one through here would recreate
+    // exactly the infrastructure someone asked to have removed — so the guard is
+    // here as well as in the worker's dispatch, because the worker is not the
+    // only caller.
+    if (run.mode === 'destroy') {
+      return { runId, status: run.status as RunStatus, action: 'teardown run; not for the deploy engine', done: false };
+    }
 
     if (['succeeded', 'failed', 'cancelled'].includes(run.status)) {
       return { runId, status: run.status as RunStatus, action: 'run already finished', done: true };
@@ -638,7 +647,7 @@ function namePrefixFor(name: string, environment: string): string {
  * makes those safe: exactly one caller proceeds, the rest return immediately.
  * It expires, so a worker that dies mid-step does not strand the run forever.
  */
-async function acquireLease(runId: number, organizationId: number, owner: string): Promise<boolean> {
+export async function acquireLease(runId: number, organizationId: number, owner: string): Promise<boolean> {
   const expires = new Date(Date.now() + LEASE_MS);
   const updated = await db.update(infraRuns)
     .set({ leaseOwner: owner, leaseExpiresAt: expires, updatedAt: new Date() })
@@ -656,7 +665,7 @@ async function acquireLease(runId: number, organizationId: number, owner: string
   return updated.length > 0;
 }
 
-async function releaseLease(runId: number, owner: string): Promise<void> {
+export async function releaseLease(runId: number, owner: string): Promise<void> {
   await db.update(infraRuns)
     .set({ leaseOwner: null, leaseExpiresAt: null })
     .where(and(eq(infraRuns.id, runId), eq(infraRuns.leaseOwner, owner)));

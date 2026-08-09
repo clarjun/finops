@@ -315,3 +315,17 @@ export function useResearchDocs() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/steps'] }),
   });
 }
+
+/**
+ * Starts a teardown of what a run deployed.
+ *
+ * Destroys nothing by itself: it creates a teardown run that plans the destroy
+ * and stops for an approval listing every resource by address.
+ */
+export function useStartTeardown() {
+  const qc = useQueryClient();
+  return useMutation<{ teardownRunId: number; streamUrl: string }, Error, { runId: number }>({
+    mutationFn: ({ runId }) => post(`/api/infra/runs/${runId}/teardown`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/deployments'] }),
+  });
+}

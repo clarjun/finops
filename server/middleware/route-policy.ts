@@ -82,6 +82,10 @@ const RULES: Rule[] = [
   // plan and simulating are proposals and stop at agent:propose.
   R(['POST'], /^\/api\/infra\/plans\/\d+\/runs$/,             'agent:execute'),
   R(['POST'], /^\/api\/infra\/runs\/\d+\/advance$/,           'agent:execute'),
+  // Destroying infrastructure is at least as consequential as creating it, so
+  // it needs the same permission. The teardown then stops for an approval of
+  // its own, which is a separate permission again.
+  R(['POST'], /^\/api\/infra\/runs\/\d+\/teardown$/,          'agent:execute'),
   R(['POST'], /^\/api\/infra\/approvals\/[^/]+\/decide$/,     'agent:approve'),
   R(['POST'], /^\/api\/infra\/plans\/\d+\/compile$/,          'agent:propose'),
   // Saving a blueprint and cloning one are proposals: they create plans, never
