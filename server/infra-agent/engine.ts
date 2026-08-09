@@ -187,9 +187,28 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     // The idempotency step. Terraform state is the source of truth for what is
     // real; anything already present is marked applied so a resumed run does not
     // try to create it again.
-    const creds = plan.cloudAccountId && run.executionMode === 'live'
-      ? await resolveTerraformCredentials(plan.cloudAccountId).catch(() => undefined)
-      : undefined;
+    //
+    // Credentials are resolved for BOTH modes. `terraform plan` is read-only —
+    // it creates nothing — but it must reach the provider to refresh state, so a
+    // simulation without credentials cannot produce a plan at all; it fails with
+    // an unhelpful IMDS timeout. Simulating therefore means "produce a real plan
+    // and stop", not "pretend without talking to the cloud", which is also the
+    // only version worth showing someone: a fabricated plan is exactly what
+    // must never be presented as a deployment.
+    let creds: Awaited<ReturnType<typeof resolveTerraformCredentials>> | undefined;
+    if (plan.cloudAccountId) {
+      try {
+        creds = await resolveTerraformCredentials(plan.cloudAccountId);
+      } catch (err) {
+        return failRun(runId, `Cloud credentials unavailable: ${(err as Error).message}`);
+      }
+    } else {
+      return failRun(
+        runId,
+        'This plan has no connected cloud account. Even a simulation needs read-only credentials, ' +
+        'because Terraform must reach the provider to produce a plan.',
+      );
+    }
 
     const existing = new Set(await terraformExecutor.listState(workspace, creds));
     if (existing.size > 0) {
@@ -214,7 +233,7 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     const stage = nextStage(stages, nodeStatus);
 
     if (!stage) {
-      return completeRun(runId, run.planId, plan, workspace, creds, generated);
+      return completeRun(runId, run.planId, plan, workspace, creds);
     }
 
     const targets = stageTargets(stage, generated.addressByNode);
@@ -440,15 +459,14 @@ async function completeRun(
   planId: number,
   plan: typeof infraPlans.$inferSelect,
   workspace: string,
-  creds: Awaited<ReturnType<typeof resolveTerraformCredentials>> | undefined,
-  generated: ReturnType<typeof generateTerraform>,
+  creds: Awaited<ReturnType<typeof resolveTerraformCredentials>>,
 ) {
   await setRunStatus(runId, 'verifying');
 
   // Final untargeted apply. HashiCorp is explicit that a workspace where
   // -target has been used should be converged with a full run; without this the
   // configuration and the real infrastructure can quietly diverge.
-  if (creds) {
+  {
     const finalPlan = await terraformExecutor.plan(workspace, creds);
     if (finalPlan.ok && (finalPlan.toAdd > 0 || finalPlan.toChange > 0)) {
       await appendEvent({
@@ -460,7 +478,7 @@ async function completeRun(
     }
   }
 
-  const addresses = creds ? await terraformExecutor.listState(workspace, creds) : [];
+  const addresses = await terraformExecutor.listState(workspace, creds);
 
   const [run] = await db.select().from(infraRuns).where(eq(infraRuns.id, runId));
   const durationSeconds = run?.startedAt ? Math.round((Date.now() - run.startedAt.getTime()) / 1000) : null;

@@ -76,6 +76,18 @@ const RULES: Rule[] = [
   R(['PATCH'],/^\/api\/optimization\/recommendations/,        'agent:approve'),
   R(['GET'],  /^\/api\/optimization\//,                       'cost:read'),
 
+  // ── Infrastructure Deployment Agent ───────────────────────────────────────
+  // Starting a LIVE run creates real cloud infrastructure and costs real money,
+  // so it needs the same permission as executing an agent action. Compiling a
+  // plan and simulating are proposals and stop at agent:propose.
+  R(['POST'], /^\/api\/infra\/plans\/\d+\/runs$/,             'agent:execute'),
+  R(['POST'], /^\/api\/infra\/runs\/\d+\/advance$/,           'agent:execute'),
+  R(['POST'], /^\/api\/infra\/approvals\/[^/]+\/decide$/,     'agent:approve'),
+  R(['POST'], /^\/api\/infra\/plans\/\d+\/compile$/,          'agent:propose'),
+  R(['POST'], /^\/api\/infra\/plans$/,                        'agent:propose'),
+  R(['GET'],  /^\/api\/infra\/accounts$/,                     'account:read'),
+  R(['GET'],  /^\/api\/infra\//,                              'cost:read'),
+
   // ── Cost fact store ───────────────────────────────────────────────────────
   // Triggering ingestion spends money on billing APIs (Cost Explorer bills per
   // request) and a backfill can issue a lot of them, so it is an account-level

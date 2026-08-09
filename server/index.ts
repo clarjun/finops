@@ -18,6 +18,9 @@ import { registerCostFactRoutes } from "./ingestion/routes";
 import { registerSavingsRoutes } from "./savings/routes";
 import { startIngestionScheduler } from "./ingestion/scheduler";
 import { startReportScheduler } from "./reports/scheduler";
+import { registerInfraAgentRoutes } from "./infra-agent/routes";
+import { startInfraWorker } from "./infra-agent/worker";
+import { registerTerraformTools } from "./infra-agent/tools/terraform-tools";
 import { log } from "./vite";
 import { serveStatic } from "./static";
 import { startBudgetAlertScheduler } from "./utils/budget-alert-checker-new";
@@ -94,6 +97,7 @@ app.use((req, res, next) => {
   registerAuditRoutes(app);
   registerCostFactRoutes(app);
   registerSavingsRoutes(app);
+  registerInfraAgentRoutes(app);
 
   // Surfaces any endpoint that slipped past the policy table, in the boot log.
   reportRoutePolicyGaps(app);
@@ -136,5 +140,11 @@ app.use((req, res, next) => {
     // executed — getDueReportSchedules() had no caller.
     startReportScheduler(Number(process.env.REPORT_INTERVAL_MINUTES) || 15);
     log('Report scheduler started');
+
+    // Infrastructure agent. Tools are registered before the worker starts, so a
+    // run picked up on the first sweep cannot find an empty registry.
+    registerTerraformTools();
+    startInfraWorker(Number(process.env.INFRA_SWEEP_SECONDS) || 30);
+    log('Infrastructure deployment agent started');
   });
 })();
