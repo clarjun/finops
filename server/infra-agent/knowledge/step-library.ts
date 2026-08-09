@@ -51,9 +51,23 @@ export interface StepCandidate {
   approvalLevel: string;
 }
 
-/** Stable identity for a step: what it builds, on which cloud, at what type. */
-export function stepSlug(provider: string, logicalType: string, resourceType?: string | null): string {
-  return [provider, logicalType.toLowerCase(), resourceType ?? 'default']
+/**
+ * Stable identity for a step: what it builds, on which cloud, at what type, in
+ * what role.
+ *
+ * The role matters. A public subnet and a private subnet are the same resource
+ * type built deliberately differently, and collapsing them into one step means
+ * the library can only ever hold one of them — the other permanently looks like
+ * a revision of it.
+ */
+export function stepSlug(
+  provider: string,
+  logicalType: string,
+  resourceType?: string | null,
+  variant?: string | null,
+): string {
+  return [provider, logicalType.toLowerCase(), resourceType ?? 'default', variant]
+    .filter(Boolean)
     .join('-')
     .replace(/[^a-z0-9-]/gi, '-')
     .toLowerCase();
@@ -80,6 +94,13 @@ export async function extractStepsFromRun(runId: number): Promise<{ learned: num
 
   // A simulation created nothing, so it validates nothing.
   if (run.executionMode === 'simulate') return { learned: 0, updated: 0 };
+
+  // Integration tests drive real runs against a mocked Terraform, so their
+  // nodes reach 'applied' and satisfy the guard above while nothing was ever
+  // built. Left alone they fill the shared library with fabricated evidence —
+  // the exact failure this module's own documentation warns about, arriving
+  // through the one door it did not check. The test config turns this off.
+  if (process.env.INFRA_KNOWLEDGE_LEARNING === 'off') return { learned: 0, updated: 0 };
 
   const [plan] = await db.select().from(infraPlans)
     .where(and(eq(infraPlans.id, run.planId), eq(infraPlans.organizationId, organizationId)));
@@ -115,7 +136,13 @@ export async function extractStepsFromRun(runId: number): Promise<{ learned: num
     if (!address) continue;
 
     const result = await upsertStep({
-      slug: stepSlug(plan.provider ?? 'aws', node.logicalType, address.split('.')[0]),
+      slug: stepSlug(
+        plan.provider ?? 'aws',
+        node.logicalType,
+        address.split('.')[0],
+        // `tier` is what the compiler uses to distinguish public from private.
+        typeof node.config?.tier === 'string' ? node.config.tier : null,
+      ),
       name: `${(plan.provider ?? 'aws').toUpperCase()} ${node.logicalType.replace(/_/g, ' ').toLowerCase()}`,
       provider: plan.provider ?? 'aws',
       service: address.split('.')[0],
@@ -150,16 +177,38 @@ export async function extractStepsFromRun(runId: number): Promise<{ learned: num
  * A changed implementation creates a NEW VERSION rather than overwriting.
  * Overwriting would make a past deployment unexplainable: its plan references a
  * step whose content has since silently changed.
+ *
+ * The candidate is compared against EVERY version, not just the newest. An
+ * architecture legitimately contains several resources of one kind — a public
+ * and a private subnet — whose rendered configuration differs. Comparing only
+ * against the newest made each one look like a change to the other, so two
+ * variants ping-ponged: a hundred versions, two distinct implementations,
+ * every one of them "used once". Seeing an implementation that already exists
+ * is a confirmation of that version, not a new one.
  */
 async function upsertStep(candidate: StepCandidate): Promise<'created' | 'confirmed' | 'versioned'> {
-  const [existing] = await db.select().from(standardSteps)
+  const versions = await db.select().from(standardSteps)
     .where(and(
       eq(standardSteps.slug, candidate.slug),
       // Platform-wide steps only; a tenant-private step is a separate lineage.
       isNull(standardSteps.organizationId),
     ))
-    .orderBy(desc(standardSteps.version))
-    .limit(1);
+    .orderBy(desc(standardSteps.version));
+
+  const existing = versions[0];
+  const identical = versions.find((v) => normalise(v.implementation) === normalise(candidate.implementation));
+
+  if (identical) {
+    await db.update(standardSteps).set({
+      usageCount: sql`${standardSteps.usageCount} + 1`,
+      successCount: sql`${standardSteps.successCount} + 1`,
+      validationStatus: 'validated',
+      lastValidatedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(standardSteps.id, identical.id));
+
+    return 'confirmed';
+  }
 
   if (!existing) {
     await db.insert(standardSteps).values({
@@ -185,9 +234,8 @@ async function upsertStep(candidate: StepCandidate): Promise<'created' | 'confir
     return 'created';
   }
 
-  const changed = normalise(existing.implementation) !== normalise(candidate.implementation);
-
-  if (changed) {
+  // Nothing on record matches, so this is genuinely a new way of building it.
+  {
     await db.insert(standardSteps).values({
       organizationId: null,
       slug: candidate.slug,
@@ -209,16 +257,6 @@ async function upsertStep(candidate: StepCandidate): Promise<'created' | 'confir
     });
     return 'versioned';
   }
-
-  await db.update(standardSteps).set({
-    usageCount: sql`${standardSteps.usageCount} + 1`,
-    successCount: sql`${standardSteps.successCount} + 1`,
-    validationStatus: 'validated',
-    lastValidatedAt: new Date(),
-    updatedAt: new Date(),
-  }).where(eq(standardSteps.id, existing.id));
-
-  return 'confirmed';
 }
 
 /** Whitespace-insensitive comparison, so formatting alone never forks a version. */

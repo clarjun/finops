@@ -91,3 +91,28 @@ function countBraces(s: string): number {
   }
   return depth;
 }
+
+describe('stepSlug variants', () => {
+  it('separates resources of one type built in different roles', () => {
+    // A public and a private subnet are the same resource type configured
+    // deliberately differently. Sharing one identity meant the library could
+    // only ever hold one of them, and the other looked like a revision.
+    const publicSubnet = stepSlug('aws', 'SUBNET', 'aws_subnet', 'public');
+    const privateSubnet = stepSlug('aws', 'SUBNET', 'aws_subnet', 'private');
+
+    expect(publicSubnet).not.toBe(privateSubnet);
+    // Underscores are normalised to hyphens, so the slug stays URL-safe.
+    expect(publicSubnet).toBe('aws-subnet-aws-subnet-public');
+  });
+
+  it('is unchanged for a resource with no role', () => {
+    // A VPC has no variant, and adding one would rename every step already
+    // recorded against the old identity.
+    expect(stepSlug('aws', 'NETWORK', 'aws_vpc')).toBe(stepSlug('aws', 'NETWORK', 'aws_vpc', null));
+  });
+
+  it('stays stable for the same inputs', () => {
+    expect(stepSlug('aws', 'SUBNET', 'aws_subnet', 'public'))
+      .toBe(stepSlug('aws', 'SUBNET', 'aws_subnet', 'public'));
+  });
+});
