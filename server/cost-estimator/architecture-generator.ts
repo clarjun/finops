@@ -13,67 +13,123 @@ export interface ArchitectureLayer {
   instanceCount?: number;
   storageSize?: number;
   dataTransfer?: number;
+  /** Lambda sizing, so compute is priced from what it will actually run. */
+  memoryMb?: number;
+  durationMs?: number;
+  provisionedConcurrency?: number;
+  /** False when the requirement does not call for it; shown as a suggestion. */
+  required?: boolean;
+  /** Why this service is here, in one line. */
+  justification?: string;
+}
+
+/**
+ * What the request implies about load.
+ *
+ * Without this nothing about the stated audience reached the pricing, so the
+ * same architecture cost the same whether it served fifty people or fifty
+ * thousand.
+ */
+export interface UsageAssumptions {
+  dailyActiveUsers?: number;
+  requestsPerUserPerDay?: number;
+  notes?: string;
 }
 
 export interface ArchitectureRecommendation {
   architecture: ArchitectureLayer[];
   reasoning: string;
+  assumptions?: UsageAssumptions;
 }
 
-const ARCHITECTURE_PROMPT = `You are a senior AWS solutions architect. Analyze the application requirements and suggest an optimal, cost-effective AWS architecture.
+const ARCHITECTURE_PROMPT = `You are a senior AWS solutions architect producing a cost estimate.
 
-IMPORTANT: Return ONLY valid JSON, no markdown, no explanations outside the JSON.
+Return ONLY valid JSON. No markdown, no prose outside the JSON.
 
-Requirements to analyze:
-- Application type and purpose
-- Expected user load and traffic patterns
-- Database requirements
-- Storage needs
-- Region preferences
-- Availability and scalability requirements
+## Size the architecture to the request
 
-Suggest architecture using these AWS services:
-- Compute: EC2, Lambda, ECS, EKS
-- Database: RDS (PostgreSQL, MySQL), DynamoDB, Aurora
-- Storage: S3, EBS, EFS
-- Network: CloudFront, ALB, API Gateway
-- Cache: ElastiCache (Redis, Memcached)
-- Queue: SQS, SNS
-- Other: Route53, WAF, etc.
+Include a service only when the stated requirements need it. A small
+application does not become a better one by acquiring more infrastructure, and
+every service added is real money and real operational burden for whoever runs
+it.
 
-For each service, specify:
-- Instance type (e.g., t3.medium, db.t3.small)
-- Instance count or capacity
-- Storage size in GB
-- Data transfer in GB/month
+Specifically:
+- Do NOT add queues, caches, search, CDNs, firewalls or multi-AZ unless the
+  requirements imply them. "A simple application" implies none of these.
+- Do NOT add performance features that only matter at scale. Provisioned
+  concurrency, read replicas and warm pools are wasted spend at low traffic.
+- Prefer one service doing a job to two services sharing it.
+- If a service is genuinely optional — a sensible upgrade rather than a
+  requirement — include it with "required": false and say why in
+  "justification". The user can then decide, rather than being quoted for it
+  silently.
 
-Return JSON in this exact format:
+Mark "required": true only for what the application cannot run without.
+
+## State your load assumptions
+
+Read the expected traffic from the requirements and put it in "assumptions".
+If the user gives a user count, use it. If they do not, choose a modest figure
+and say so in "notes". These numbers drive the cost of every request-priced
+service, so a guess stated plainly is far better than a number invented per
+service.
+
+## Size each service from those assumptions
+
+- Lambda: give memoryMb and durationMs. Add provisionedConcurrency ONLY if
+  the requirements demand consistently low latency.
+- Databases: give storageSize in GB. Give instanceType only for RDS/Aurora.
+- Storage and CDN: give storageSize and dataTransfer in GB per month.
+- CloudWatch: give storageSize as the log volume ingested per month, in GB.
+
+Use exactly these field names — storageSize, dataTransfer, memoryMb, durationMs,
+instanceType, instanceCount. A differently spelled field cannot be priced.
+- Compute: give instanceType and instanceCount.
+
+Use realistic figures for the stated audience. Do not pad.
+
+## Available services
+
+Compute: EC2, Lambda, ECS, EKS · Database: RDS, DynamoDB, Aurora ·
+Storage: S3, EBS, EFS · Network: CloudFront, ALB, API Gateway, Route 53 ·
+Cache: ElastiCache · Messaging: SQS, SNS · Security: WAF · Monitoring: CloudWatch
+
+## Response shape
+
 {
+  "assumptions": {
+    "dailyActiveUsers": 500,
+    "requestsPerUserPerDay": 20,
+    "notes": "Taken from the stated 500 daily users; 20 requests each is typical for a simple CRUD application."
+  },
   "architecture": [
     {
-      "layer": "Frontend",
-      "service": "Amazon S3 + CloudFront",
-      "configuration": "Static hosting with global CDN",
-      "storageSize": 100,
-      "dataTransfer": 1000
+      "layer": "Compute",
+      "service": "AWS Lambda",
+      "configuration": "Node.js handlers behind API Gateway",
+      "memoryMb": 512,
+      "durationMs": 200,
+      "required": true,
+      "justification": "Runs the application; serverless suits this traffic and has no idle cost."
     },
     {
-      "layer": "Backend",
-      "service": "Amazon EC2 Auto Scaling",
-      "configuration": "Auto-scaling group with load balancer",
-      "instanceType": "t3.medium",
-      "instanceCount": 2
+      "layer": "Storage",
+      "service": "Amazon S3",
+      "configuration": "Static frontend assets",
+      "storageSize": 1,
+      "dataTransfer": 6,
+      "required": true,
+      "justification": "Hosts the web frontend."
     },
     {
-      "layer": "Database",
-      "service": "Amazon RDS PostgreSQL",
-      "configuration": "Multi-AZ deployment",
-      "instanceType": "db.t3.medium",
-      "instanceCount": 1,
-      "storageSize": 100
+      "layer": "Security",
+      "service": "AWS WAF",
+      "configuration": "Managed common rule set",
+      "required": false,
+      "justification": "Optional. Adds roughly $8/month; worth it once the application is public and handling accounts."
     }
   ],
-  "reasoning": "Brief explanation of architecture choices"
+  "reasoning": "Brief explanation, including anything deliberately left out."
 }`;
 
 export async function generateArchitecture(requirements: string): Promise<ArchitectureRecommendation> {

@@ -2306,12 +2306,19 @@ When answering:
       const { calculateCosts } = await import('./cost-estimator/aws-pricing-calculator');
 
       const recommendation = await generateArchitecture(requirements);
-      const estimate = await calculateCosts(recommendation.architecture, region || 'us-east-1');
+      // The load assumptions drive every request-priced service, so they travel
+      // with the architecture rather than being re-guessed by the calculator.
+      const estimate = await calculateCosts(
+        recommendation.architecture,
+        region || 'us-east-1',
+        recommendation.assumptions ?? {},
+      );
 
       res.json({
         success: true,
         estimate,
         reasoning: recommendation.reasoning,
+        assumptions: recommendation.assumptions ?? null,
       });
     } catch (error) {
       console.error("Error generating cost estimate:", error);

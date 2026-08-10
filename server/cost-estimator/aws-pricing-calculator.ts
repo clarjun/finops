@@ -5,6 +5,7 @@
 
 import type { ArchitectureLayer } from './architecture-generator';
 import { fetchEC2Pricing, fetchRDSPricing, fetchElastiCachePricing } from './aws-price-list-fetcher';
+import { priceLayer, buildUsageModel, INSTANCE_PRICED, type UsageModel } from './service-pricing';
 
 // Storage pricing (per GB/month) - relatively stable, can be hardcoded
 const STORAGE_PRICING = {
@@ -38,9 +39,19 @@ export interface CostBreakdown {
 }
 
 export interface CostEstimate {
-  architecture: Array<ArchitectureLayer & { monthlyCost?: number }>;
+  architecture: Array<ArchitectureLayer & {
+    monthlyCost?: number;
+    /** How the figure was reached, so a reader can check it. */
+    costBasis?: string;
+    /** True when nothing here could price it; the cost is absent, not zero. */
+    unpriced?: boolean;
+  }>;
   totalCost: number;
   breakdown: CostBreakdown;
+  /** The assumptions every request-priced line was derived from. */
+  usage: UsageModel;
+  /** Services excluded from the total because they could not be priced. */
+  unpriced: string[];
 }
 
 async function calculateEC2Cost(layer: ArchitectureLayer, region: string): Promise<number> {
@@ -102,97 +113,103 @@ function calculateLoadBalancerCost(): number {
   return OTHER_PRICING.albHourly * 730 + 15; // ~$15 for LCU
 }
 
-export async function calculateCosts(architecture: ArchitectureLayer[], region: string = 'us-east-1'): Promise<CostEstimate> {
-  const breakdown: CostBreakdown = {
-    compute: 0,
-    database: 0,
-    storage: 0,
-    network: 0,
-    other: 0,
-  };
+export async function calculateCosts(
+  architecture: ArchitectureLayer[],
+  region: string = 'us-east-1',
+  assumptions: { dailyActiveUsers?: number | null; requestsPerUserPerDay?: number | null } = {},
+): Promise<CostEstimate> {
+  const breakdown: CostBreakdown = { compute: 0, database: 0, storage: 0, network: 0, other: 0 };
 
-  console.log(`[Pricing Calculator] Calculating costs for ${architecture.length} services in ${region}...`);
+  // Every request-priced line is derived from this, so the stated audience
+  // actually reaches the numbers. Previously it reached nothing: Lambda,
+  // DynamoDB, SQS and API Gateway were flat constants.
+  const usage = buildUsageModel(assumptions);
+  const unpricedServices: string[] = [];
 
-  const enrichedArchitecture = await Promise.all(architecture.map(async (layer) => {
-    let cost = 0;
-    const serviceLower = layer.service.toLowerCase();
+  console.log(`[Pricing] ${architecture.length} services in ${region}, ` +
+    `${usage.dailyActiveUsers} daily users -> ${usage.monthlyRequests.toLocaleString()} requests/month`);
+
+  const enriched = await Promise.all(architecture.map(async (layer) => {
+    const text = `${layer.service} ${layer.layer ?? ''}`;
 
     try {
-      // EC2 / Compute
-      if (serviceLower.includes('ec2') || serviceLower.includes('compute')) {
-        cost = await calculateEC2Cost(layer, region);
-        breakdown.compute += cost;
-      }
-      // Lambda
-      else if (serviceLower.includes('lambda')) {
-        cost = 10; // Simplified estimate
-        breakdown.compute += cost;
-      }
-      // RDS / Database
-      else if (serviceLower.includes('rds') || serviceLower.includes('aurora')) {
-        cost = await calculateRDSCost(layer, region);
-        breakdown.database += cost;
-      }
-      // DynamoDB
-      else if (serviceLower.includes('dynamodb')) {
-        cost = 25; // Simplified estimate for on-demand
-        breakdown.database += cost;
-      }
-      // ElastiCache
-      else if (serviceLower.includes('elasticache') || serviceLower.includes('redis') || serviceLower.includes('memcached')) {
-        cost = await calculateElastiCacheCost(layer, region);
-        breakdown.database += cost;
-      }
-      // S3
-      else if (serviceLower.includes('s3')) {
-        cost = calculateS3Cost(layer);
-        breakdown.storage += cost;
-      }
-      // CloudFront
-      else if (serviceLower.includes('cloudfront') || serviceLower.includes('cdn')) {
-        cost = calculateCloudFrontCost(layer);
-        breakdown.network += cost;
-      }
-      // Load Balancer
-      else if (serviceLower.includes('load balancer') || serviceLower.includes('alb') || serviceLower.includes('elb')) {
-        cost = calculateLoadBalancerCost();
-        breakdown.other += cost;
-      }
-      // SQS / SNS
-      else if (serviceLower.includes('sqs') || serviceLower.includes('sns')) {
-        cost = 5; // Simplified estimate
-        breakdown.other += cost;
-      }
-      // API Gateway
-      else if (serviceLower.includes('api gateway')) {
-        cost = 10; // Simplified estimate
-        breakdown.other += cost;
-      }
-      // Route53
-      else if (serviceLower.includes('route53') || serviceLower.includes('dns')) {
-        cost = 1; // Hosted zone + queries
-        breakdown.other += cost;
+      // Instance-priced services keep the live Price List API: their rate
+      // depends on an instance type, which is exactly what that API is for.
+      if (INSTANCE_PRICED.test(text)) {
+        const { cost, category, basis } = await priceInstanceService(layer, region);
+        breakdown[category] += cost;
+        return { ...layer, monthlyCost: round(cost), costBasis: basis };
       }
 
-      console.log(`[Pricing Calculator] ${layer.service}: $${cost.toFixed(2)}/month`);
+      const components = priceLayer(layer as never, usage);
+
+      if (components.length === 0) {
+        // Not zero. A service nobody could price is reported as such and left
+        // out of the total, rather than quietly making the estimate look
+        // cheaper than it is.
+        unpricedServices.push(layer.service);
+        return {
+          ...layer,
+          monthlyCost: undefined,
+          unpriced: true,
+          costBasis: `No pricing model for "${layer.service}". Excluded from the total rather than counted as free.`,
+        };
+      }
+
+      // A line naming two services is charged for both.
+      let total = 0;
+      const bases: string[] = [];
+      for (const c of components) {
+        if (c.line.cost == null) continue;
+        total += c.line.cost;
+        breakdown[c.category] += c.line.cost;
+        bases.push(components.length > 1 ? `${c.service}: ${c.line.basis}` : c.line.basis);
+      }
+
+      return { ...layer, monthlyCost: round(total), costBasis: bases.join(' · ') };
     } catch (error) {
-      console.error(`[Pricing Calculator] Error calculating cost for ${layer.service}:`, error);
-      cost = 0;
+      console.error(`[Pricing] ${layer.service}:`, error);
+      unpricedServices.push(layer.service);
+      return {
+        ...layer,
+        monthlyCost: undefined,
+        unpriced: true,
+        costBasis: `Pricing failed for "${layer.service}"; excluded from the total.`,
+      };
     }
-
-    return {
-      ...layer,
-      monthlyCost: cost,
-    };
   }));
 
-  const totalCost = Object.values(breakdown).reduce((sum, val) => sum + val, 0);
+  const totalCost = round(Object.values(breakdown).reduce((sum, v) => sum + v, 0));
+  console.log(`[Pricing] total $${totalCost}/month, ${unpricedServices.length} service(s) unpriced`);
 
-  console.log(`[Pricing Calculator] Total monthly cost: $${totalCost.toFixed(2)}`);
-
-  return {
-    architecture: enrichedArchitecture,
-    totalCost,
-    breakdown,
-  };
+  return { architecture: enriched, totalCost, breakdown, usage, unpriced: unpricedServices };
 }
+
+/** EC2, RDS, ElastiCache and load balancers, whose rate depends on a size. */
+async function priceInstanceService(
+  layer: ArchitectureLayer,
+  region: string,
+): Promise<{ cost: number; category: keyof CostBreakdown; basis: string }> {
+  const text = `${layer.service} ${layer.layer ?? ''}`.toLowerCase();
+
+  if (/\brds\b|\baurora\b/.test(text)) {
+    const cost = await calculateRDSCost(layer, region);
+    return { cost, category: 'database',
+      basis: `${layer.instanceCount ?? 1} × ${layer.instanceType ?? 'db.t3.medium'} for 730 hours, plus ${layer.storageSize ?? 100} GB of storage` };
+  }
+  if (/elasticache|\bredis\b|memcached/.test(text)) {
+    const cost = await calculateElastiCacheCost(layer, region);
+    return { cost, category: 'database',
+      basis: `${layer.instanceCount ?? 1} × ${layer.instanceType ?? 'cache.t3.medium'} for 730 hours` };
+  }
+  if (/load balancer|\balb\b|\belb\b/.test(text)) {
+    const cost = calculateLoadBalancerCost();
+    return { cost, category: 'network', basis: 'one application load balancer for 730 hours, plus capacity units' };
+  }
+
+  const cost = await calculateEC2Cost(layer, region);
+  return { cost, category: 'compute',
+    basis: `${layer.instanceCount ?? 1} × ${layer.instanceType ?? 't3.medium'} for 730 hours` };
+}
+
+const round = (n: number): number => Number(n.toFixed(2));
