@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator, Users, ScrollText, Rocket, Library } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator, Users, ScrollText, Rocket, Library, Server } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth, type Permission } from "@/hooks/use-auth";
 import {
@@ -21,6 +21,7 @@ const menuItems = [
   { title: "Budgets",        url: "/budgets",       icon: DollarSign },
   { title: "Optimization",   url: "/optimization",  icon: Lightbulb },
   { title: "Deploy Agent",   url: "/infra-agent",   icon: Rocket },
+  { title: "Deployments",    url: "/deployments",   icon: Server },
   { title: "Deploy Library", url: "/infra-library", icon: Library },
   { title: "AI Agent",       url: "/agent",         icon: Brain },
   { title: "Configuration",  url: "/configuration", icon: Cloud },

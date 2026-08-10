@@ -397,3 +397,27 @@ export function usePlan(planId: number | null) {
     staleTime: Infinity,
   });
 }
+
+export interface Deployment {
+  id: number;
+  planId: number | null;
+  runId: number | null;
+  name: string;
+  provider: string | null;
+  region: string | null;
+  environment: string | null;
+  executionMode: string;
+  resourceCount: number;
+  estimatedMonthlyCost: string | null;
+  /** 'active' while it exists; 'destroyed' once a teardown removed it. */
+  status: string;
+  createdAt: string | null;
+}
+
+/** What has been built and not yet removed. */
+export function useDeployments() {
+  return useQuery<{ deployments: Deployment[] }>({
+    queryKey: ['/api/infra/deployments'],
+    queryFn: () => json('/api/infra/deployments'),
+  });
+}
