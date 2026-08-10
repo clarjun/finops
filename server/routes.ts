@@ -2319,6 +2319,8 @@ When answering:
         estimate,
         reasoning: recommendation.reasoning,
         assumptions: recommendation.assumptions ?? null,
+        applicationProfile: recommendation.applicationProfile ?? null,
+        logicalArchitecture: recommendation.logicalArchitecture ?? [],
       });
     } catch (error) {
       console.error("Error generating cost estimate:", error);

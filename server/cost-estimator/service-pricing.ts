@@ -17,7 +17,7 @@
 import type { ArchitectureLayer } from './architecture-generator';
 import type { RateCard } from './rate-card';
 import {
-  buildUsageModel, priceApiGateway, priceCloudFront, priceCloudWatch, priceDynamoDb,
+  buildUsageModel, withRequests, priceApiGateway, priceCloudFront, priceCloudWatch, priceDynamoDb,
   priceLambda, priceRoute53, priceS3, priceSqs, priceWaf, priceUnknown,
   type PricedLine, type UsageModel,
 } from './pricing-model';
@@ -64,6 +64,7 @@ const ALIASES: Record<string, string[]> = {
   provisionedConcurrency: ['provisionedConcurrency', 'provisionedConcurrencyCount'],
   healthChecks: ['healthChecks', 'healthCheckCount'],
   managedRuleGroups: ['managedRuleGroups', 'managedRuleGroupCount', 'ruleGroups'],
+  monthlyRequests: ['monthlyRequests', 'monthlyInvocations', 'requestsPerMonth'],
 };
 
 function pick(layer: LayerExtras, field: keyof typeof ALIASES): number | undefined {
@@ -146,12 +147,17 @@ export const INSTANCE_PRICED = /\bec2\b|\brds\b|\baurora\b|\belasticache\b|\bred
 export function priceLayer(layer: LayerExtras, usage: UsageModel, card?: RateCard): PricedComponent[] {
   const text = `${layer.service} ${layer.layer ?? ''}`;
 
+  // A service may state its own volume — a queue handling a fraction of the
+  // application's traffic, say — and is priced on that rather than on the
+  // application total.
+  const forThisLayer = withRequests(usage, pick(layer, 'monthlyRequests'));
+
   const components = MATCHERS
     .filter((m) => m.test.test(text))
-    .map((m) => ({ service: m.key, category: m.category, line: m.price(layer, usage, card) }));
+    .map((m) => ({ service: m.key, category: m.category, line: m.price(layer, forThisLayer, card) }));
 
   return components;
 }
 
-export { buildUsageModel, priceUnknown, pick as sizingValue };
+export { buildUsageModel, withRequests, priceUnknown, pick as sizingValue };
 export type { UsageModel, PricedLine };

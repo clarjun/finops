@@ -9,6 +9,7 @@ import {
   buildUsageModel, priceLambda, priceApiGateway, priceDynamoDb, priceSqs,
   priceWaf, priceCloudWatch, priceRoute53, priceCloudFront, priceS3, priceUnknown,
 } from './pricing-model';
+import { withRequests } from './pricing-model';
 import { priceLayer } from './service-pricing';
 
 /** The user's stated scenario: a simple application, 500 daily users. */
@@ -16,8 +17,10 @@ const usage = buildUsageModel({ dailyActiveUsers: 500 });
 
 describe('the usage model', () => {
   it('turns stated users into monthly requests', () => {
-    // 500 users × 20 requests × 30.4 days
-    expect(usage.monthlyRequests).toBe(304_000);
+    // 500 users × 20 requests × 30 days. Thirty, not 30.44, because that is the
+    // multiplication the architecture prompt instructs the model to perform —
+    // and a reader can check it on paper.
+    expect(usage.monthlyRequests).toBe(300_000);
   });
 
   it('scales with the audience, which is the whole point', () => {
@@ -197,5 +200,52 @@ describe('a size that is missing entirely', () => {
   it('reports a CDN as unpriced rather than charging only for requests', () => {
     const [cdn] = priceLayer({ layer: 'CDN', service: 'Amazon CloudFront' } as never, usage);
     expect(cdn.line.cost).toBeNull();
+  });
+});
+
+describe('the request total the model states for itself', () => {
+  it('is accepted when its own arithmetic checks out', () => {
+    const u = buildUsageModel({ dailyActiveUsers: 500, requestsPerUserPerDay: 20, monthlyRequests: 300_000 });
+    expect(u.monthlyRequests).toBe(300_000);
+    expect(u.discrepancy).toBeUndefined();
+  });
+
+  it('tolerates a small rounding difference', () => {
+    const u = buildUsageModel({ dailyActiveUsers: 500, requestsPerUserPerDay: 20, monthlyRequests: 304_000 });
+    expect(u.monthlyRequests).toBe(304_000);
+    expect(u.discrepancy).toBeUndefined();
+  });
+
+  it('recalculates, and says so, when the arithmetic does not hold', () => {
+    // One slip in this single number would move every request-priced service,
+    // because the prompt requires all of them to share it. The cost follows the
+    // requests, so the arithmetic wins over the stated label.
+    const u = buildUsageModel({ dailyActiveUsers: 500, requestsPerUserPerDay: 20, monthlyRequests: 3_000_000 });
+    expect(u.monthlyRequests).toBe(300_000);
+    expect(u.discrepancy).toMatch(/3,000,000.*300,000/);
+  });
+});
+
+describe('a service with its own request volume', () => {
+  it('is priced on its own figure, not the application total', () => {
+    // A queue handling a tenth of the traffic should not be billed for all of it.
+    const app = buildUsageModel({ dailyActiveUsers: 500 });
+    const busier = withRequests(app, 5_000_000);
+    expect(priceApiGateway(busier).cost!).toBeGreaterThan(priceApiGateway(app).cost!);
+  });
+
+  it('falls back to the application total when the service states nothing', () => {
+    const app = buildUsageModel({ dailyActiveUsers: 500 });
+    expect(withRequests(app, undefined).monthlyRequests).toBe(app.monthlyRequests);
+    expect(withRequests(app, 0).monthlyRequests).toBe(app.monthlyRequests);
+  });
+
+  it('reads it from the estimate line', () => {
+    const app = buildUsageModel({ dailyActiveUsers: 500 });
+    const [api] = priceLayer(
+      { layer: 'API', service: 'Amazon API Gateway', monthlyRequests: 10_000_000 } as never,
+      app,
+    );
+    expect(api.line.cost!).toBeGreaterThan(5);
   });
 });

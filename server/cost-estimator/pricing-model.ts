@@ -76,23 +76,65 @@ export interface UsageModel {
   dailyActiveUsers: number;
   requestsPerUserPerDay: number;
   monthlyRequests: number;
+  /** Set when the model's own arithmetic did not match its inputs. */
+  discrepancy?: string;
 }
 
 /** A modest default: a simple application, not a chat client. */
 export const DEFAULT_REQUESTS_PER_USER_PER_DAY = 20;
 
+/**
+ * Thirty, not 30.44.
+ *
+ * Slightly less accurate than the average month, and worth it: the architecture
+ * prompt tells the model to compute users x requests x 30, so using anything
+ * else would put the two permanently 1.5% apart and make every returned figure
+ * look like an arithmetic error. A reader can also check this one on paper.
+ */
+const DAYS_PER_MONTH = 30;
+
+/** How far the model's own total may drift before it is treated as a mistake. */
+const TOLERANCE = 0.05;
+
 export function buildUsageModel(input: {
   dailyActiveUsers?: number | null;
   requestsPerUserPerDay?: number | null;
+  monthlyRequests?: number | null;
 }): UsageModel {
   const users = positive(input.dailyActiveUsers) ?? 100;
   const perUser = positive(input.requestsPerUserPerDay) ?? DEFAULT_REQUESTS_PER_USER_PER_DAY;
+  const derived = Math.round(users * perUser * DAYS_PER_MONTH);
+
+  const stated = positive(input.monthlyRequests);
+  if (stated == null) {
+    return { dailyActiveUsers: users, requestsPerUserPerDay: perUser, monthlyRequests: derived };
+  }
+
+  // The model is asked to do this multiplication and to reuse one figure across
+  // every request-priced service. Taking its answer on trust would let a slip
+  // in that one number move the whole estimate, so it is checked against its
+  // own stated inputs — and the arithmetic wins, because the cost follows the
+  // requests rather than the label.
+  const drift = Math.abs(stated - derived) / Math.max(derived, 1);
+  if (drift <= TOLERANCE) {
+    return { dailyActiveUsers: users, requestsPerUserPerDay: perUser, monthlyRequests: stated };
+  }
+
   return {
     dailyActiveUsers: users,
     requestsPerUserPerDay: perUser,
-    // 30.4 rather than 30: the monthly average, so a year of estimates adds up.
-    monthlyRequests: Math.round(users * perUser * 30.4),
+    monthlyRequests: derived,
+    discrepancy:
+      `The architecture stated ${stated.toLocaleString('en-US')} requests/month, but ` +
+      `${users.toLocaleString('en-US')} users x ${perUser} requests x ${DAYS_PER_MONTH} days is ` +
+      `${derived.toLocaleString('en-US')}. The calculated figure was used.`,
   };
+}
+
+/** The same assumptions, for a service with its own request volume. */
+export function withRequests(usage: UsageModel, monthlyRequests?: number | null): UsageModel {
+  const own = positive(monthlyRequests);
+  return own == null ? usage : { ...usage, monthlyRequests: own };
 }
 
 const positive = (v: unknown): number | undefined =>

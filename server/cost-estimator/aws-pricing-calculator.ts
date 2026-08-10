@@ -126,7 +126,11 @@ function calculateLoadBalancerCost(): number {
 export async function calculateCosts(
   architecture: ArchitectureLayer[],
   region: string = 'us-east-1',
-  assumptions: { dailyActiveUsers?: number | null; requestsPerUserPerDay?: number | null } = {},
+  assumptions: {
+    dailyActiveUsers?: number | null;
+    requestsPerUserPerDay?: number | null;
+    monthlyRequests?: number | null;
+  } = {},
 ): Promise<CostEstimate> {
   const breakdown: CostBreakdown = { compute: 0, database: 0, storage: 0, network: 0, other: 0 };
 
