@@ -767,6 +767,9 @@ export type SavingsMeasurement = typeof savingsMeasurements.$inferSelect;
 // ==================== INFRASTRUCTURE DEPLOYMENT AGENT ====================
 // Mirrors migration 0012. See that file for the design rationale.
 
+// Instants on the agent tables are timestamptz (migration 0017). A
+// timezone-less column stores wall-clock time, which compares wrongly against
+// now() in SQL — the fault that put the run lease five and a half hours out.
 export const infraPlans = pgTable("infra_plans", {
   id: bigserial("id", { mode: 'number' }).primaryKey(),
   organizationId: organizationId(),
@@ -790,8 +793,8 @@ export const infraPlans = pgTable("infra_plans", {
   templateSourceRunId: integer("template_source_run_id"),
   templateUseCount: integer("template_use_count").notNull().default(0),
   createdByUserId: integer("created_by_user_id"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const infraPlanNodes = pgTable("infra_plan_nodes", {
@@ -810,7 +813,7 @@ export const infraPlanNodes = pgTable("infra_plan_nodes", {
   requiresApproval: boolean("requires_approval").notNull().default(false),
   estimatedMonthlyCost: numeric("estimated_monthly_cost", { precision: 14, scale: 2 }),
   standardStepId: integer("standard_step_id"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const infraRuns = pgTable("infra_runs", {
@@ -835,10 +838,10 @@ export const infraRuns = pgTable("infra_runs", {
   // against now() was off by the session offset. See migration 0013.
   leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
   startedByUserId: integer("started_by_user_id"),
-  startedAt: timestamp("started_at"),
-  finishedAt: timestamp("finished_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const infraRunNodes = pgTable("infra_run_nodes", {
@@ -850,9 +853,9 @@ export const infraRunNodes = pgTable("infra_run_nodes", {
   attempts: integer("attempts").notNull().default(0),
   error: text("error"),
   outputs: jsonb("outputs"),
-  startedAt: timestamp("started_at"),
-  finishedAt: timestamp("finished_at"),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const infraEvents = pgTable("infra_events", {
@@ -868,7 +871,7 @@ export const infraEvents = pgTable("infra_events", {
   message: text("message").notNull(),
   data: jsonb("data"),
   sequence: integer("sequence").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const infraApprovals = pgTable("infra_approvals", {
@@ -887,9 +890,9 @@ export const infraApprovals = pgTable("infra_approvals", {
   decidedByUserId: integer("decided_by_user_id"),
   decidedBy: varchar("decided_by", { length: 255 }),
   decisionReason: text("decision_reason"),
-  decidedAt: timestamp("decided_at"),
-  expiresAt: timestamp("expires_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const standardSteps = pgTable("standard_steps", {
@@ -914,9 +917,9 @@ export const standardSteps = pgTable("standard_steps", {
   validationStatus: varchar("validation_status", { length: 20 }).notNull().default('draft'),
   usageCount: integer("usage_count").notNull().default(0),
   successCount: integer("success_count").notNull().default(0),
-  lastValidatedAt: timestamp("last_validated_at"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const docSources = pgTable("doc_sources", {
@@ -928,9 +931,9 @@ export const docSources = pgTable("doc_sources", {
   url: text("url").notNull(),
   docVersion: varchar("doc_version", { length: 64 }),
   excerpt: text("excerpt"),
-  retrievedAt: timestamp("retrieved_at").notNull().defaultNow(),
+  retrievedAt: timestamp("retrieved_at", { withTimezone: true }).notNull().defaultNow(),
   runId: integer("run_id"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const infraDeployments = pgTable("infra_deployments", {
@@ -950,8 +953,8 @@ export const infraDeployments = pgTable("infra_deployments", {
   stateRef: text("state_ref"),
   durationSeconds: integer("duration_seconds"),
   status: varchar("status", { length: 32 }).notNull().default('active'),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export type InfraPlan = typeof infraPlans.$inferSelect;
