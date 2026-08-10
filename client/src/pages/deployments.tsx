@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { Link } from "wouter";
 import {
-  Server, Trash2, Loader2, ExternalLink, DollarSign, CheckCircle2, Archive, FlaskConical,
+  Server, Trash2, Loader2, ExternalLink, DollarSign, CheckCircle2, Archive, FlaskConical, AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -25,8 +25,11 @@ export default function DeploymentsPage() {
   const { data, isLoading } = useDeployments();
   const deployments = data?.deployments ?? [];
 
-  const active = deployments.filter((d) => d.status === 'active');
-  const past = deployments.filter((d) => d.status !== 'active');
+  // 'partial' is a run that created resources and did not finish. Those
+  // resources exist and bill, so it belongs with the live ones — putting it
+  // under "Removed" would hide the case most in need of attention.
+  const active = deployments.filter((d) => d.status === 'active' || d.status === 'partial');
+  const past = deployments.filter((d) => d.status !== 'active' && d.status !== 'partial');
 
   return (
     <div className="space-y-6">
@@ -57,7 +60,7 @@ export default function DeploymentsPage() {
       {active.length > 0 && (
         <section className="space-y-3">
           <h2 className="text-sm font-medium text-muted-foreground">
-            Live — {active.length} deployment{active.length === 1 ? '' : 's'}
+            In your account — {active.length} deployment{active.length === 1 ? '' : 's'}
           </h2>
           {active.map((d) => <DeploymentRow key={d.id} deployment={d} />)}
         </section>
@@ -81,7 +84,8 @@ function DeploymentRow({ deployment }: { deployment: Deployment }) {
   const [confirming, setConfirming] = useState(false);
   const teardown = useStartTeardown();
 
-  const live = deployment.status === 'active';
+  const partial = deployment.status === 'partial';
+  const live = deployment.status === 'active' || partial;
   const simulated = deployment.executionMode === 'simulate';
   const cost = Number(deployment.estimatedMonthlyCost);
 
@@ -103,9 +107,15 @@ function DeploymentRow({ deployment }: { deployment: Deployment }) {
           <div className="min-w-0">
             <CardTitle className="text-base flex flex-wrap items-center gap-2">
               {deployment.name}
-              {live
-                ? <Badge className="gap-1"><CheckCircle2 className="h-3 w-3" /> live</Badge>
-                : <Badge variant="secondary">{deployment.status}</Badge>}
+              {partial
+                ? (
+                  <Badge variant="destructive" className="gap-1">
+                    <AlertTriangle className="h-3 w-3" /> incomplete
+                  </Badge>
+                )
+                : live
+                  ? <Badge className="gap-1"><CheckCircle2 className="h-3 w-3" /> live</Badge>
+                  : <Badge variant="secondary">{deployment.status}</Badge>}
               {simulated && (
                 <Badge variant="outline" className="gap-1">
                   <FlaskConical className="h-3 w-3" /> simulated
@@ -129,7 +139,15 @@ function DeploymentRow({ deployment }: { deployment: Deployment }) {
         </div>
       </CardHeader>
 
-      <CardContent className="flex flex-wrap items-center gap-2">
+      <CardContent className="space-y-3">
+        {partial && (
+          <p className="text-sm rounded-md border border-destructive/50 bg-destructive/10 p-3">
+            This deployment did not finish. The resources listed above were created and are billing; the rest were
+            not. Resume the run to continue, or tear it down to remove what exists.
+          </p>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
         {deployment.runId != null && (
           <Button asChild variant="outline" size="sm" className="gap-2">
             <Link href={`/infra-agent?run=${deployment.runId}`}>
@@ -158,6 +176,7 @@ function DeploymentRow({ deployment }: { deployment: Deployment }) {
             </Button>
           )
         )}
+        </div>
       </CardContent>
     </Card>
   );

@@ -452,6 +452,11 @@ export async function advance(runId: number): Promise<AdvanceResult> {
         // failure of the run so it cannot be mistaken for a completed stage.
         return failRun(runId, err.message);
       }
+
+      // An apply can fail having created some of its resources. Whatever
+      // reached the account is recorded before the failure is reported, so the
+      // teardown path can find it.
+      await recordWhatExists(runId, run.planId, plan, workspace, run.executionMode, role, 'partial');
       // Retrying an apply means re-planning first, never re-running the saved
       // plan: after a partial apply the saved plan describes a world that no
       // longer exists. Returning done:false sends the worker back through the
@@ -463,6 +468,10 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     await db.update(infraRuns)
       .set({ resourcesCreated: sql`${infraRuns.resourcesCreated} + ${stage.nodeKeys.length}`, updatedAt: new Date() })
       .where(eq(infraRuns.id, runId));
+
+    // Something now exists in the account, so it becomes visible immediately —
+    // not when the run eventually finishes, which it may never do.
+    await recordWhatExists(runId, run.planId, plan, workspace, run.executionMode, role, 'partial');
 
     await appendEvent({
       runId,
@@ -595,6 +604,64 @@ async function pendingOrNewApproval(runId: number, stage: Stage, destructiveCoun
   return created;
 }
 
+/**
+ * Records what a run has built, whether or not it has finished.
+ *
+ * Written the moment resources first exist rather than only on success. A run
+ * that created a VPC, a NAT gateway and a database and then failed used to
+ * leave no deployment row at all — so real, billing infrastructure existed in
+ * the account and the Deployments page showed nothing. That is the worst
+ * possible moment for it to be invisible, because a half-built environment is
+ * exactly what someone needs to find in order to remove it.
+ *
+ * Upserted on runId: one run, one deployment, whose status moves partial ->
+ * active as it completes.
+ */
+async function upsertDeployment(input: {
+  runId: number;
+  planId: number;
+  plan: typeof infraPlans.$inferSelect;
+  workspace: string;
+  executionMode: string;
+  addresses: string[];
+  status: 'partial' | 'active';
+  durationSeconds?: number | null;
+}): Promise<void> {
+  const organizationId = currentOrgId();
+
+  const [existing] = await db.select({ id: infraDeployments.id }).from(infraDeployments)
+    .where(and(eq(infraDeployments.runId, input.runId), eq(infraDeployments.organizationId, organizationId)))
+    .limit(1);
+
+  const values = {
+    name: input.plan.name,
+    provider: input.plan.provider ?? 'aws',
+    region: input.plan.region,
+    environment: input.plan.environment,
+    executionMode: input.executionMode,
+    resources: input.addresses as never,
+    resourceCount: input.addresses.length,
+    estimatedMonthlyCost: input.plan.estimatedMonthlyCost,
+    // A reference, never the state itself: state contains resource secrets.
+    stateRef: input.workspace,
+    durationSeconds: input.durationSeconds ?? null,
+    status: input.status,
+    updatedAt: new Date(),
+  };
+
+  if (existing) {
+    await db.update(infraDeployments).set(values).where(eq(infraDeployments.id, existing.id));
+    return;
+  }
+
+  await db.insert(infraDeployments).values({
+    organizationId,
+    planId: input.planId,
+    runId: input.runId,
+    ...values,
+  });
+}
+
 async function completeRun(
   runId: number,
   planId: number,
@@ -664,22 +731,12 @@ async function completeRun(
   const [run] = await db.select().from(infraRuns).where(eq(infraRuns.id, runId));
   const durationSeconds = run?.startedAt ? Math.round((Date.now() - run.startedAt.getTime()) / 1000) : null;
 
-  await db.insert(infraDeployments).values({
-    organizationId: currentOrgId(),
-    planId,
-    runId,
-    name: plan.name,
-    provider: plan.provider ?? 'aws',
-    region: plan.region,
-    environment: plan.environment,
+  await upsertDeployment({
+    runId, planId, plan, workspace,
     executionMode: run?.executionMode ?? 'live',
-    resources: addresses as never,
-    resourceCount: addresses.length,
-    estimatedMonthlyCost: plan.estimatedMonthlyCost,
-    // A reference, never the state itself: state contains resource secrets.
-    stateRef: workspace,
-    durationSeconds,
+    addresses,
     status: 'active',
+    durationSeconds,
   });
 
   await setRunStatus(runId, 'succeeded', { finishedAt: new Date() });
@@ -830,6 +887,43 @@ async function bumpAttempts(runId: number, nodeKeys: string[]): Promise<void> {
 }
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Records the resources currently in state against the run.
+ *
+ * Best-effort throughout: this runs on the failure path, and a bookkeeping
+ * problem must not replace the real error with its own.
+ */
+async function recordWhatExists(
+  runId: number,
+  planId: number,
+  plan: typeof infraPlans.$inferSelect,
+  workspace: string,
+  executionMode: string,
+  role: Awaited<ReturnType<typeof authorizingRole>>,
+  status: 'partial' | 'active',
+): Promise<void> {
+  // A simulation created nothing, so there is nothing to record.
+  if (executionMode === 'simulate') return;
+
+  try {
+    const organizationId = currentOrgId();
+    const listed = await runTool<{ addresses: string[] }>('terraform_state_list', {
+      workspacePath: workspace,
+      cloudAccountId: plan.cloudAccountId!,
+    }, { runId, organizationId, role, approval: WAIVED_LOCAL });
+
+    if (listed.addresses.length === 0) return;
+
+    await upsertDeployment({
+      runId, planId, plan, workspace, executionMode,
+      addresses: listed.addresses,
+      status,
+    });
+  } catch (err) {
+    console.warn(`[Engine] could not record what run ${runId} has built:`, (err as Error)?.message ?? err);
+  }
+}
 
 async function failRun(runId: number, error: string): Promise<AdvanceResult> {
   await setRunStatus(runId, 'failed', { finishedAt: new Date(), error });

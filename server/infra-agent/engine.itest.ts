@@ -59,7 +59,7 @@ vi.mock('./tools/credentials', () => ({
 }));
 
 import { db, pool } from '../db';
-import { organizations, users, infraPlans, infraPlanNodes, infraRuns, infraRunNodes, infraApprovals } from '@shared/schema';
+import { organizations, users, infraPlans, infraPlanNodes, infraRuns, infraRunNodes, infraApprovals, infraDeployments } from '@shared/schema';
 import { runAsSystem, runWithTenant } from '../tenant-context';
 import { createRun, advance, decideApproval } from './engine';
 import { compileArchitecture } from './compiler';
@@ -696,6 +696,79 @@ describe('resources the mapper cannot build', () => {
         if (status === 'unsupported') expect(status).not.toBe('applied');
         expect(key).toBeTruthy();
       }
+    });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+
+describe('a run that built something and then stopped', () => {
+  const deploymentFor = async (runId: number) =>
+    (await db.select().from(infraDeployments).where(eq(infraDeployments.runId, runId)))[0];
+
+  async function driveApproving(runId: number, rounds = 12) {
+    for (let i = 0; i < rounds; i++) {
+      const r = await drive(runId);
+      if (r.done) return r;
+      if (r.status === 'awaiting_approval' && r.awaitingApprovalRef) {
+        await decideApproval(r.awaitingApprovalRef, 'approved');
+        continue;
+      }
+      return r;
+    }
+    throw new Error('run did not settle');
+  }
+
+  it('is visible on the deployments list even though it failed', async () => {
+    // Real, billing infrastructure existed and no deployment row was written,
+    // so the one screen that answers "what is running?" showed nothing. That is
+    // the worst moment for it to be invisible: a half-built environment is
+    // precisely what someone needs to find in order to remove it.
+    await asOperator(async () => {
+      tfState.addresses = ['aws_vpc.network_vpc', 'aws_subnet.network_subnet_public_a'];
+
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      // Let the first stage apply, then make everything after it fail.
+      await drive(runId);
+      const first = await runRow(runId);
+      if (first.status === 'awaiting_approval') {
+        const [a] = await db.select().from(infraApprovals).where(eq(infraApprovals.runId, runId));
+        await decideApproval(a.ref, 'approved');
+      }
+      await drive(runId);
+
+      tfState.applyFails = true;
+      tfState.error = 'InvalidParameterValue: not a valid configuration';
+      await driveApproving(runId).catch(() => undefined);
+
+      const deployment = await deploymentFor(runId);
+      expect(deployment).toBeTruthy();
+      expect(deployment.resourceCount).toBeGreaterThan(0);
+    });
+  });
+
+  it('records a simulation as nothing, because it built nothing', async () => {
+    await asOperator(async () => {
+      tfState.addresses = ['aws_vpc.network_vpc'];
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'simulate' });
+      await driveApproving(runId);
+
+      const deployment = await deploymentFor(runId);
+      // A simulation that produced a deployment row would say resources exist
+      // when none do.
+      expect(deployment?.status).not.toBe('partial');
+    });
+  });
+
+  it('keeps one row per run as it moves from partial to active', async () => {
+    await asOperator(async () => {
+      tfState.addresses = ['aws_vpc.network_vpc'];
+      const runId = await createRun({ planId: await seedPlan(), executionMode: 'live' });
+      await driveApproving(runId);
+
+      const rows = await db.select().from(infraDeployments).where(eq(infraDeployments.runId, runId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].status).toBe('active');
     });
   });
 });
