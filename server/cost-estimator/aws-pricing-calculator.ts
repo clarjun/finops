@@ -6,6 +6,7 @@
 import type { ArchitectureLayer } from './architecture-generator';
 import { fetchEC2Pricing, fetchRDSPricing, fetchElastiCachePricing } from './aws-price-list-fetcher';
 import { priceLayer, buildUsageModel, INSTANCE_PRICED, type UsageModel } from './service-pricing';
+import { loadRateCard, type RateCard } from './rate-card';
 
 // Storage pricing (per GB/month) - relatively stable, can be hardcoded
 const STORAGE_PRICING = {
@@ -52,6 +53,15 @@ export interface CostEstimate {
   usage: UsageModel;
   /** Services excluded from the total because they could not be priced. */
   unpriced: string[];
+  /** Where the rates came from, so the reader can judge how current they are. */
+  pricing: {
+    region: string;
+    fetchedAt: string;
+    liveRates: number;
+    totalRates: number;
+    /** Rates that fell back to a dated constant, by name. */
+    staleRates: string[];
+  };
 }
 
 async function calculateEC2Cost(layer: ArchitectureLayer, region: string): Promise<number> {
@@ -126,6 +136,11 @@ export async function calculateCosts(
   const usage = buildUsageModel(assumptions);
   const unpricedServices: string[] = [];
 
+  // Rates come from AWS for the region being priced. A model asked for a price
+  // would answer from training data of unknown vintage; this asks the party
+  // that sets it. Failure degrades to dated constants, and says which.
+  const card: RateCard = await loadRateCard(region);
+
   console.log(`[Pricing] ${architecture.length} services in ${region}, ` +
     `${usage.dailyActiveUsers} daily users -> ${usage.monthlyRequests.toLocaleString()} requests/month`);
 
@@ -141,7 +156,7 @@ export async function calculateCosts(
         return { ...layer, monthlyCost: round(cost), costBasis: basis };
       }
 
-      const components = priceLayer(layer as never, usage);
+      const components = priceLayer(layer as never, usage, card);
 
       if (components.length === 0) {
         // Not zero. A service nobody could price is reported as such and left
@@ -182,7 +197,24 @@ export async function calculateCosts(
   const totalCost = round(Object.values(breakdown).reduce((sum, v) => sum + v, 0));
   console.log(`[Pricing] total $${totalCost}/month, ${unpricedServices.length} service(s) unpriced`);
 
-  return { architecture: enriched, totalCost, breakdown, usage, unpriced: unpricedServices };
+  const staleRates = Object.entries(card.rates)
+    .filter(([, r]) => r.source === 'fallback')
+    .map(([k]) => k);
+
+  return {
+    architecture: enriched,
+    totalCost,
+    breakdown,
+    usage,
+    unpriced: unpricedServices,
+    pricing: {
+      region: card.region,
+      fetchedAt: card.fetchedAt,
+      liveRates: Object.keys(card.rates).length - staleRates.length,
+      totalRates: Object.keys(card.rates).length,
+      staleRates,
+    },
+  };
 }
 
 /** EC2, RDS, ElastiCache and load balancers, whose rate depends on a size. */

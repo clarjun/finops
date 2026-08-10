@@ -15,6 +15,7 @@
  * rather than free.
  */
 import type { ArchitectureLayer } from './architecture-generator';
+import type { RateCard } from './rate-card';
 import {
   buildUsageModel, priceApiGateway, priceCloudFront, priceCloudWatch, priceDynamoDb,
   priceLambda, priceRoute53, priceS3, priceSqs, priceWaf, priceUnknown,
@@ -81,11 +82,11 @@ const MATCHERS: Array<{
   key: string;
   category: Category;
   test: RegExp;
-  price: (layer: LayerExtras, usage: UsageModel) => PricedLine;
+  price: (layer: LayerExtras, usage: UsageModel, card?: RateCard) => PricedLine;
 }> = [
   {
     key: 'lambda', category: 'compute', test: /\blambda\b/i,
-    price: (l, u) => priceLambda(u, {
+    price: (l, u, card) => priceLambda(u, { card, 
       memoryMb: pick(l, 'memoryMb'),
       durationMs: pick(l, 'durationMs'),
       provisionedConcurrency: pick(l, 'provisionedConcurrency'),
@@ -93,43 +94,43 @@ const MATCHERS: Array<{
   },
   {
     key: 'api-gateway', category: 'network', test: /\bapi\s*gateway\b/i,
-    price: (l, u) => priceApiGateway(u, { type: /\brest\b/i.test(l.configuration ?? '') ? 'rest' : 'http' }),
+    price: (l, u, card) => priceApiGateway(u, { card,  type: /\brest\b/i.test(l.configuration ?? '') ? 'rest' : 'http' }),
   },
   {
     key: 'dynamodb', category: 'database', test: /\bdynamo\s*db\b/i,
-    price: (l, u) => priceDynamoDb(u, {
+    price: (l, u, card) => priceDynamoDb(u, { card, 
       storageGb: pick(l, 'storageSize'),
       pitr: l.pitr ?? /\bpitr\b|point-in-time/i.test(l.configuration ?? ''),
     }),
   },
   {
     key: 'sqs', category: 'other', test: /\bsqs\b|simple queue/i,
-    price: (_l, u) => priceSqs(u),
+    price: (_l, u, card) => priceSqs(u, { card }),
   },
   {
     // Matches "AWS WAF" and "WAF"; the word boundary keeps it off "software".
     key: 'waf', category: 'other', test: /\bwaf\b|web application firewall/i,
-    price: (l, u) => priceWaf(u, { managedRuleGroups: pick(l, 'managedRuleGroups') }),
+    price: (l, u, card) => priceWaf(u, { card,  managedRuleGroups: pick(l, 'managedRuleGroups') }),
   },
   {
     key: 'cloudwatch', category: 'other', test: /\bcloud\s*watch\b|\bmonitoring\b/i,
-    price: (l) => priceCloudWatch({ logsGbPerMonth: pick(l, 'logsGb') ?? pick(l, 'storageSize') }),
+    price: (l, _u, card) => priceCloudWatch({ card,  logsGbPerMonth: pick(l, 'logsGb') ?? pick(l, 'storageSize') }),
   },
   {
     // "Route 53" with a space is how AWS writes it, and is what the old
     // substring test for "route53" could never match.
     key: 'route53', category: 'network', test: /\broute\s*53\b/i,
-    price: (l, u) => priceRoute53(u, { healthChecks: pick(l, 'healthChecks') }),
+    price: (l, u, card) => priceRoute53(u, { card,  healthChecks: pick(l, 'healthChecks') }),
   },
   {
     key: 'cloudfront', category: 'network', test: /\bcloud\s*front\b|\bcdn\b/i,
-    price: (l, u) => priceCloudFront(u, { dataTransferGb: pick(l, 'dataTransfer') }),
+    price: (l, u, card) => priceCloudFront(u, { card,  dataTransferGb: pick(l, 'dataTransfer') }),
   },
   {
     // Last of the S3 family so the more specific bucket-ish matches above win
     // their own components first; this one only ever prices storage.
     key: 's3', category: 'storage', test: /\bs3\b|simple storage/i,
-    price: (l) => priceS3({ storageGb: pick(l, 'storageSize') }),
+    price: (l, _u, card) => priceS3({ card,  storageGb: pick(l, 'storageSize') }),
   },
 ];
 
@@ -142,12 +143,12 @@ export const INSTANCE_PRICED = /\bec2\b|\brds\b|\baurora\b|\belasticache\b|\bred
  * Returns every component it recognised. An empty result means nothing was
  * recognised, and the caller must present that as unpriced rather than free.
  */
-export function priceLayer(layer: LayerExtras, usage: UsageModel): PricedComponent[] {
+export function priceLayer(layer: LayerExtras, usage: UsageModel, card?: RateCard): PricedComponent[] {
   const text = `${layer.service} ${layer.layer ?? ''}`;
 
   const components = MATCHERS
     .filter((m) => m.test.test(text))
-    .map((m) => ({ service: m.key, category: m.category, line: m.price(layer, usage) }));
+    .map((m) => ({ service: m.key, category: m.category, line: m.price(layer, usage, card) }));
 
   return components;
 }

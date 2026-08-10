@@ -18,7 +18,18 @@
  * less honest than a dated constant that says it is one.
  */
 
-/** us-east-1 on-demand list prices, taken 2026-06. */
+import type { RateCard } from './rate-card';
+
+/**
+ * Resolves a rate: the fetched price when there is one, the dated constant
+ * otherwise. Passing no card is the offline path and uses constants throughout.
+ */
+function rate(card: RateCard | undefined, key: keyof RateCard['rates'], fallback: number): number {
+  const found = card?.rates?.[key];
+  return typeof found?.value === 'number' && found.value > 0 ? found.value : fallback;
+}
+
+/** us-east-1 on-demand list prices, taken 2026-06. Superseded by a live card. */
 export const RATES = {
   lambda: {
     perRequest: 0.20 / 1_000_000,
@@ -108,8 +119,10 @@ const unpriced = (basis: string): PricedLine => ({ cost: null, basis });
 /* -------------------------------------------------------------------------- */
 
 export function priceLambda(usage: UsageModel, opts: {
-  memoryMb?: number; durationMs?: number; provisionedConcurrency?: number;
+  memoryMb?: number; durationMs?: number; provisionedConcurrency?: number; card?: RateCard;
 } = {}): PricedLine {
+  const perRequest = rate(opts.card, 'lambdaRequest', RATES.lambda.perRequest);
+  const perGbSecond = rate(opts.card, 'lambdaGbSecond', RATES.lambda.perGbSecond);
   const memoryGb = (opts.memoryMb ?? 512) / 1024;
   const durationSec = (opts.durationMs ?? 200) / 1000;
 
@@ -117,7 +130,7 @@ export function priceLambda(usage: UsageModel, opts: {
   const gbSeconds = usage.monthlyRequests * memoryGb * durationSec;
   const billableGbSeconds = Math.max(0, gbSeconds - RATES.lambda.freeGbSeconds);
 
-  let cost = billableRequests * RATES.lambda.perRequest + billableGbSeconds * RATES.lambda.perGbSecond;
+  let cost = billableRequests * perRequest + billableGbSeconds * perGbSecond;
 
   const parts = [
     `${usage.monthlyRequests.toLocaleString('en-US')} invocations/month at ${opts.memoryMb ?? 512} MB for ${opts.durationMs ?? 200} ms`,
@@ -136,25 +149,31 @@ export function priceLambda(usage: UsageModel, opts: {
   return priced(cost, parts.filter(Boolean).join(', '));
 }
 
-export function priceApiGateway(usage: UsageModel, opts: { type?: 'http' | 'rest' } = {}): PricedLine {
+export function priceApiGateway(usage: UsageModel, opts: { type?: 'http' | 'rest'; card?: RateCard } = {}): PricedLine {
   const rest = opts.type === 'rest';
-  const rate = rest ? RATES.apiGateway.restPerMillion : RATES.apiGateway.httpPerMillion;
-  const cost = (usage.monthlyRequests / 1_000_000) * rate;
-  return priced(cost, `${usage.monthlyRequests.toLocaleString('en-US')} requests/month on ${rest ? 'REST' : 'HTTP'} API at $${rate}/million`);
+  const perRequest = rest
+    ? rate(opts.card, 'apiGatewayRestRequest', RATES.apiGateway.restPerMillion / 1_000_000)
+    : rate(opts.card, 'apiGatewayHttpRequest', RATES.apiGateway.httpPerMillion / 1_000_000);
+  const cost = usage.monthlyRequests * perRequest;
+  const perMillion = (perRequest * 1_000_000).toFixed(2);
+  return priced(cost, `${usage.monthlyRequests.toLocaleString('en-US')} requests/month on ${rest ? 'REST' : 'HTTP'} API at $${perMillion}/million`);
 }
 
 export function priceDynamoDb(usage: UsageModel, opts: {
-  storageGb?: number; writesPerRequest?: number; readsPerRequest?: number; pitr?: boolean;
+  storageGb?: number; writesPerRequest?: number; readsPerRequest?: number; pitr?: boolean; card?: RateCard;
 } = {}): PricedLine {
+  const perWrite = rate(opts.card, 'dynamoWriteUnit', RATES.dynamodb.writeUnitPerMillion / 1_000_000);
+  const perRead = rate(opts.card, 'dynamoReadUnit', RATES.dynamodb.readUnitPerMillion / 1_000_000);
+  const perStorageGb = rate(opts.card, 'dynamoStorageGb', RATES.dynamodb.storagePerGb);
   const storageGb = opts.storageGb ?? 1;
   // A typical read-heavy application: one write and three reads per request.
   const writes = usage.monthlyRequests * (opts.writesPerRequest ?? 1);
   const reads = usage.monthlyRequests * (opts.readsPerRequest ?? 3);
 
-  const writeCost = (writes / 1_000_000) * RATES.dynamodb.writeUnitPerMillion;
-  const readCost = (reads / 1_000_000) * RATES.dynamodb.readUnitPerMillion;
+  const writeCost = writes * perWrite;
+  const readCost = reads * perRead;
   const billableStorage = Math.max(0, storageGb - RATES.dynamodb.freeStorageGb);
-  const storageCost = billableStorage * RATES.dynamodb.storagePerGb;
+  const storageCost = billableStorage * perStorageGb;
   const pitrCost = opts.pitr ? storageGb * RATES.dynamodb.pitrPerGb : 0;
 
   const parts = [`${writes.toLocaleString('en-US')} writes and ${reads.toLocaleString('en-US')} reads/month on-demand`];
@@ -165,32 +184,36 @@ export function priceDynamoDb(usage: UsageModel, opts: {
   return priced(writeCost + readCost + storageCost + pitrCost, parts.join(', '));
 }
 
-export function priceSqs(usage: UsageModel, opts: { requestsPerAppRequest?: number } = {}): PricedLine {
+export function priceSqs(usage: UsageModel, opts: { requestsPerAppRequest?: number; card?: RateCard } = {}): PricedLine {
+  const perRequest = rate(opts.card, 'sqsRequest', RATES.sqs.perMillion / 1_000_000);
   const requests = usage.monthlyRequests * (opts.requestsPerAppRequest ?? 1);
   const billable = Math.max(0, requests - RATES.sqs.freeRequests);
-  const cost = (billable / 1_000_000) * RATES.sqs.perMillion;
+  const cost = billable * perRequest;
   return priced(cost, billable === 0
     ? `${requests.toLocaleString('en-US')} requests/month, within the 1 million always-free allowance`
     : `${requests.toLocaleString('en-US')} requests/month at $${RATES.sqs.perMillion}/million`);
 }
 
-export function priceWaf(usage: UsageModel, opts: { managedRuleGroups?: number } = {}): PricedLine {
+export function priceWaf(usage: UsageModel, opts: { managedRuleGroups?: number; card?: RateCard } = {}): PricedLine {
+  const perAcl = rate(opts.card, 'wafWebAcl', RATES.waf.webAclPerMonth);
+  const perRule = rate(opts.card, 'wafRule', RATES.waf.rulePerMonth);
   // Never free, whatever the traffic: the web ACL is billed monthly on its own.
   const rules = opts.managedRuleGroups ?? 2;
-  const cost = RATES.waf.webAclPerMonth
-    + rules * RATES.waf.rulePerMonth
+  const cost = perAcl
+    + rules * perRule
     + (usage.monthlyRequests / 1_000_000) * RATES.waf.perMillionRequests;
-  return priced(cost, `one web ACL at $${RATES.waf.webAclPerMonth}/month plus ${rules} rule group(s), and ${usage.monthlyRequests.toLocaleString('en-US')} inspected requests`);
+  return priced(cost, `one web ACL at $${perAcl}/month plus ${rules} rule group(s), and ${usage.monthlyRequests.toLocaleString('en-US')} inspected requests`);
 }
 
 export function priceCloudWatch(opts: {
-  logsGbPerMonth?: number; dashboards?: number; alarms?: number;
+  logsGbPerMonth?: number; dashboards?: number; alarms?: number; card?: RateCard;
 } = {}): PricedLine {
+  const perLogGb = rate(opts.card, 'cloudwatchLogIngestGb', RATES.cloudwatch.logIngestPerGb);
   const logsGb = opts.logsGbPerMonth ?? 3;
   const dashboards = Math.max(0, (opts.dashboards ?? 1) - RATES.cloudwatch.freeDashboards);
   const alarms = Math.max(0, (opts.alarms ?? 5) - RATES.cloudwatch.freeAlarms);
 
-  const cost = logsGb * RATES.cloudwatch.logIngestPerGb
+  const cost = logsGb * perLogGb
     + logsGb * RATES.cloudwatch.logStorePerGb
     + dashboards * RATES.cloudwatch.dashboardPerMonth
     + alarms * RATES.cloudwatch.alarmPerMonth;
@@ -198,37 +221,40 @@ export function priceCloudWatch(opts: {
   return priced(cost, `${logsGb} GB of logs ingested and stored${dashboards > 0 ? `, ${dashboards} chargeable dashboard(s)` : ''}${alarms > 0 ? `, ${alarms} chargeable alarm(s)` : ''}`);
 }
 
-export function priceRoute53(usage: UsageModel, opts: { hostedZones?: number; healthChecks?: number } = {}): PricedLine {
+export function priceRoute53(usage: UsageModel, opts: { hostedZones?: number; healthChecks?: number; card?: RateCard } = {}): PricedLine {
+  const perZone = rate(opts.card, 'route53HostedZone', RATES.route53.hostedZonePerMonth);
   const zones = opts.hostedZones ?? 1;
   const checks = opts.healthChecks ?? 0;
   // Roughly one DNS lookup per request once caching is taken into account.
   const queries = usage.monthlyRequests;
-  const cost = zones * RATES.route53.hostedZonePerMonth
+  const cost = zones * perZone
     + checks * RATES.route53.healthCheckPerMonth
     + (queries / 1_000_000) * RATES.route53.perMillionQueries;
   return priced(cost, `${zones} hosted zone(s)${checks ? `, ${checks} health check(s)` : ''}, ${queries.toLocaleString('en-US')} queries/month`);
 }
 
-export function priceCloudFront(usage: UsageModel, opts: { dataTransferGb?: number } = {}): PricedLine {
+export function priceCloudFront(usage: UsageModel, opts: { dataTransferGb?: number; card?: RateCard } = {}): PricedLine {
+  const perGb = rate(opts.card, 'cloudfrontTransferGb', RATES.cloudfront.perGbOut);
   // Requests alone are pennies; transfer is the bill. Without it the number
   // would be misleadingly small rather than merely incomplete.
   if (opts.dataTransferGb == null) {
     return unpriced('No data transfer figure was given for the CDN, so it is not priced. Transfer out is $0.085/GB.');
   }
   const gb = opts.dataTransferGb;
-  const cost = gb * RATES.cloudfront.perGbOut
+  const cost = gb * perGb
     + (usage.monthlyRequests / 10_000) * RATES.cloudfront.perTenThousandRequests;
   return priced(cost, `${gb} GB served to the internet plus ${usage.monthlyRequests.toLocaleString('en-US')} requests`);
 }
 
-export function priceS3(opts: { storageGb?: number } = {}): PricedLine {
+export function priceS3(opts: { storageGb?: number; card?: RateCard } = {}): PricedLine {
+  const perGb = rate(opts.card, 's3StorageGb', RATES.s3.standardPerGb);
   // No size given is not the same as no storage. Pricing it at zero would put a
   // service on the estimate at $0.00 for want of a number, which is the shape of
   // mistake this module exists to stop.
   if (opts.storageGb == null) {
     return unpriced('No storage size was given for this bucket, so it is not priced. Storage is $0.023/GB/month.');
   }
-  return priced(opts.storageGb * RATES.s3.standardPerGb, `${opts.storageGb} GB stored at $${RATES.s3.standardPerGb}/GB`);
+  return priced(opts.storageGb * perGb, `${opts.storageGb} GB stored at $${perGb}/GB`);
 }
 
 /** For a service nothing here knows how to price. */
