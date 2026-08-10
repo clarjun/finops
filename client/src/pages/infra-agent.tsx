@@ -24,6 +24,7 @@ import { DeploymentSummaryCard } from "@/components/infra/deployment-summary";
 import { EstimatePanel } from "@/components/infra/estimate-panel";
 import {
   useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun, useDiagnosis, usePlan,
+  useActiveRuns, type ActiveRun,
   type ClarificationQuestion, type CompileResult, type NodeStatus,
 } from "@/hooks/use-infra-agent";
 
@@ -101,10 +102,16 @@ export default function InfraAgentPage() {
     return (
       <div className="space-y-6">
         <Header />
+        {/* Anything mid-flight comes first. A run stopped for an approval had
+            no home in the product: the deployments list holds only finished
+            ones, and this screen used to say "no agent yet" — so a live
+            deployment could sit blocked with nothing able to lead anyone back
+            to it. */}
+        <ActiveRuns />
         <Card>
           <CardContent className="py-12 text-center space-y-2">
             <Rocket className="h-10 w-10 mx-auto text-muted-foreground" />
-            <p className="font-medium">No agent yet</p>
+            <p className="font-medium">Start a new deployment</p>
             <p className="text-sm text-muted-foreground max-w-md mx-auto">
               Describe your application in the Cost Estimator and choose <strong>Create your agent</strong>.
               The agent takes the estimate, designs a deployable architecture and builds it with your approval.
@@ -530,5 +537,61 @@ function Diagnosis({ runId }: { runId: number }) {
         </a>
       )}
     </div>
+  );
+}
+
+/** Deployments that have not finished, so they can be found and continued. */
+function ActiveRuns() {
+  const { data } = useActiveRuns();
+  const runs = data?.runs ?? [];
+
+  if (runs.length === 0) return null;
+
+  const waiting = runs.filter((r) => r.status === 'awaiting_approval' || r.status === 'paused');
+
+  return (
+    <Card className={waiting.length > 0 ? 'border-yellow-500/60' : undefined}>
+      <CardHeader>
+        <CardTitle className="text-base">
+          {waiting.length > 0
+            ? `${waiting.length} deployment${waiting.length === 1 ? '' : 's'} waiting for you`
+            : `${runs.length} deployment${runs.length === 1 ? '' : 's'} in progress`}
+        </CardTitle>
+        <CardDescription>
+          {waiting.length > 0
+            ? 'Stopped and cannot continue until someone decides.'
+            : 'Running now; progress is live on each.'}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {runs.map((r) => <ActiveRunRow key={r.id} run={r} />)}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ActiveRunRow({ run }: { run: ActiveRun }) {
+  const needsYou = run.status === 'awaiting_approval' || run.status === 'paused';
+
+  return (
+    <a
+      href={`/infra-agent?run=${run.id}`}
+      className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 hover:bg-muted/40"
+      data-testid={`active-run-${run.id}`}
+    >
+      <span className="min-w-0">
+        <span className="font-medium text-sm">{run.name ?? `Run ${run.id}`}</span>
+        <span className="text-xs text-muted-foreground block">
+          run {run.id}
+          {run.mode === 'destroy' ? ' · teardown' : ''}
+          {run.executionMode === 'simulate' ? ' · simulation' : ''}
+          {run.startedAt ? ` · started ${new Date(run.startedAt).toLocaleString()}` : ''}
+        </span>
+      </span>
+      <Badge variant={needsYou ? 'default' : 'secondary'} className="gap-1 shrink-0">
+        {needsYou ? <ShieldAlert className="h-3 w-3" /> : <Loader2 className="h-3 w-3 animate-spin" />}
+        {run.status.replace(/_/g, ' ')}
+      </Badge>
+    </a>
   );
 }

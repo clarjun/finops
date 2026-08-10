@@ -421,3 +421,28 @@ export function useDeployments() {
     queryFn: () => json('/api/infra/deployments'),
   });
 }
+
+export interface ActiveRun {
+  id: number;
+  planId: number;
+  status: RunStatus;
+  mode: string;
+  executionMode: string;
+  startedAt: string | null;
+  name: string | null;
+}
+
+/**
+ * Runs that still need something to happen.
+ *
+ * Polled, because the thing this answers — "is anything waiting for me?" — is
+ * only useful if it is current.
+ */
+export function useActiveRuns(enabled = true) {
+  return useQuery<{ runs: ActiveRun[] }>({
+    queryKey: ['/api/infra/runs/active'],
+    queryFn: () => json('/api/infra/runs/active'),
+    enabled,
+    refetchInterval: 10_000,
+  });
+}

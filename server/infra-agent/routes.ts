@@ -16,7 +16,7 @@
  */
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import {
   infraPlans, infraPlanNodes, infraRuns, infraRunNodes, infraApprovals, infraDeployments, cloudAccounts,
@@ -260,6 +260,42 @@ export function registerInfraAgentRoutes(app: Express) {
 
       res.json({ runId, executionMode: body.executionMode, streamUrl: `/api/infra/runs/${runId}/stream` });
     } catch (err) { fail(res, err, 'start the deployment run'); }
+  });
+
+  /**
+   * Runs that still need something to happen.
+   *
+   * A deployment waiting for approval belonged to no screen: the deployments
+   * list only holds finished ones, and the console showed "no agent yet" until
+   * it was handed a run id. A live run could therefore be blocked indefinitely
+   * with nothing in the product able to lead anyone back to it.
+   *
+   * Registered before /runs/:id so "active" is not read as an id.
+   */
+  app.get('/api/infra/runs/active', async (_req, res) => {
+    try {
+      const rows = await db.select({
+        id: infraRuns.id,
+        planId: infraRuns.planId,
+        status: infraRuns.status,
+        mode: infraRuns.mode,
+        executionMode: infraRuns.executionMode,
+        startedAt: infraRuns.startedAt,
+        name: infraPlans.name,
+      })
+        .from(infraRuns)
+        .leftJoin(infraPlans, eq(infraPlans.id, infraRuns.planId))
+        .where(and(
+          eq(infraRuns.organizationId, currentOrgId()),
+          inArray(infraRuns.status, [
+            'queued', 'initializing', 'planning', 'applying', 'verifying', 'awaiting_approval', 'paused',
+          ]),
+        ))
+        .orderBy(desc(infraRuns.id))
+        .limit(25);
+
+      res.json({ runs: rows });
+    } catch (err) { fail(res, err, 'list active runs'); }
   });
 
   app.get('/api/infra/runs/:id', async (req, res) => {
