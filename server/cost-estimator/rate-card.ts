@@ -75,8 +75,30 @@ const FALLBACK: Record<RateKey, { value: number; unit: string }> = {
 /** When these constants were taken, so a fallback can say how old it is. */
 const FALLBACK_AS_OF = '2026-06';
 
+/**
+ * Region prefixes as they appear in a usagetype.
+ *
+ * Some services identify the region only there — WAF's web ACL is
+ * USE1-WebACLV2 in Virginia and APS1-WebACLV2 in Mumbai — so a location filter
+ * alone returns every region's product.
+ */
+const USAGE_PREFIX: Record<string, string> = {
+  'us-east-1': 'USE1', 'us-east-2': 'USE2', 'us-west-1': 'USW1', 'us-west-2': 'USW2',
+  'eu-west-1': 'EUW1', 'eu-west-2': 'EUW2', 'eu-central-1': 'EUC1',
+  'ap-south-1': 'APS3', 'ap-southeast-1': 'APS1', 'ap-southeast-2': 'APS2', 'ap-northeast-1': 'APN1',
+};
+
+interface Lookup {
+  service: string;
+  filters: Array<[string, string]>;
+  /** Applied after fetching, since the API has no "not equals". */
+  usageType?: (usagetype: string, region: string) => boolean;
+  /** Global services price once for the world and reject a location filter. */
+  global?: boolean;
+}
+
 /** How each rate is found in the Price List API. */
-const LOOKUPS: Partial<Record<RateKey, { service: string; filters: Array<[string, string]> }>> = {
+const LOOKUPS: Partial<Record<RateKey, Lookup>> = {
   lambdaRequest: { service: 'AWSLambda', filters: [['group', 'AWS-Lambda-Requests']] },
   lambdaGbSecond: { service: 'AWSLambda', filters: [['group', 'AWS-Lambda-Duration']] },
   dynamoWriteUnit: { service: 'AmazonDynamoDB', filters: [['groupDescription', 'DynamoDB PayPerRequest Write Request Units']] },
@@ -84,8 +106,61 @@ const LOOKUPS: Partial<Record<RateKey, { service: string; filters: Array<[string
   s3StorageGb: { service: 'AmazonS3', filters: [['volumeType', 'Standard'], ['storageClass', 'General Purpose']] },
   apiGatewayHttpRequest: { service: 'AmazonApiGateway', filters: [['operation', 'ApiGatewayHttpApi']] },
   apiGatewayRestRequest: { service: 'AmazonApiGateway', filters: [['operation', 'ApiGatewayRequest']] },
-  sqsRequest: { service: 'AWSQueueService', filters: [['group', 'SQS-APIRequest-Standard']] },
   cloudwatchLogIngestGb: { service: 'AmazonCloudWatch', filters: [['group', 'Ingested Logs']] },
+
+  // Storage past the free allowance. The begin=0 tier is the free 25 GB and
+  // prices at zero, so the applicable rate is deliberately not the first tier
+  // here — the allowance is modelled separately in the pricing functions.
+  dynamoStorageGb: {
+    service: 'AmazonDynamoDB',
+    filters: [['productFamily', 'Database Storage']],
+    // Infrequent Access is a different storage class at a different price.
+    usageType: (u) => u.endsWith('TimedStorage-ByteHrs') && !u.includes('IA-'),
+  },
+
+  sqsRequest: {
+    service: 'AWSQueueService',
+    filters: [['queueType', 'Standard']],
+    usageType: (u) => /Requests/i.test(u) && !/FIFO/i.test(u),
+  },
+
+  // Route 53 bills globally; a location filter matches nothing.
+  route53HostedZone: {
+    service: 'AmazonRoute53',
+    filters: [['productFamily', 'DNS Zone']],
+    usageType: (u) => u === 'HostedZone',
+    global: true,
+  },
+
+  // CloudFront prices by the edge that serves the byte, not by a region the
+  // distribution lives in. The US/Europe rate is the representative one and is
+  // labelled as such rather than presented as region-specific.
+  cloudfrontTransferGb: {
+    service: 'AmazonCloudFront',
+    filters: [['transferType', 'CloudFront Outbound'], ['fromLocation', 'United States']],
+    global: true,
+  },
+
+  // ShieldProtected variants price at zero because Shield Advanced includes
+  // WAF. Taking the cheapest row would report a firewall as free — the exact
+  // mistake this estimator was repaired for.
+  wafWebAcl: {
+    service: 'awswaf',
+    filters: [],
+    usageType: (u, region) => u === `${USAGE_PREFIX[region] ?? 'USE1'}-WebACLV2`,
+  },
+  wafRule: {
+    service: 'awswaf',
+    filters: [],
+    usageType: (u, region) => u === `${USAGE_PREFIX[region] ?? 'USE1'}-RuleV2`,
+  },
+  wafRequest: {
+    service: 'awswaf',
+    filters: [],
+    // Tier0 is the base capacity tier; the higher tiers are for larger WCU
+    // allocations that a default rule set does not use.
+    usageType: (u, region) => u === `${USAGE_PREFIX[region] ?? 'USE1'}-RequestV2-Tier0`,
+  },
 };
 
 const CACHE_MS = 24 * 60 * 60 * 1000;
@@ -121,7 +196,10 @@ export const regionName = (region: string): string => REGION_NAMES[region] ?? RE
  * ordinary size actually pays. Rows priced at zero describe a free allowance
  * rather than a rate, and are skipped; the allowances are modelled separately.
  */
-function extractRate(priceListJson: string[]): { value: number; unit: string; note: string } | null {
+function extractRate(
+  priceListJson: string[],
+  accept?: (usagetype: string) => boolean,
+): { value: number; unit: string; note: string } | null {
   let firstTier: { value: number; unit: string; note: string } | null = null;
   let anyTier: { value: number; unit: string; note: string } | null = null;
 
@@ -129,9 +207,14 @@ function extractRate(priceListJson: string[]): { value: number; unit: string; no
     let doc: any;
     try { doc = JSON.parse(raw); } catch { continue; }
 
+    const usagetype = String(doc.product?.attributes?.usagetype ?? '');
+    if (accept && !accept(usagetype)) continue;
+
     for (const term of Object.values<any>(doc.terms?.OnDemand ?? {})) {
       for (const dim of Object.values<any>(term.priceDimensions ?? {})) {
         const value = Number(dim.pricePerUnit?.USD);
+        // Zero-priced rows describe an allowance or a bundled variant — WAF
+        // under Shield, DynamoDB's free storage — never a rate to charge.
         if (!Number.isFinite(value) || value <= 0) continue;
 
         const candidate = { value, unit: dim.unit ?? '', note: String(dim.description ?? '').slice(0, 120) };
@@ -200,13 +283,18 @@ export async function loadRateCard(region: string = 'us-east-1'): Promise<RateCa
         const result = await client.send(new GetProductsCommand({
           ServiceCode: lookup.service,
           Filters: [
-            { Type: 'TERM_MATCH', Field: 'location', Value: location },
+            ...(lookup.global ? [] : [{ Type: 'TERM_MATCH', Field: 'location', Value: location }]),
             ...lookup.filters.map(([Field, Value]) => ({ Type: 'TERM_MATCH', Field, Value })),
           ] as PricingFilterType[],
-          MaxResults: 20,
+          // Enough to hold every tier and variant of one product; the predicate
+          // and the tier rule narrow it, not the page size.
+          MaxResults: 100,
         }));
 
-        const found = extractRate((result.PriceList ?? []) as string[]);
+        const found = extractRate(
+          (result.PriceList ?? []) as string[],
+          lookup.usageType ? (u) => lookup.usageType!(u, region) : undefined,
+        );
         if (found) {
           rates[key] = { value: found.value, unit: found.unit, source: 'live', note: found.note };
           continue;
