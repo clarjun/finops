@@ -187,3 +187,33 @@ describe('graph validation', () => {
     expect(validateGraph(a.nodes).errors).toEqual([]);
   });
 });
+
+describe('unclassified estimate lines', () => {
+  const compile = (service: string, layer: string) =>
+    compileArchitecture(
+      [{ layer, service, monthlyCost: 10 } as never,
+       { layer: 'Storage', service: 'Amazon S3', storageSize: 10, monthlyCost: 1 } as never],
+      { provider: 'aws', region: 'us-east-1', environment: 'development', availability: 'standard', compliance: [] } as never,
+      'test',
+    ).warnings;
+
+  it('says a genuinely unsupported service will not be deployed', () => {
+    const w = compile('Amazon Cognito', 'Authentication').join(' ');
+    expect(w).toMatch(/not supported yet and will NOT be deployed/);
+  });
+
+  it('does not claim the foundation is missing when it is being built', () => {
+    // The plan contains a VPC, subnets and routing. Telling someone the VPC is
+    // "not in the deployment plan" is false, and false on a screen they show
+    // their manager — who can see the VPC in the graph directly below it.
+    const w = compile('Amazon VPC + NAT Gateway', 'Networking').join(' ');
+    expect(w).toMatch(/already in this plan/);
+    expect(w).not.toMatch(/not in the deployment plan/);
+  });
+
+  it('still says the estimate line itself went unused', () => {
+    // Honest in both directions: the resource exists, the priced line did not
+    // drive it, so the quoted cost may not correspond to what is built.
+    expect(compile('Amazon VPC', 'Networking').join(' ')).toMatch(/estimate line itself was not used/);
+  });
+});

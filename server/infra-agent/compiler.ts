@@ -27,6 +27,31 @@ import {
  * substring, most specific first — the same ordering discipline as the cost
  * service categoriser, and for the same reason.
  */
+/**
+ * Services the agent builds for every deployment regardless of the estimate.
+ *
+ * An estimate that names them is not describing something missing — it is
+ * naming the foundation the compiler synthesises anyway. Reporting those lines
+ * as "not in the deployment plan" was flatly untrue: the plan contained a VPC,
+ * subnets, routing and a NAT gateway while a warning said the VPC was absent.
+ * On a screen someone demonstrates to their manager, that is the worst kind of
+ * wrong — confidently stated and easy to check.
+ */
+const FOUNDATION: Array<{ match: RegExp; provides: string }> = [
+  { match: /\bvpc\b|virtual network|\bvnet\b|networking/i, provides: 'the VPC, subnets and routing' },
+  { match: /nat gateway|\bnat\b/i, provides: 'a NAT gateway for private egress' },
+  { match: /internet gateway|\bigw\b/i, provides: 'an internet gateway' },
+  { match: /security group|firewall rule/i, provides: 'security groups around each resource' },
+  { match: /\biam\b|instance profile|service account/i, provides: 'an instance role with scoped permissions' },
+  { match: /subnet/i, provides: 'public and private subnets across availability zones' },
+];
+
+/** What the agent already builds for a line it could not classify, if anything. */
+function foundationCover(service: string, layer: string): string | null {
+  const text = `${service} ${layer}`;
+  return FOUNDATION.find((f) => f.match.test(text))?.provides ?? null;
+}
+
 const CLASSIFIERS: Array<{ match: RegExp; type: LogicalType }> = [
   { match: /\b(rds|aurora)\b.*postgres|postgres.*\b(rds|aurora)\b|azure database for postgres|cloud sql.*postgres/i, type: 'MANAGED_POSTGRES' },
   { match: /postgres/i, type: 'MANAGED_POSTGRES' },
@@ -246,9 +271,24 @@ export function compileArchitecture(
   for (const layer of layers) {
     const logicalTypes = classifyServices(layer.service, layer.layer);
     if (logicalTypes.length === 0) {
-      // Never silently drop a priced service — the user would be shown a plan
-      // missing something they were quoted for.
-      warnings.push(`Could not classify "${layer.service}" (${layer.layer}); it is not in the deployment plan.`);
+      // Two different situations were being reported in identical words.
+      const covered = foundationCover(layer.service, layer.layer ?? '');
+
+      if (covered) {
+        // The estimate named part of the foundation. It is in the plan — the
+        // agent builds it for every deployment — just not from this line.
+        warnings.push(
+          `"${layer.service}" is part of the foundation the agent always builds, so it is already in this plan: ` +
+          `${covered}. The estimate line itself was not used.`,
+        );
+      } else {
+        // Genuinely absent. Never silently dropped, because the user would be
+        // shown a plan missing something they were quoted for.
+        warnings.push(
+          `"${layer.service}" (${layer.layer}) is not supported yet and will NOT be deployed. ` +
+          `Anything depending on it will need to be added by hand.`,
+        );
+      }
       continue;
     }
 
