@@ -93,7 +93,7 @@ export async function generateFinOpsReport(
   
   // Step 2: Calculate potential savings (from optimization opportunities - will calculate later)
   console.log('[Step 2/10] Detecting waste...');
-  const wasteDetection = await detectWaste(provider, resourceCosts);
+  const wasteDetection = await detectWaste(provider, resourceCosts, { startDate: periodStart, endDate: now });
   
   // Step 3: Spend Overview
   console.log('[Step 3/10] Calculating spend overview...');
@@ -144,7 +144,7 @@ export async function generateFinOpsReport(
   
   // Step 7: Resource Utilization
   console.log('[Step 7/10] Fetching resource utilization...');
-  const utilizationData = await getResourceUtilization(provider, resourceCosts);
+  const utilizationData = await getResourceUtilization(provider, resourceCosts, { startDate: periodStart, endDate: now });
   
   // Step 8: Optimization Opportunities
   console.log('[Step 8/10] Calculating optimization opportunities...');
@@ -196,26 +196,15 @@ export async function generateFinOpsReport(
   
   // Step 11: AI Cost Analysis
   console.log('[Step 11/11] Analyzing AI costs...');
-  let aiSpendAnalysis: AISpendAnalysis = {
-    totalAISpend: 0,
-    aiServices: [],
-    aiPercentageOfTotal: 0,
-    topAIService: 'None',
-    monthOverMonthChange: 0,
-  };
-  
-  if (accountId) {
-    try {
-      aiSpendAnalysis = await analyzeAICosts(
-        provider,
-        accountId,
-        periodStart.toISOString().split('T')[0],
-        now.toISOString().split('T')[0]
-      );
-    } catch (error) {
-      console.error('[AI Cost Analyzer] Failed to analyze AI costs:', error);
-    }
-  }
+  // Computed from the records already loaded, not a separate live API call.
+  // The old version made its own Cost Explorer request and returned zeros on
+  // any failure — which the UI shows as 'No AI/ML services usage detected'.
+  // It was also gated on `accountId`, a value the analysis never used.
+  const aiSpendAnalysis: AISpendAnalysis = analyzeAICosts(
+    provider,
+    currentMonthData,
+    previousMonthData,
+  );
   
   const endTime = Date.now();
   console.log(`========== REPORT COMPLETE (${endTime - startTime}ms) ==========\n`);

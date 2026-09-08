@@ -9,7 +9,9 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Cloud, Plus, Trash2, CheckCircle, XCircle, Loader2, Eye, EyeOff } from "lucide-react";
+import { AwsConnectWizard } from "@/components/aws-connect-wizard";
+import { Cloud, Plus, Trash2, CheckCircle, XCircle, Loader2, Eye, EyeOff, AlertTriangle } from "lucide-react";
+import { IngestionPanel } from "@/components/ingestion-panel";
 import type { CloudProvider } from "@shared/schema";
 
 interface CloudAccount {
@@ -202,6 +204,13 @@ export default function Configuration() {
               provider={selectedProvider}
               onProviderChange={setSelectedProvider}
               onSubmit={(data) => createAccount.mutate(data)}
+              onAwsConnected={() => {
+                // The wizard already persisted and validated the connection, so
+                // there is nothing to POST — just show it.
+                queryClient.invalidateQueries({ queryKey: ["/api/cloud-accounts"] });
+                toast({ title: "AWS account connected", description: "Cross-account role verified." });
+                handleCancelEdit();
+              }}
               onCancel={handleCancelEdit}
               isSubmitting={createAccount.isPending}
               showSecrets={showSecrets}
@@ -211,6 +220,11 @@ export default function Configuration() {
           </CardContent>
         </Card>
       )}
+
+      {/* Placed above the per-provider tabs: whether cost data is current
+          applies to every provider, and it is the first thing to check when
+          the dashboard looks wrong. */}
+      <IngestionPanel />
 
       <Tabs defaultValue="aws" className="space-y-4">
         <TabsList className="grid w-full grid-cols-3">
@@ -371,6 +385,7 @@ function CloudAccountFormComponent({
   provider,
   onProviderChange,
   onSubmit,
+  onAwsConnected,
   onCancel,
   isSubmitting,
   showSecrets,
@@ -380,12 +395,22 @@ function CloudAccountFormComponent({
   provider: CloudProvider;
   onProviderChange: (provider: CloudProvider) => void;
   onSubmit: (data: CloudAccountForm) => void;
+  /**
+   * The AWS wizard creates and validates the connection through its own
+   * endpoints, so there is no form payload to submit — the parent only needs to
+   * refresh the list and close.
+   */
+  onAwsConnected: () => void;
   onCancel: () => void;
   isSubmitting: boolean;
   showSecrets: Record<string, boolean>;
   toggleSecretVisibility: (key: string) => void;
   editingAccount?: CloudAccount | null;
 }) {
+  // Defaults to the role path, so the safer option is the one taken by not
+  // choosing. Only consulted when creating an AWS connection.
+  const [awsMethod, setAwsMethod] = useState<AwsAuthMethod>('role');
+
   const [formData, setFormData] = useState<CloudAccountForm>({
     provider: editingAccount?.provider || provider,
     accountName: editingAccount?.accountName || "",
@@ -418,6 +443,41 @@ function CloudAccountFormComponent({
       credentials: { ...prev.credentials, [key]: value },
     }));
   };
+
+  /*
+   * AWS no longer accepts access keys for a NEW connection.
+   *
+   * It gets the cross-account role wizard instead, which mints an External ID
+   * and validates via STS AssumeRole. The key form below is still reachable for
+   * EDITING an existing key-based connection, so customers who have not migrated
+   * can keep theirs working — but there is deliberately no path to creating a
+   * new one, because that is what the migration is for.
+   */
+  if (provider === 'aws' && !editingAccount && awsMethod === 'role') {
+    return (
+      <div className="space-y-6">
+        {/*
+          The provider selector is repeated here rather than shared, because the
+          wizard is not a <form> and cannot live inside one — it posts to its own
+          endpoints across several steps. Omitting it would strand the user on
+          AWS with no way to reach GCP or Azure, since AWS is the default tab.
+        */}
+        <div className="space-y-2">
+          <Label>Cloud Provider</Label>
+          <Tabs value={provider} onValueChange={(v) => onProviderChange(v as CloudProvider)}>
+            <TabsList className="grid w-full grid-cols-3">
+              <TabsTrigger value="aws">AWS</TabsTrigger>
+              <TabsTrigger value="gcp">GCP</TabsTrigger>
+              <TabsTrigger value="azure">Azure</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+
+        <AwsAuthMethodChooser value={awsMethod} onChange={setAwsMethod} />
+        <AwsConnectWizard onConnected={onAwsConnected} onCancel={onCancel} />
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -468,6 +528,10 @@ function CloudAccountFormComponent({
         />
       </div>
 
+      {provider === "aws" && !editingAccount && (
+        <AwsAuthMethodChooser value={awsMethod} onChange={setAwsMethod} />
+      )}
+
       {provider === "aws" && (
         <AWSCredentialsForm
           credentials={formData.credentials}
@@ -517,7 +581,82 @@ function CloudAccountFormComponent({
   );
 }
 
-// AWS Credentials Form
+type AwsAuthMethod = 'role' | 'keys';
+
+/**
+ * How a new AWS account will authenticate.
+ *
+ * Both paths are offered because a role requires creating IAM resources in the
+ * customer's account, which is not always possible in the moment — during a
+ * trial, a demo, or before someone with IAM permissions is available. Forcing
+ * the role path in those situations does not improve security, it just blocks
+ * the connection.
+ *
+ * The role option is the default and is labelled as recommended, so the safer
+ * choice is the one taken by not thinking about it.
+ */
+function AwsAuthMethodChooser({
+  value,
+  onChange,
+}: {
+  value: AwsAuthMethod;
+  onChange: (v: AwsAuthMethod) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>Authentication method</Label>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => onChange('role')}
+          className={`rounded-md border p-3 text-left transition ${
+            value === 'role' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+          }`}
+          data-testid="aws-auth-role"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <CheckCircle className="h-4 w-4 text-green-600" />
+            Cross-account IAM role
+            <Badge variant="secondary" className="text-[10px]">Recommended</Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            No stored credentials. Temporary access that expires hourly, revocable by you at any
+            time. Requires creating an IAM role in your AWS account.
+          </p>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onChange('keys')}
+          className={`rounded-md border p-3 text-left transition ${
+            value === 'keys' ? 'border-primary bg-primary/5' : 'border-border hover:bg-muted/50'
+          }`}
+          data-testid="aws-auth-keys"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <AlertTriangle className="h-4 w-4 text-amber-600" />
+            Access key + secret
+            <Badge variant="outline" className="text-[10px]">Legacy</Badge>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Stored encrypted. Never expires, and cannot separate read access from the ability to
+            change your infrastructure. Quicker to set up.
+          </p>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AWS access-key form.
+ *
+ * Reachable when editing an existing key-based connection, and when creating one
+ * with the "Access key + secret" method chosen. The role path is the default and
+ * the recommended one; this exists because requiring IAM role creation is not
+ * always possible in the moment, and blocking the connection then would not make
+ * anyone safer.
+ */
 function AWSCredentialsForm({
   credentials,
   updateCredential,
@@ -531,6 +670,24 @@ function AWSCredentialsForm({
 }) {
   return (
     <>
+      <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+        <div className="text-xs space-y-1">
+          {/*
+            Worded to be true whether the user is editing an existing key-based
+            connection or has just deliberately chosen keys for a new one. The
+            previous text said "this connection uses…", which read as a statement
+            of fact about something that did not exist yet.
+          */}
+          <p className="font-medium">Access keys are deprecated</p>
+          <p className="text-muted-foreground">
+            Access keys never expire, and one key cannot separate read access from the ability to
+            change your infrastructure. Grant the narrowest IAM policy you can, and switch this
+            connection to a cross-account role when you are able — then delete the IAM user in AWS.
+          </p>
+        </div>
+      </div>
+
       <div className="space-y-2">
         <Label htmlFor="accessKeyId">Access Key ID</Label>
         <Input

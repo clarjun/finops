@@ -6,7 +6,10 @@
 import { MonitorClient } from "@azure/arm-monitor";
 import { ClientSecretCredential } from "@azure/identity";
 import { getProviderCredentials } from "../cloud-config-manager";
-import type { ResourceMetrics } from './aws-metrics-fetcher';
+import { runProviderQuery } from "../cloud/query-runner";
+// From the neutral home. Importing a shared contract out of a file named
+// aws-metrics-fetcher implied Azure metrics were a special case of AWS metrics.
+import type { ResourceMetrics } from '../cloud/metrics';
 
 /**
  * Get Azure Monitor client
@@ -58,7 +61,7 @@ export async function fetchVMMetrics(vmResourceIds: string[]): Promise<ResourceM
     for (const resourceId of vmResourceIds) {
       try {
         // Fetch CPU Percentage metric
-        const metricsResponse = await client.monitorClient.metrics.list(
+        const metricsResponse = await runProviderQuery('azure', 'metrics:monitor', () => client.monitorClient.metrics.list(
           resourceId,
           {
             timespan: `${startTime.toISOString()}/${endTime.toISOString()}`,
@@ -66,7 +69,7 @@ export async function fetchVMMetrics(vmResourceIds: string[]): Promise<ResourceM
             metricnames: 'Percentage CPU',
             aggregation: 'Average,Maximum',
           }
-        );
+        ));
 
         let avgCpu = 0;
         let maxCpu = 0;
@@ -94,7 +97,7 @@ export async function fetchVMMetrics(vmResourceIds: string[]): Promise<ResourceM
         }
 
         // Fetch Network In metric
-        const networkResponse = await client.monitorClient.metrics.list(
+        const networkResponse = await runProviderQuery('azure', 'metrics:monitor', () => client.monitorClient.metrics.list(
           resourceId,
           {
             timespan: `${startTime.toISOString()}/${endTime.toISOString()}`,
@@ -102,7 +105,7 @@ export async function fetchVMMetrics(vmResourceIds: string[]): Promise<ResourceM
             metricnames: 'Network In Total,Network Out Total',
             aggregation: 'Average',
           }
-        );
+        ));
 
         let avgNetworkIn = 0;
         let avgNetworkOut = 0;

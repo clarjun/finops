@@ -10,6 +10,18 @@ import connectPgSimple from "connect-pg-simple";
 import { pool } from "./db";
 import { registerRoutes } from "./routes";
 import { registerAuthRoutes } from "./auth";
+import { installAuthGuard } from "./middleware/auth-guard";
+import { routePolicy, reportRoutePolicyGaps } from "./middleware/route-policy";
+import { auditMiddleware } from "./audit";
+import { registerAuditRoutes } from "./audit-routes";
+import { registerCostFactRoutes } from "./ingestion/routes";
+import { registerSavingsRoutes } from "./savings/routes";
+import { startIngestionScheduler } from "./ingestion/scheduler";
+import { startReportScheduler } from "./reports/scheduler";
+import { registerInfraAgentRoutes } from "./infra-agent/routes";
+import { registerAwsConnectionRoutes } from "./aws/connection-routes";
+import { startInfraWorker } from "./infra-agent/worker";
+import { registerTerraformTools } from "./infra-agent/tools/terraform-tools";
 import { log } from "./vite";
 import { serveStatic } from "./static";
 import { startBudgetAlertScheduler } from "./utils/budget-alert-checker-new";
@@ -73,15 +85,35 @@ app.use((req, res, next) => {
 });
 
 (async () => {
+  // Order matters. The guard authenticates and establishes the tenant context
+  // that every downstream handler and the audit writer read from, so it must be
+  // installed before any API route is registered — Express only applies
+  // middleware to routes added after it.
+  installAuthGuard(app);
+  app.use(routePolicy);
+  app.use(auditMiddleware);
+
   const server = await registerRoutes(app);
   registerAuthRoutes(app);
+  registerAuditRoutes(app);
+  registerCostFactRoutes(app);
+  registerSavingsRoutes(app);
+  registerInfraAgentRoutes(app);
+  // Cross-account IAM role onboarding and validation for AWS.
+  registerAwsConnectionRoutes(app);
+
+  // Surfaces any endpoint that slipped past the policy table, in the boot log.
+  reportRoutePolicyGaps(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";
 
+    // Log rather than rethrow: the response has already been sent, so throwing
+    // here escapes to an unhandled rejection and can take the process down
+    // instead of producing a useful record.
+    console.error('[Unhandled]', err?.stack ?? err);
     res.status(status).json({ message });
-    throw err;
   });
 
   if (process.env.NODE_ENV === "development") {
@@ -97,5 +129,25 @@ app.use((req, res, next) => {
     log(`✅ Server running on http://localhost:${port}`);
     startBudgetAlertScheduler(60);
     log('Budget alert scheduler started');
+
+    // Cost ingestion. Opt-out via INGESTION_ENABLED=false for environments that
+    // should not spend money on billing APIs (a shared dev box, CI).
+    if (process.env.INGESTION_ENABLED !== 'false') {
+      startIngestionScheduler(Number(process.env.INGESTION_INTERVAL_HOURS) || 6);
+      log('Cost ingestion scheduler started');
+    } else {
+      log('Cost ingestion scheduler disabled (INGESTION_ENABLED=false)');
+    }
+
+    // Scheduled report delivery. Previously configurable in the UI but never
+    // executed — getDueReportSchedules() had no caller.
+    startReportScheduler(Number(process.env.REPORT_INTERVAL_MINUTES) || 15);
+    log('Report scheduler started');
+
+    // Infrastructure agent. Tools are registered before the worker starts, so a
+    // run picked up on the first sweep cannot find an empty registry.
+    registerTerraformTools();
+    startInfraWorker(Number(process.env.INFRA_SWEEP_SECONDS) || 30);
+    log('Infrastructure deployment agent started');
   });
 })();

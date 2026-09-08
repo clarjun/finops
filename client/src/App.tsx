@@ -8,7 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AppSidebar } from "@/components/app-sidebar";
 import { DateRangeProvider } from "@/contexts/date-range-context";
-import { useAuth, useLogout } from "@/hooks/use-auth";
+import { useAuth, useLogout, ROLE_LABELS } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
 import Reports from "@/pages/reports";
 import AiQuery from "@/pages/ai-query";
@@ -21,6 +21,10 @@ import Configuration from "@/pages/configuration";
 import Settings from "@/pages/settings";
 import CostEstimator from "@/pages/cost-estimator";
 import UsersPage from "@/pages/users";
+import AuditPage from "@/pages/audit";
+import InfraAgentPage from "@/pages/infra-agent";
+import InfraLibraryPage from "@/pages/infra-library";
+import DeploymentsPage from "@/pages/deployments";
 import Login from "@/pages/login";
 import NotFound from "@/pages/not-found";
 import { Button } from "@/components/ui/button";
@@ -35,7 +39,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 function ProtectedRouter() {
-  const { isAdmin } = useAuth();
+  const { can } = useAuth();
   return (
     <Switch>
       <Route path="/" component={Dashboard} />
@@ -47,11 +51,18 @@ function ProtectedRouter() {
       <Route path="/alerts" component={Alerts} />
       <Route path="/optimization" component={Optimization} />
       <Route path="/agent" component={AgentDashboard} />
+      <Route path="/infra-agent" component={InfraAgentPage} />
+      <Route path="/infra-library" component={InfraLibraryPage} />
+      <Route path="/deployments" component={DeploymentsPage} />
       <Route path="/configuration" component={Configuration} />
       <Route path="/settings" component={Settings} />
-      {/* Admin-only route */}
+      {/* Permission-gated routes. The API enforces these independently; this
+          only avoids rendering a page that would 403 on every request. */}
       <Route path="/users">
-        {isAdmin ? <UsersPage /> : <Redirect to="/" />}
+        {can('user:manage') ? <UsersPage /> : <Redirect to="/" />}
+      </Route>
+      <Route path="/audit">
+        {can('audit:read') ? <AuditPage /> : <Redirect to="/" />}
       </Route>
       <Route path="/login"><Redirect to="/" /></Route>
       <Route component={NotFound} />
@@ -120,7 +131,17 @@ function AuthWrapper({ style }: { style: Record<string, string> }) {
                   <DropdownMenuLabel>
                     <div>
                       <p className="font-medium">{user?.username}</p>
-                      <p className="text-xs text-muted-foreground capitalize">{user?.role}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {user?.role ? ROLE_LABELS[user.role] ?? user.role : ''}
+                        {user?.isPlatformAdmin && ' · platform admin'}
+                      </p>
+                      {/* Which tenant you are acting in — matters once a platform
+                          admin can switch organizations. */}
+                      {user?.organization && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {user.organization.name}
+                        </p>
+                      )}
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />

@@ -8,6 +8,7 @@ import {
   InsertOptimizationAction
 } from "../shared/schema";
 import { eq } from "drizzle-orm";
+import { currentOrgId } from "./tenant-context";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -57,8 +58,11 @@ export class AIAgentPlanner {
   async generateOptimizationPlan(context: PlanningContext): Promise<OptimizationPlanResult> {
     console.log('[AI Agent Planner] Generating optimization plan:', context.goal);
 
-    // Get agent configuration
-    const config = await db.select().from(agentConfig).limit(1);
+    // Get agent configuration for this tenant. Without the org predicate this
+    // read returned whichever row happened to be first in the table.
+    const config = await db.select().from(agentConfig)
+      .where(eq(agentConfig.organizationId, currentOrgId()))
+      .limit(1);
     const agentSettings = config[0] || {
       aggressiveness: 'medium',
       enabled_providers: ['aws', 'gcp', 'azure'],
@@ -525,7 +529,9 @@ Dependencies: Array of stepIndex values that must complete first.`
       status: 'planning',
     };
 
-    const result = await db.insert(optimizationPlans).values(planData).returning({ id: optimizationPlans.id });
+    const result = await db.insert(optimizationPlans)
+      .values({ ...planData, organizationId: currentOrgId() })
+      .returning({ id: optimizationPlans.id });
     return result[0].id;
   }
 
@@ -546,7 +552,8 @@ Dependencies: Array of stepIndex values that must complete first.`
         aiReasoning: step.description,
       };
 
-      await db.insert(optimizationActions).values(actionData);
+      await db.insert(optimizationActions)
+        .values({ ...actionData, organizationId: currentOrgId() });
     }
   }
 

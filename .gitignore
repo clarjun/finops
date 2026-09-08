@@ -30,3 +30,6 @@ npm-debug.log*
 .idea/
 *.swp
 *.swo
+# Local env backups (may contain live credentials)
+.env.backup*
+.env.*.backup

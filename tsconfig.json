@@ -8,6 +8,10 @@
     "module": "ESNext",
     "strict": true,
     "lib": ["esnext", "dom", "dom.iterable"],
+    // Without this, target defaults to ES5 and iterating a Map or Set is a type
+    // error, despite `lib` already being esnext and the runtime being Node >= 20.
+    // Type-check only: Vite and esbuild do the actual transpilation.
+    "target": "ES2022",
     "jsx": "preserve",
     "esModuleInterop": true,
     "skipLibCheck": true,

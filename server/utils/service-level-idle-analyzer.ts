@@ -3,7 +3,9 @@
  * Aggregates resource-level metrics into service-level idle analysis
  */
 
-import type { ResourceMetrics } from './aws-metrics-fetcher';
+import type { ResourceMetrics } from '../cloud/metrics';
+import { metricsSupported, unsupportedMetricsProviders } from '../cloud/metrics';
+import type { CloudProvider } from '@shared/schema';
 
 export interface ServiceIdleAnalysis {
   serviceName: string;
@@ -391,3 +393,25 @@ export function aggregateServiceIdleAnalysis(
   // Sort by waste cost (highest first)
   return analyses.sort((a, b) => b.wasteCost - a.wasteCost);
 }
+
+/**
+ * Providers this analysis could not assess, and why.
+ *
+ * Idle detection depends on utilisation metrics, and not every provider can
+ * supply them — there is no GCP metrics fetcher, so GCP resources are never
+ * evaluated. Previously nothing said so: a recommendations page covering two of
+ * three clouds looked identical to one where the third cloud had nothing idle.
+ *
+ * A reader cannot distinguish "nothing idle" from "not looked at" unless the
+ * difference is stated, so callers should render this alongside their findings.
+ */
+export function idleAnalysisCoverage(providers: readonly CloudProvider[]): {
+  assessed: CloudProvider[];
+  notAssessed: Array<{ provider: CloudProvider; reason: string }>;
+} {
+  return {
+    assessed: providers.filter((p) => metricsSupported(p)),
+    notAssessed: unsupportedMetricsProviders(providers),
+  };
+}
+

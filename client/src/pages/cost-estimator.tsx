@@ -2,7 +2,10 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, Calculator, Sparkles } from "lucide-react";
+import { Loader2, Calculator, Sparkles, Rocket } from "lucide-react";
+import { useLocation } from "wouter";
+import { useCreateAgent } from "@/hooks/use-infra-agent";
+import { useToast } from "@/hooks/use-toast";
 
 interface ArchitectureLayer {
   layer: string;
@@ -28,6 +31,38 @@ export default function CostEstimator() {
   const [loading, setLoading] = useState(false);
   const [estimate, setEstimate] = useState<CostEstimate | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const createAgentMutation = useCreateAgent();
+  const creatingAgent = createAgentMutation.isPending;
+
+  /**
+   * Hands the estimate to the deployment agent.
+   *
+   * The requirement text and estimate go through sessionStorage rather than the
+   * URL: a requirement runs to thousands of characters and has no business in a
+   * link someone might paste into a ticket.
+   */
+  const createAgent = () => {
+    if (!estimate) return;
+    // The first line of the requirement, minus its "Application:" label, is a
+    // far better name than "Untitled" and is what the user already typed.
+    const firstLine = (requirements.split(String.fromCharCode(10))[0] ?? "").trim();
+    const name = firstLine.replace(/^application:/i, "").trim().slice(0, 80) || "Untitled application";
+
+    createAgentMutation.mutate(
+      { name, requirements, estimate: estimate.architecture, estimatedMonthlyCost: estimate.totalCost },
+      {
+        onSuccess: (result) => {
+          sessionStorage.setItem("infra-agent-handoff", JSON.stringify({
+            planId: result.plan.id, name: result.plan.name, questions: result.questions,
+          }));
+          navigate("/infra-agent");
+        },
+        onError: (e) => toast({ title: "Could not create the agent", description: e.message, variant: "destructive" }),
+      },
+    );
+  };
 
   const examplePlaceholder = `Example: Describe your application requirements
 
@@ -216,6 +251,30 @@ Availability: High availability required`;
                   </span>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* The handoff from estimating to building. Placed after the cost so
+              the decision to deploy is made with the price in view. */}
+          <Card className="border-primary/50">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Rocket className="h-5 w-5" /> Build this infrastructure
+              </CardTitle>
+              <CardDescription>
+                Hand this estimate to the deployment agent. It designs a deployable architecture — adding the
+                network, security groups and IAM an estimate never prices — then plans it and builds it with your
+                approval at every risky step.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button size="lg" onClick={createAgent} disabled={creatingAgent} className="gap-2" data-testid="button-create-agent">
+                {creatingAgent ? <Loader2 className="h-5 w-5 animate-spin" /> : <Rocket className="h-5 w-5" />}
+                {creatingAgent ? 'Creating your agent…' : 'CREATE YOUR AGENT'}
+              </Button>
+              <p className="text-xs text-muted-foreground mt-2">
+                Nothing is created yet. The agent asks what it needs, shows you the plan, and waits for approval.
+              </p>
             </CardContent>
           </Card>
         </>

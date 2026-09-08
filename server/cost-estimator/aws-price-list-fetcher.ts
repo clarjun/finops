@@ -95,6 +95,74 @@ export async function fetchEC2Pricing(instanceType: string, region: string = 'us
 }
 
 /**
+ * Fetch EBS storage pricing, per GB-month.
+ *
+ * Added for waste detection, which priced every unattached volume at a flat $5
+ * regardless of size or type. A 500 GB gp3 volume and a 1 GB one both counted
+ * as $5, so the "potential savings" figure was arithmetic on a constant rather
+ * than a measurement.
+ *
+ * Reports whether the number was fetched or fell back, because a savings figure
+ * a customer might act on should say how firm it is.
+ */
+export async function fetchEBSPricing(
+  volumeType: string = 'gp3',
+  region: string = 'us-east-1',
+): Promise<{ pricePerGbMonth: number; estimated: boolean }> {
+  const cacheKey = `ebs-${volumeType}-${region}`;
+
+  const cached = pricingCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+    return { pricePerGbMonth: cached.price, estimated: false };
+  }
+
+  try {
+    const client = await getPricingClient();
+
+    const filters: PricingFilter[] = [
+      { Type: 'TERM_MATCH', Field: 'volumeApiName', Value: volumeType },
+      { Type: 'TERM_MATCH', Field: 'location', Value: getRegionName(region) },
+      { Type: 'TERM_MATCH', Field: 'productFamily', Value: 'Storage' },
+    ];
+
+    const response = await client.send(new GetProductsCommand({
+      ServiceCode: 'AmazonEC2',
+      Filters: filters as PricingFilterType[],
+      MaxResults: 1,
+    }));
+
+    if (!response.PriceList || response.PriceList.length === 0) {
+      return { pricePerGbMonth: getFallbackEBSPrice(volumeType), estimated: true };
+    }
+
+    const priceData = JSON.parse(response.PriceList[0] as string);
+    const onDemand = priceData.terms.OnDemand;
+    const dims = onDemand[Object.keys(onDemand)[0]].priceDimensions;
+    const price = parseFloat(dims[Object.keys(dims)[0]].pricePerUnit.USD);
+
+    if (!Number.isFinite(price)) {
+      return { pricePerGbMonth: getFallbackEBSPrice(volumeType), estimated: true };
+    }
+
+    pricingCache.set(cacheKey, { price, timestamp: Date.now() });
+    console.log(`[Price List] EBS ${volumeType} in ${region}: $${price}/GB-month`);
+    return { pricePerGbMonth: price, estimated: false };
+  } catch (error) {
+    console.error(`[Price List] Error fetching EBS pricing for ${volumeType}:`, error);
+    return { pricePerGbMonth: getFallbackEBSPrice(volumeType), estimated: true };
+  }
+}
+
+/** Dated list prices, used only when the lookup fails. As of 2026-06. */
+function getFallbackEBSPrice(volumeType: string): number {
+  const fallback: Record<string, number> = {
+    gp3: 0.08, gp2: 0.10, io1: 0.125, io2: 0.125,
+    st1: 0.045, sc1: 0.015, standard: 0.05,
+  };
+  return fallback[volumeType] ?? 0.10;
+}
+
+/**
  * Fetch RDS instance pricing
  */
 export async function fetchRDSPricing(instanceType: string, engine: string = 'PostgreSQL', region: string = 'us-east-1'): Promise<number> {

@@ -1,0 +1,244 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Cloudwise FinOps access. Deploy this in the AWS account you want Cloudwise to
+  monitor. It creates a read-only role, and optionally a remediation role, that
+  Cloudwise may assume using the External ID shown in the Cloudwise connection
+  screen.
+
+  No access keys are created. Cloudwise receives temporary credentials that
+  expire within the hour, and you can revoke access at any time by deleting this
+  stack.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: Values from the Cloudwise connection screen }
+        Parameters: [CloudwisePrincipalArn, ExternalId]
+      - Label: { default: Optional capabilities }
+        Parameters: [EnableRemediation]
+    ParameterLabels:
+      CloudwisePrincipalArn: { default: Cloudwise principal ARN }
+      ExternalId: { default: External ID }
+      EnableRemediation: { default: Allow Cloudwise to act on approved recommendations }
+
+Parameters:
+  CloudwisePrincipalArn:
+    Type: String
+    AllowedPattern: '^arn:aws(-cn|-us-gov)?:iam::\d{12}:(user|role)/.+$'
+    Description: Copy from Cloudwise. The only identity permitted to assume these roles.
+
+  ExternalId:
+    Type: String
+    NoEcho: true
+    MinLength: 20
+    Description: >
+      Copy from Cloudwise. Shown once, at connection creation. This is what stops
+      anyone else who learns your role ARN from having Cloudwise assume it.
+
+  EnableRemediation:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Leave false for read-only, which is the recommended starting posture. Set
+      true to let Cloudwise stop, start and resize instances that you have tagged
+      CloudwiseManaged=true, after you approve each action in Cloudwise.
+
+Conditions:
+  WantsRemediation: !Equals [!Ref EnableRemediation, 'true']
+
+Resources:
+
+  CloudwiseFinOpsReadOnlyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CloudwiseFinOpsReadOnlyRole
+      Description: Read-only FinOps access for Cloudwise. Metadata and cost only; no data access.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Ref CloudwisePrincipalArn }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+          # Defence in depth: refuse any assume attempt that omits an External ID
+          # entirely, even from the named principal.
+          - Effect: Deny
+            Principal: { AWS: '*' }
+            Action: sts:AssumeRole
+            Condition:
+              'Null':
+                sts:ExternalId: 'true'
+      Policies:
+        - PolicyName: CloudwiseFinOpsReadOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CostAndBilling
+                Effect: Allow
+                Action:
+                  - ce:GetCostAndUsage
+                  - ce:GetCostForecast
+                  - budgets:ViewBudget
+                  - budgets:DescribeBudgets
+                  - budgets:DescribeBudgetPerformanceHistory
+                Resource: '*'
+
+              - Sid: ResourceInventoryMetadata
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeAddresses
+                  - rds:DescribeDBInstances
+                  - rds:DescribeDBClusters
+                  - lambda:ListFunctions
+                  - lambda:GetFunction
+                  - logs:DescribeLogGroups
+                Resource: '*'
+
+              # Bucket listing and location only. Deliberately no s3:GetObject —
+              # Cloudwise prices your storage, it does not read it.
+              - Sid: StorageMetadataNotContents
+                Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - s3:GetBucketLocation
+                Resource: '*'
+
+              - Sid: UtilisationMetrics
+                Effect: Allow
+                Action: cloudwatch:GetMetricStatistics
+                Resource: '*'
+
+              - Sid: TagAllocation
+                Effect: Allow
+                Action: tag:GetResources
+                Resource: '*'
+
+              - Sid: IdentityVerification
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*'
+
+              # Explicit and unconditional. If a future policy revision were ever
+              # too broad, this still holds the line on your actual data.
+              - Sid: NeverReadCustomerData
+                Effect: Deny
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - secretsmanager:GetSecretValue
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - kms:Decrypt
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: cloudwise
+
+  CloudwiseFinOpsRemediationRole:
+    Type: AWS::IAM::Role
+    Condition: WantsRemediation
+    Properties:
+      RoleName: CloudwiseFinOpsRemediationRole
+      Description: >
+        Write access for approved Cloudwise optimization actions. Restricted to
+        resources tagged CloudwiseManaged=true.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { AWS: !Ref CloudwisePrincipalArn }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+          - Effect: Deny
+            Principal: { AWS: '*' }
+            Action: sts:AssumeRole
+            Condition:
+              'Null':
+                sts:ExternalId: 'true'
+      Policies:
+        - PolicyName: CloudwiseFinOpsRemediation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Tag-scoped. Cloudwise cannot touch anything you have not opted in
+              # by tagging, so the blast radius is something you control rather
+              # than something you trust us about.
+              - Sid: PowerStateOnTaggedInstances
+                Effect: Allow
+                Action:
+                  - ec2:StopInstances
+                  - ec2:StartInstances
+                  - ec2:ModifyInstanceAttribute
+                Resource: 'arn:aws:ec2:*:*:instance/*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/CloudwiseManaged: 'true'
+
+              - Sid: LifecycleOnTaggedBuckets
+                Effect: Allow
+                Action:
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetLifecycleConfiguration
+                Resource: 'arn:aws:s3:::*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceTag/CloudwiseManaged: 'true'
+
+              - Sid: ReadNeededToActSafely
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceAttribute
+                  - s3:GetBucketLocation
+                  - sts:GetCallerIdentity
+                Resource: '*'
+
+              # Cloudwise never needs to destroy anything to save you money, and
+              # it must never be able to grant itself more access.
+              - Sid: NeverDestroyOrEscalate
+                Effect: Deny
+                Action:
+                  - ec2:TerminateInstances
+                  - ec2:DeleteVolume
+                  - ec2:DeleteSnapshot
+                  - rds:DeleteDBInstance
+                  - rds:DeleteDBCluster
+                  - s3:DeleteBucket
+                  - s3:DeleteObject
+                  - iam:*
+                  - sts:AssumeRole
+                  - organizations:*
+                  - kms:ScheduleKeyDeletion
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: cloudwise
+
+Outputs:
+
+  ReadOnlyRoleArn:
+    Description: Paste this into Cloudwise as the read-only role ARN.
+    Value: !GetAtt CloudwiseFinOpsReadOnlyRole.Arn
+
+  RemediationRoleArn:
+    Condition: WantsRemediation
+    Description: Paste this into Cloudwise as the remediation role ARN (optional).
+    Value: !GetAtt CloudwiseFinOpsRemediationRole.Arn
+
+  AccountId:
+    Description: Should match the AWS account ID registered in Cloudwise.
+    Value: !Ref AWS::AccountId

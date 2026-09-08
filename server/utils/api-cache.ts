@@ -26,23 +26,46 @@ class APICache {
   private rateLimitWindow = 60 * 1000; // 1 minute
 
   /**
-   * Get cached data if available and not expired
+   * How long an expired entry is kept so it can still be served when the
+   * provider is refusing to answer. Serving cost data a few minutes old beats
+   * showing zero, which reads as "you spent nothing" rather than "ask later".
+   */
+  private staleGrace = 60 * 60 * 1000;
+
+  /**
+   * Get cached data if available and not expired.
+   *
+   * Deliberately does NOT delete on expiry. It used to, which quietly disabled
+   * every stale-fallback path in this file: cachedAPICall checks the cache,
+   * that check deletes the expired entry, and the later "return expired cache"
+   * branch then finds nothing. Eviction is cleanup()'s job.
    */
   get<T>(key: string): T | null {
     const entry = this.cache.get(key);
-    
+
     if (!entry) {
       return null;
     }
-    
-    // Check if expired
+
+    // Expired, but left in place for getStale().
     if (Date.now() > entry.expiresAt) {
-      this.cache.delete(key);
       return null;
     }
-    
+
     console.log(`[Cache] HIT: ${key} (age: ${Math.round((Date.now() - entry.timestamp) / 1000)}s)`);
     return entry.data as T;
+  }
+
+  /**
+   * Get cached data regardless of expiry, for when a live call cannot be made.
+   *
+   * Returns the age so the caller can say how old the figures are rather than
+   * presenting stale data as current.
+   */
+  getStale<T>(key: string): { data: T; ageMs: number } | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    return { data: entry.data as T, ageMs: Date.now() - entry.timestamp };
   }
 
   /**
@@ -144,9 +167,11 @@ class APICache {
   cleanup(): void {
     const now = Date.now();
     const keysToDelete: string[] = [];
-    
+
     for (const [key, entry] of Array.from(this.cache.entries())) {
-      if (now > entry.expiresAt) {
+      // Past the grace period, not merely past expiry — inside it the entry is
+      // still useful as a stale fallback when the provider is throttling.
+      if (now > entry.expiresAt + this.staleGrace) {
         keysToDelete.push(key);
       }
     }
@@ -200,22 +225,42 @@ export async function cachedAPICall<T>(
   
   // Check rate limit
   if (!apiCache.canMakeRequest(provider)) {
-    // Return cached data even if expired, or throw error
-    const expiredCache = apiCache.get<T>(cacheKey);
-    if (expiredCache !== null) {
-      console.log(`[Cache] Returning expired cache due to rate limit: ${cacheKey}`);
-      return expiredCache;
+    const stale = apiCache.getStale<T>(cacheKey);
+    if (stale) {
+      console.log(
+        `[Cache] Rate limited; serving stale ${cacheKey} ` +
+        `(${Math.round(stale.ageMs / 1000)}s old)`,
+      );
+      return stale.data;
     }
-    
+
     throw new Error(`Rate limit exceeded for ${provider}. Please try again in a moment.`);
   }
-  
+
   // Make API call
   console.log(`[Cache] MISS: ${cacheKey} - Making API call`);
-  const data = await apiCall();
-  
+
+  let data: T;
+  try {
+    data = await apiCall();
+  } catch (err) {
+    // A provider that refuses to answer must not turn into "zero cost". Azure
+    // Cost Management throttles hard enough that this is the normal path on a
+    // cold cache, and reporting $0 for the largest provider on the account is
+    // worse than reporting figures that are a few minutes old.
+    const stale = apiCache.getStale<T>(cacheKey);
+    if (stale) {
+      console.warn(
+        `[Cache] ${provider} call failed (${(err as Error)?.message?.slice(0, 120)}); ` +
+        `serving stale ${cacheKey} (${Math.round(stale.ageMs / 1000)}s old)`,
+      );
+      return stale.data;
+    }
+    throw err;
+  }
+
   // Cache the result
   apiCache.set(cacheKey, data, ttl);
-  
+
   return data;
 }
