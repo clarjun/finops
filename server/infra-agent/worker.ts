@@ -17,9 +17,10 @@
  * are therefore safe: one proceeds, the others return immediately.
  */
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { db, pool } from '../db';
+import { db } from '../db';
 import { infraRuns } from '@shared/schema';
 import { runAsSystem } from '../tenant-context';
+import { runExclusively, startTicker } from '../utils/advisory-lock';
 import { advance } from './engine';
 import { advanceTeardown, TEARDOWN_MODE } from './teardown';
 
@@ -115,24 +116,9 @@ export async function sweepStalledRuns(): Promise<{ picked: number }> {
   return { picked: rows.length };
 }
 
-async function withSweepLock(fn: () => Promise<void>): Promise<void> {
-  const client = await pool.connect();
-  try {
-    const { rows } = await client.query<{ locked: boolean }>(
-      'SELECT pg_try_advisory_lock($1) AS locked', [SWEEP_LOCK_KEY],
-    );
-    if (!rows[0]?.locked) return;
-    try {
-      await fn();
-    } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [SWEEP_LOCK_KEY]);
-    }
-  } catch (err) {
-    console.error('[InfraWorker] sweep lock error:', (err as Error)?.message ?? err);
-  } finally {
-    client.release();
-  }
-}
+// The lock/tick mechanics live in utils/advisory-lock.ts. The copy that was
+// here acquired its connection outside the try, so a dropped connection escaped
+// as an unhandled rejection and exited the process.
 
 /**
  * Starts the sweep.
@@ -144,13 +130,10 @@ async function withSweepLock(fn: () => Promise<void>): Promise<void> {
 export function startInfraWorker(intervalSeconds = 30): NodeJS.Timeout {
   console.log(`[InfraWorker] Started (sweeping every ${intervalSeconds}s)`);
 
-  const tick = async () => {
-    await withSweepLock(async () => {
+  return startTicker('InfraWorker', intervalSeconds * 1000, async () => {
+    await runExclusively('InfraWorker', SWEEP_LOCK_KEY, async () => {
       const { picked } = await sweepStalledRuns();
       if (picked > 0) console.log(`[InfraWorker] picked up ${picked} stalled run(s)`);
     });
-  };
-
-  void tick();
-  return setInterval(() => { void tick(); }, intervalSeconds * 1000);
+  });
 }

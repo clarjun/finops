@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  Cloudwise bootstrap principal. Deploy this ONCE, in the AWS account Cloudwise
+  itself runs as — not in a customer account. It creates the identity Cloudwise
+  authenticates as when it calls sts:AssumeRole, and nothing else.
+
+  The resulting ARN goes into the CLOUDWISE_AWS_PRINCIPAL_ARN environment
+  variable, and is what customers name in their role trust policies.
+
+  This identity is deliberately powerless on its own: it can assume roles and do
+  nothing else. It cannot read a bucket, describe an instance, or see a bill. All
+  of its usefulness is borrowed, per call, from roles that customers have
+  explicitly granted — and every one of those grants also requires the matching
+  External ID.
+
+Parameters:
+  CreateAccessKey:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      Create an access key for the user. Set to false if you intend to use OIDC
+      federation instead, or will create the key manually.
+
+  AllowedRolePattern:
+    Type: String
+    Default: 'arn:aws:iam::*:role/Cloudwise*'
+    Description: >
+      Which role ARNs this principal may assume. The default restricts it to
+      roles named Cloudwise*, so a mistake in a customer trust policy cannot let
+      Cloudwise assume an unrelated role. Widen only with a reason.
+
+Conditions:
+  ShouldCreateAccessKey: !Equals [!Ref CreateAccessKey, 'true']
+
+Resources:
+
+  CloudwiseServiceUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: cloudwise-service
+      Policies:
+        - PolicyName: AssumeCloudwiseRolesOnly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # The entire permission set. One action, pattern-restricted.
+              - Sid: AssumeCustomerRoles
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref AllowedRolePattern
+
+              # Needed so Cloudwise can confirm which identity it is running as
+              # when diagnosing a connection.
+              - Sid: KnowThyself
+                Effect: Allow
+                Action: sts:GetCallerIdentity
+                Resource: '*'
+
+              # Explicit denial of everything that would make this identity
+              # valuable to steal. Belt and braces: the Allow above already
+              # grants nothing else, but an operator who later attaches a
+              # managed policy by mistake would otherwise widen it silently.
+              - Sid: NeverActDirectly
+                Effect: Deny
+                NotAction:
+                  - sts:AssumeRole
+                  - sts:GetCallerIdentity
+                Resource: '*'
+      Tags:
+        - Key: ManagedBy
+          Value: cloudwise
+        - Key: Purpose
+          Value: sts-assume-role-bootstrap
+
+  CloudwiseServiceAccessKey:
+    Type: AWS::IAM::AccessKey
+    Condition: ShouldCreateAccessKey
+    Properties:
+      UserName: !Ref CloudwiseServiceUser
+
+Outputs:
+
+  CloudwisePrincipalArn:
+    Description: >
+      Set this as CLOUDWISE_AWS_PRINCIPAL_ARN in the Cloudwise environment. It is
+      also the value customers put in the Principal of their trust policy.
+    Value: !GetAtt CloudwiseServiceUser.Arn
+
+  AccessKeyId:
+    Condition: ShouldCreateAccessKey
+    Description: AWS_ACCESS_KEY_ID for the Cloudwise deployment environment.
+    Value: !Ref CloudwiseServiceAccessKey
+
+  SecretAccessKey:
+    Condition: ShouldCreateAccessKey
+    Description: >
+      AWS_SECRET_ACCESS_KEY for the Cloudwise deployment environment. Shown only
+      in this stack's outputs — store it in Azure Key Vault, not in .env, and
+      never in the database.
+    Value: !GetAtt CloudwiseServiceAccessKey.SecretAccessKey

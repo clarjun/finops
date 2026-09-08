@@ -7,6 +7,8 @@ import { QueryIntent } from './query-analyzer';
 import { fetchAWSResources } from './aws-resource-fetcher';
 import { fetchAzureResources } from './azure-resource-fetcher';
 import { fetchGCPResources } from './gcp-resource-fetcher';
+import { METRICS_CAPABILITY, metricsSupported } from '../cloud/metrics';
+import type { CloudProvider } from '@shared/schema';
 
 /**
  * Build enhanced context with service-level analysis for idle detection
@@ -22,35 +24,43 @@ export async function buildEnhancedContext(
   // Add resource-specific data if needed
   if (intent.needsResourceData) {
     // For idle detection, add service-level analysis
-    if (intent.action === 'find-idle' && (intent.provider === 'aws' || intent.provider === 'all')) {
-      console.log('[AI Context] Building service-level idle analysis...');
+    if (intent.action === 'find-idle') {
       const days = intent.filters?.age || 30; // Default to 30 days if not specified
-      const awsResources = await fetchAWSResources(intent.resourceTypes, intent.action, days);
-      
-      // Add service-level analysis
-      const { aggregateServiceIdleAnalysis } = await import('./service-level-idle-analyzer');
-      const serviceAnalyses = aggregateServiceIdleAnalysis(awsResources, costData);
-      
+      // This analysis only ever examined AWS. Running it for an Azure or GCP
+      // question would label AWS resources as that provider's; skipping it
+      // silently answered an idle question with no idle analysis. So: run it
+      // when AWS is in scope, and state the scope in both cases.
+      const coversAws = intent.provider === 'aws' || intent.provider === 'all';
+
       context += '\n\n=== SERVICE-LEVEL IDLE ANALYSIS ===\n';
-      context += `Analysis of AWS services showing idle/underutilized resources (${days}-day period):\n`;
-      
-      for (const analysis of serviceAnalyses) {
-        context += `\n--- ${analysis.serviceName} ---`;
-        context += `\n  Total Resources: ${analysis.totalResources}`;
-        context += `\n  Idle Resources: ${analysis.idleResources} (${analysis.idlePercentage.toFixed(1)}%)`;
-        context += `\n  Total Cost: $${analysis.totalCost.toFixed(2)}/month`;
-        context += `\n  Waste Cost: $${analysis.wasteCost.toFixed(2)}/month (${analysis.wastePercentage.toFixed(1)}% waste)`;
-        context += `\n  Details: ${analysis.details}`;
-        context += `\n  Recommendation: ${analysis.recommendation}`;
-        if (analysis.idleResourceIds.length > 0) {
-          context += `\n  Idle Resource IDs: ${analysis.idleResourceIds.slice(0, 5).join(', ')}`;
-          if (analysis.idleResourceIds.length > 5) {
-            context += ` ... and ${analysis.idleResourceIds.length - 5} more`;
+      context += idleCoverageNote(intent.provider);
+
+      if (coversAws) {
+        console.log('[AI Context] Building service-level idle analysis...');
+        const awsResources = await fetchAWSResources(intent.resourceTypes, intent.action, days);
+        const { aggregateServiceIdleAnalysis } = await import('./service-level-idle-analyzer');
+        const serviceAnalyses = aggregateServiceIdleAnalysis(awsResources, costData);
+
+        context += `\nAWS services showing idle/underutilized resources (${days}-day period):\n`;
+
+        for (const analysis of serviceAnalyses) {
+          context += `\n--- ${analysis.serviceName} ---`;
+          context += `\n  Total Resources: ${analysis.totalResources}`;
+          context += `\n  Idle Resources: ${analysis.idleResources} (${analysis.idlePercentage.toFixed(1)}%)`;
+          context += `\n  Total Cost: $${analysis.totalCost.toFixed(2)}/month`;
+          context += `\n  Waste Cost: $${analysis.wasteCost.toFixed(2)}/month (${analysis.wastePercentage.toFixed(1)}% waste)`;
+          context += `\n  Details: ${analysis.details}`;
+          context += `\n  Recommendation: ${analysis.recommendation}`;
+          if (analysis.idleResourceIds.length > 0) {
+            context += `\n  Idle Resource IDs: ${analysis.idleResourceIds.slice(0, 5).join(', ')}`;
+            if (analysis.idleResourceIds.length > 5) {
+              context += ` ... and ${analysis.idleResourceIds.length - 5} more`;
+            }
           }
         }
       }
-      
-      // Also add detailed resource context
+
+      // Detailed resource context for whichever provider was asked about.
       context += await buildResourceContext(intent);
     } else {
       // Regular resource context for non-idle queries
@@ -72,7 +82,7 @@ export async function buildEnhancedContext(
  */
 function buildBaseCostContext(costData: any, anomalyData: any, provider: string): string {
   const providerName = provider === 'all' ? 'multi-cloud' : provider.toUpperCase();
-  
+
   let context = `You are an AI assistant analyzing ${providerName} cloud spending and resources. Answer questions clearly and concisely based on the data provided.
 
 COST SUMMARY:
@@ -106,10 +116,10 @@ ${anomalyData.insights.join('\n')}`;
 async function buildResourceContext(intent: QueryIntent): Promise<string> {
   console.log('[AI Context] Building resource context for intent:', intent);
   let context = '\n=== RESOURCE INVENTORY ===\n';
-  
+
   try {
     const days = intent.filters?.age || 30; // Default to 30 days if not specified
-    
+
     if (intent.provider === 'aws' || intent.provider === 'all') {
       console.log('[AI Context] Fetching AWS resources...');
       const awsResources = await fetchAWSResources(intent.resourceTypes, intent.action, days);
@@ -160,7 +170,7 @@ function formatAWSResources(resources: any, intent: QueryIntent): string {
 
   if (resources.instances) {
     context += `\n\nEC2 INSTANCES (${resources.instances.length} total):`;
-    
+
     // Show idle instances with metrics if available
     if (resources.idleInstances?.length > 0) {
       context += `\n  IDLE INSTANCES (${resources.idleInstances.length}) - Based on 30-day metrics:`;
@@ -172,7 +182,7 @@ function formatAWSResources(resources: any, intent: QueryIntent): string {
         context += `\n    ... and ${resources.idleInstances.length - 15} more idle instances`;
       }
     }
-    
+
     if (resources.stoppedInstances?.length > 0) {
       context += `\n  STOPPED INSTANCES (${resources.stoppedInstances.length}):`;
       resources.stoppedInstances.slice(0, 10).forEach((inst: any) => {
@@ -202,7 +212,7 @@ function formatAWSResources(resources: any, intent: QueryIntent): string {
 
   if (resources.rdsInstances) {
     context += `\n\nRDS INSTANCES (${resources.rdsInstances.length} total):`;
-    
+
     // Show idle RDS instances with metrics if available
     if (resources.idleRDSInstances?.length > 0) {
       context += `\n  IDLE RDS INSTANCES (${resources.idleRDSInstances.length}) - Based on 30-day metrics:`;
@@ -210,7 +220,7 @@ function formatAWSResources(resources: any, intent: QueryIntent): string {
         context += `\n    - ${metric.resourceId}: ${metric.idleReason}`;
       });
     }
-    
+
     resources.rdsInstances.slice(0, 10).forEach((db: any) => {
       context += `\n  - ${db.dbInstanceIdentifier}: ${db.engine}, ${db.dbInstanceClass}, status: ${db.dbInstanceStatus}`;
     });
@@ -351,4 +361,48 @@ Be specific with numbers from the SERVICE-LEVEL IDLE ANALYSIS section.`;
 - Format lists clearly with bullet points or numbers`;
 
   return instructions;
+}
+
+/**
+ * Tells the model which providers this idle analysis did and did not examine.
+ *
+ * Idle detection here runs on AWS only: it calls fetchAWSResources and nothing
+ * else. Two separate gaps were invisible before:
+ *
+ *   - Asking about "all" clouds produced AWS-only findings under an unqualified
+ *     "SERVICE-LEVEL IDLE ANALYSIS" heading. The model had no way to know Azure
+ *     and GCP were absent, so it presented a partial answer as a complete one.
+ *
+ *   - Asking specifically about Azure or GCP skipped the idle branch entirely
+ *     and fell through to generic resource context — an idle question answered
+ *     with no idle analysis, and no indication of that.
+ *
+ * The note is prose because its consumer is a language model, and a model will
+ * caveat its answer if the context says what is missing. It cannot caveat an
+ * omission it cannot see.
+ */
+export function idleCoverageNote(provider: string): string {
+  const requested: CloudProvider[] =
+    provider === 'all' ? ['aws', 'azure', 'gcp'] : ([provider] as CloudProvider[]);
+
+  // "Assessed" means AWS specifically — not merely "has a metrics fetcher".
+  // Azure has one, but this path does not call it.
+  const assessed = requested.filter((p) => p === 'aws');
+  const missing = requested.filter((p) => p !== 'aws');
+  if (missing.length === 0) return '';
+
+  const lines = missing.map((p) =>
+    !metricsSupported(p)
+      ? `  - ${p.toUpperCase()}: not assessed. ${METRICS_CAPABILITY[p].reason}`
+      : `  - ${p.toUpperCase()}: not assessed. Utilisation metrics exist for ${p.toUpperCase()}, ` +
+        `but idle detection is only wired up for AWS resources so far.`,
+  );
+
+  return (
+    `\nSCOPE OF THIS ANALYSIS — read before answering:\n` +
+    `  Assessed: ${assessed.length ? assessed.map((p) => p.toUpperCase()).join(', ') : 'none'}\n` +
+    lines.join('\n') +
+    `\n  Treat the unassessed providers as UNKNOWN, not as having nothing idle. ` +
+    `If the question covers them, say plainly which providers you could not evaluate.\n`
+  );
 }

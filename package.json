@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "test:all": "npm run test && npm run test:integration"
+    "test:all": "npm run test && npm run test:integration",
+    "aws:setup-check": "tsx server/aws/setup-check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-budgets": "^3.1004.0",

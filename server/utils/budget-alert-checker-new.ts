@@ -5,7 +5,7 @@
  */
 
 import { storage } from "../storage";
-import { pool } from "../db";
+import { runExclusively, startTicker } from "./advisory-lock";
 import { runAsSystem } from "../tenant-context";
 import { EmailService } from "../email-service";
 import type { Budget, AlertRule, CloudProvider } from "@shared/schema";
@@ -459,27 +459,9 @@ const ALERT_JOB_LOCK_KEY = 4711001;
  * advisory lock is the cheapest correct fix short of a real job queue; the lock
  * is held on one connection for the duration of the run and released after.
  */
-async function withJobLock(fn: () => Promise<void>): Promise<void> {
-  const client = await pool.connect();
-  try {
-    const { rows } = await client.query<{ locked: boolean }>(
-      'SELECT pg_try_advisory_lock($1) AS locked', [ALERT_JOB_LOCK_KEY]
-    );
-    if (!rows[0]?.locked) {
-      console.log('[Alert Scheduler] Another replica holds the lock, skipping this tick');
-      return;
-    }
-    try {
-      await fn();
-    } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [ALERT_JOB_LOCK_KEY]);
-    }
-  } catch (err: any) {
-    console.error('[Alert Scheduler] Job lock error:', err?.message ?? err);
-  } finally {
-    client.release();
-  }
-}
+// Implemented once in utils/advisory-lock.ts. The copy that lived here took its
+// connection outside the try, so a dropped connection escaped as an unhandled
+// rejection and exited the process — taking the alerting with it.
 
 /**
  * Start periodic alert checking (for production deployment)
@@ -488,8 +470,8 @@ async function withJobLock(fn: () => Promise<void>): Promise<void> {
 export function startBudgetAlertScheduler(intervalMinutes: number = 60): NodeJS.Timeout {
   console.log(`[Alert Scheduler] Starting alert scheduler (checking every ${intervalMinutes} minutes)`);
 
-  const tick = async () => {
-    await withJobLock(async () => {
+  return startTicker('Alert Scheduler', intervalMinutes * 60 * 1000, async () => {
+    await runExclusively('Alert Scheduler', ALERT_JOB_LOCK_KEY, async () => {
       const results = await checkAllAlertsForAllTenants();
       console.log(
         `[Alert Scheduler] ${results.organizations} org(s): ` +
@@ -499,9 +481,5 @@ export function startBudgetAlertScheduler(intervalMinutes: number = 60): NodeJS.
         console.error('[Alert Scheduler] Errors:', results.errors);
       }
     });
-  };
-
-  void tick();
-
-  return setInterval(() => { void tick(); }, intervalMinutes * 60 * 1000);
+  });
 }

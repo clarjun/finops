@@ -3,6 +3,7 @@ import { ComputeManagementClient } from "@azure/arm-compute";
 import { SqlManagementClient } from "@azure/arm-sql";
 import { StorageManagementClient } from "@azure/arm-storage";
 import { ResourceManagementClient } from "@azure/arm-resources";
+import { getProviderCredentials } from "./cloud-config-manager";
 
 /**
  * Azure Resource Inventory Module
@@ -18,11 +19,37 @@ import { ResourceManagementClient } from "@azure/arm-resources";
  * - Supports multiple subscriptions
  */
 
-// Azure configuration from environment variables
-const AZURE_TENANT_ID = process.env.AZURE_TENANT_ID;
-const AZURE_CLIENT_ID = process.env.AZURE_CLIENT_ID;
-const AZURE_CLIENT_SECRET = process.env.AZURE_CLIENT_SECRET;
-const AZURE_SUBSCRIPTION_ID = process.env.AZURE_SUBSCRIPTION_ID;
+/**
+ * Credentials come from the database, per call — the same source every other
+ * cloud client in this codebase uses.
+ *
+ * They used to be read from process.env into module-level consts, which was
+ * wrong three times over:
+ *
+ *   1. The names did not match. This file wanted AZURE_SUBSCRIPTION_ID; .env
+ *      defines AZURE_SUB_ID, so isAzureResourceInventoryConfigured() was
+ *      permanently false and the agent planner silently fell back to
+ *      "recommendations based on cost data only" for Azure alone.
+ *
+ *   2. A second copy of the credentials that could drift. The .env secret was
+ *      the rotated-away one while the database held the working value, so even
+ *      with the names aligned this path would have failed to authenticate.
+ *
+ *   3. Consts captured at module evaluation. optimization-generator.ts worked
+ *      around (1) by injecting process.env before a dynamic import, but ESM
+ *      caches a module after its first evaluation — so the first Azure account
+ *      to trigger inventory baked its credentials in and every later account
+ *      reused them. With one tenant that is invisible; with two it is one
+ *      customer's credentials being used against another's subscription.
+ *
+ * Resolving per call fixes all three, and is why the env-injection dance in
+ * optimization-generator.ts is no longer needed.
+ */
+interface ResolvedAzureAccount {
+  credential: ClientSecretCredential;
+  subscriptionId: string;
+  accountName: string;
+}
 
 export interface AzureVirtualMachine {
   id: string;
@@ -84,31 +111,58 @@ export interface InventoryFetchError {
   error: string;
 }
 
-// Cache for Azure inventory (5-minute TTL)
-let inventoryCache: AzureResourceInventory | null = null;
-let cacheTimestamp = 0;
+/**
+ * Cached inventory, keyed by subscription.
+ *
+ * It was a single module-level variable, which was safe only while credentials
+ * were also global. Now that each caller resolves its own tenant's account, one
+ * shared slot would hand the first tenant's virtual machines to the second for
+ * five minutes. The key makes the cache per subscription, so a hit can only
+ * ever be the caller's own data.
+ */
+const inventoryCache = new Map<string, { data: AzureResourceInventory; at: number }>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-export function isAzureResourceInventoryConfigured(): boolean {
-  return !!(
-    AZURE_TENANT_ID &&
-    AZURE_CLIENT_ID &&
-    AZURE_CLIENT_SECRET &&
-    AZURE_SUBSCRIPTION_ID
-  );
+/**
+ * Resolves the calling tenant's Azure account into an SDK credential.
+ *
+ * Returns null rather than throwing when nothing is configured: an absent Azure
+ * account is a normal state for a tenant that only uses AWS, not an error.
+ */
+async function resolveAzureAccount(): Promise<ResolvedAzureAccount | null> {
+  const account = await getProviderCredentials('azure');
+  if (!account) return null;
+
+  const { tenantId, clientId, clientSecret, subscriptionId } = account.credentials as Record<string, string>;
+  // accountId is the fallback because that is where the Configuration page puts
+  // the subscription for an Azure account.
+  const subscription = subscriptionId || account.accountId;
+
+  if (!tenantId || !clientId || !clientSecret || !subscription) return null;
+
+  return {
+    credential: new ClientSecretCredential(tenantId, clientId, clientSecret),
+    subscriptionId: subscription,
+    accountName: account.accountName,
+  };
 }
 
-// Initialize Azure credential
-function getAzureCredential(): ClientSecretCredential | null {
-  if (!isAzureResourceInventoryConfigured()) {
-    return null;
+/**
+ * Whether this tenant has an Azure account the inventory can use.
+ *
+ * Async now, because the answer lives in the database rather than in a module
+ * constant. Callers that treated it as a cheap synchronous check must await it;
+ * the alternative was caching the answer, which is what caused the stale
+ * credential problem this function used to have.
+ */
+export async function isAzureResourceInventoryConfigured(): Promise<boolean> {
+  try {
+    return (await resolveAzureAccount()) !== null;
+  } catch {
+    // currentOrgId() throws outside a request or runAsSystem() block. Not
+    // configured is the honest answer there, and a safe one.
+    return false;
   }
-  
-  return new ClientSecretCredential(
-    AZURE_TENANT_ID!,
-    AZURE_CLIENT_ID!,
-    AZURE_CLIENT_SECRET!
-  );
 }
 
 /**
@@ -250,15 +304,12 @@ async function fetchResourceGroups(
  * Uses Promise.allSettled to handle partial failures gracefully
  */
 export async function fetchAzureResourceInventory(): Promise<AzureResourceInventory> {
-  // Check cache first
-  const now = Date.now();
-  if (inventoryCache && (now - cacheTimestamp) < CACHE_TTL_MS) {
-    console.log('Using cached Azure inventory');
-    return inventoryCache;
-  }
+  // Resolved before the cache is consulted, because the cache key is the
+  // subscription — without knowing which account is calling there is no safe
+  // way to decide whether a cached entry belongs to this caller.
+  const account = await resolveAzureAccount().catch(() => null);
 
-  // Check if Azure is configured
-  if (!isAzureResourceInventoryConfigured()) {
+  if (!account) {
     return {
       virtualMachines: [],
       sqlDatabases: [],
@@ -269,16 +320,24 @@ export async function fetchAzureResourceInventory(): Promise<AzureResourceInvent
       errors: [
         {
           service: 'Azure',
-          error: 'Azure credentials not configured (AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SUBSCRIPTION_ID)',
+          error:
+            'No Azure account is connected for this organization, or the stored ' +
+            'credentials are incomplete. Add or update it on the Configuration page.',
         },
       ],
     };
   }
 
-  const credential = getAzureCredential()!;
-  const subscriptionId = AZURE_SUBSCRIPTION_ID!;
+  const { credential, subscriptionId } = account;
 
-  console.log('Fetching Azure resource inventory...');
+  const now = Date.now();
+  const cached = inventoryCache.get(subscriptionId);
+  if (cached && (now - cached.at) < CACHE_TTL_MS) {
+    console.log(`[Azure] Using cached resource inventory for ${account.accountName}`);
+    return cached.data;
+  }
+
+  console.log(`[Azure] Fetching resource inventory for ${account.accountName} (${subscriptionId})...`);
 
   // Fetch all resources in parallel using Promise.allSettled
   const results = await Promise.allSettled([
@@ -355,9 +414,8 @@ export async function fetchAzureResourceInventory(): Promise<AzureResourceInvent
     console.warn('Azure inventory fetch had errors:', errors);
   }
 
-  // Cache the result
-  inventoryCache = inventory;
-  cacheTimestamp = now;
+  // Cached against the subscription it was fetched for, never globally.
+  inventoryCache.set(subscriptionId, { data: inventory, at: Date.now() });
 
   return inventory;
 }

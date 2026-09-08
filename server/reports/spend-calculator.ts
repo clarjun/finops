@@ -59,13 +59,22 @@ export async function calculateSpendOverview(
           forecastMonthEnd = dailyAverage * daysInMonth;
         }
         
-        // Fetch budget from AWS Budgets API
-        budget = await fetchAWSBudgets();
-
-        if (budget > 0) {
+        // Only publish a budget when AWS actually has one. This used to assign
+        // the raw return value, which was 0 for 'no budget' AND for 'the call
+        // failed' — so the report shipped budget: 0 with budgetUtilization
+        // undefined, and the UI crashed reading .toFixed() on it.
+        const lookup = await fetchAWSBudgets();
+        if (lookup.status === 'found') {
+          budget = lookup.monthlyBudget;
           budgetUtilization = (totalSpendMTD / budget) * 100;
           finalPotentialSavings = potentialSavings;
           budgetBasis = 'Monthly AWS budget (current month)';
+        } else if (lookup.status === 'none') {
+          budgetUnavailableReason = 'No monthly budget is configured in AWS Budgets';
+        } else {
+          // Distinguishing this from 'none' matters: the user can act on a
+          // missing permission, but not on a budget they were told they lack.
+          budgetUnavailableReason = lookup.reason;
         }
       } catch (error) {
         console.error('[Spend Calculator] Error fetching AWS budget/forecast:', error);

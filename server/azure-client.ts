@@ -26,6 +26,157 @@ export function clearAzureConfigCache(): void {
 }
 
 /**
+ * Cost Management throttling.
+ *
+ * This endpoint throttles hard at billing-account scope — a single refresh can
+ * take several minutes of 429s before it lets a query through. Previously the
+ * first 429 threw, so the dashboard showed zero Azure cost with no indication
+ * why, and Azure is the largest provider on this account: more than half of
+ * total spend silently vanished from every cross-cloud figure.
+ *
+ * Azure states how long to wait, so we wait that long rather than guessing.
+ * A total budget as well as an attempt count, because the caller is an HTTP
+ * request handler and an unbounded wait is its own failure.
+ */
+export const THROTTLE_MAX_ATTEMPTS = 6;
+
+/**
+ * Total wait allowed, per caller type.
+ *
+ * One number could not serve both callers. An interactive request must not hang
+ * for minutes, but a background ingestion job has nothing better to do than
+ * wait — and 90 seconds turned out to be less than Azure itself asks for. In
+ * testing Azure returned Retry-After values of 52 and 37 seconds, so a 90-second
+ * budget was exhausted mid-backoff and the run gave up while holding an explicit
+ * instruction for when it would have succeeded.
+ */
+export const THROTTLE_BUDGET_INTERACTIVE_MS =
+  Number(process.env.AZURE_THROTTLE_BUDGET_MS) || 90_000;
+export const THROTTLE_BUDGET_BACKGROUND_MS =
+  Number(process.env.AZURE_THROTTLE_BUDGET_BACKGROUND_MS) || 6 * 60_000;
+
+/** Kept for the error message and for existing callers. */
+export const THROTTLE_TOTAL_BUDGET_MS = THROTTLE_BUDGET_INTERACTIVE_MS;
+
+/**
+ * Honour a Retry-After that exceeds the remaining budget, up to this much.
+ *
+ * When Azure states when it will accept the request, that is better information
+ * than our own schedule. Giving up on it — as the previous logic did — throws
+ * away the one piece of certainty available. Still capped, so a pathological
+ * header cannot stall a run indefinitely.
+ */
+const HONOUR_RETRY_AFTER_UP_TO_MS = 90_000;
+
+/** Headers Azure uses to say how long to back off. Checked in order. */
+const RETRY_AFTER_HEADERS = [
+  'retry-after',
+  'x-ms-ratelimit-microsoft.costmanagement-entity-retry-after',
+  'x-ms-ratelimit-microsoft.costmanagement-tenant-retry-after',
+  'x-ms-ratelimit-microsoft.costmanagement-client-retry-after',
+];
+
+/** Seconds Azure asked us to wait, or null if it did not say. */
+export function retryAfterMs(headers: Headers): number | null {
+  for (const name of RETRY_AFTER_HEADERS) {
+    const raw = headers.get(name);
+    if (!raw) continue;
+    const seconds = Number(raw.trim());
+    // Only a plain seconds count. Retry-After also permits an HTTP date, but
+    // Cost Management sends seconds, and parsing a date wrong would produce a
+    // wait of hours or of zero — both worse than falling back to the schedule.
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds, 120) * 1000;
+  }
+  return null;
+}
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * POSTs, retrying while Azure reports throttling.
+ *
+ * Returns the last response either way — the caller decides what a non-OK
+ * status means. Only 429 is retried: a 403 will not become a 200 by asking
+ * again, and retrying it would just delay a clear permissions error.
+ */
+export async function postWithThrottleRetry(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  options: { budgetMs?: number } = {},
+): Promise<Response> {
+  const budget = options.budgetMs ?? THROTTLE_BUDGET_INTERACTIVE_MS;
+  const deadline = Date.now() + budget;
+  // Used when Azure throttles without saying for how long.
+  const fallback = [5_000, 15_000, 30_000, 45_000, 60_000, 60_000];
+  let response!: Response;
+
+  for (let attempt = 1; attempt <= THROTTLE_MAX_ATTEMPTS; attempt++) {
+    response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+    if (response.status !== 429) return response;
+
+    const asked = retryAfterMs(response.headers);
+    const wait = asked ?? fallback[Math.min(attempt, fallback.length) - 1];
+    const remaining = deadline - Date.now();
+
+    // An explicit Retry-After outranks our own budget, within a cap. Azure has
+    // told us when it will accept the request; abandoning that to respect a
+    // number we invented discards the only certainty on offer.
+    const overBudget = wait > remaining;
+    const worthWaitingAnyway = asked !== null && asked <= HONOUR_RETRY_AFTER_UP_TO_MS;
+
+    if (attempt === THROTTLE_MAX_ATTEMPTS || (overBudget && !worthWaitingAnyway)) {
+      console.warn(
+        `[Azure] Throttled (429) on attempt ${attempt}/${THROTTLE_MAX_ATTEMPTS}; ` +
+        `giving up (next wait ${Math.round(wait / 1000)}s, ${Math.round(Math.max(remaining, 0) / 1000)}s of budget left).`,
+      );
+      return response;
+    }
+
+    // Drain the body we are discarding so the connection is released.
+    await response.text().catch(() => undefined);
+
+    console.log(
+      `[Azure] Throttled (429). Waiting ${Math.round(wait / 1000)}s before attempt ` +
+      `${attempt + 1}/${THROTTLE_MAX_ATTEMPTS}${retryAfterMs(response.headers) != null ? ' (Azure asked)' : ''}.`,
+    );
+    await sleep(wait);
+  }
+
+  return response;
+}
+
+/**
+ * Turns a failed Cost Management response into the clearest error available.
+ *
+ * Always throws. Split out because the paginating loop needs the same handling
+ * on every page, and a page-2 failure that was treated as "done" would
+ * under-report exactly like the missing pagination did.
+ */
+async function handleQueryFailure(response: Response, page: number): Promise<never> {
+  const errorText = await response.text().catch(() => '');
+  console.error(`[Azure] Cost Management API failed on page ${page}: ${response.status}`, errorText);
+
+  if (response.status === 429) {
+    throw new Error(
+      `Azure is still rate-limiting this query after ${THROTTLE_MAX_ATTEMPTS} attempts ` +
+      `(${THROTTLE_TOTAL_BUDGET_MS / 1000}s). Cost Management throttles hard at billing-account scope; ` +
+      `the data is fine, the request just needs to be made again later.`
+    );
+  }
+
+  if (response.status === 403) {
+    throw new Error(
+      `Azure Cost Management API permission denied. ` +
+      `The service principal needs 'Cost Management Reader' role assigned at the subscription level. ` +
+      `See docs/AZURE_PERMISSIONS_SETUP.md for setup instructions.`
+    );
+  }
+
+  throw new Error(`Azure Cost Management API failed: ${response.status} ${errorText}`);
+}
+
+/**
  * Get OAuth access token from Azure AD using database credentials
  */
 export async function getAccessToken(): Promise<string> {
@@ -183,41 +334,61 @@ export async function fetchAzureCostData(
         "Content-Type": "application/json",
       };
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      });
+      /*
+       * Paginated.
+       *
+       * Cost Management caps a response at 5000 rows and returns
+       * `properties.nextLink` when there are more. This grouping — day x
+       * subscription x resource group x service — passes that cap easily: a
+       * three-week window on this account produced 7252 rows across two pages.
+       * Reading only the first page reported $11,643 of an actual $16,486, so
+       * 29% of the bill was missing, silently and with no error anywhere.
+       *
+       * The loop is bounded. A nextLink that never clears would otherwise spin
+       * against a throttled endpoint forever.
+       */
+      const MAX_PAGES = 50;
+      const rows: unknown[][] = [];
+      let nextUrl: string | null = url;
+      let pages = 0;
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[Azure] Cost Management API failed: ${response.status}`, errorText);
-        
-        // Check for rate limit error
-        if (response.status === 429) {
-          throw new Error(
-            `Azure API rate limit exceeded. Using cached data if available. ` +
-            `Please wait a moment before refreshing.`
-          );
+      while (nextUrl && pages < MAX_PAGES) {
+        const pageResponse = await postWithThrottleRetry(nextUrl, headers, body);
+        pages++;
+
+        if (!pageResponse.ok) {
+          // Fail rather than return the pages gathered so far: a partial total
+          // presented as complete is the bug being fixed here, and one page of
+          // a two-page answer is exactly as wrong whatever the reason.
+          await handleQueryFailure(pageResponse, pages);
         }
-        
-        // Check for permission error
-        if (response.status === 403) {
-          throw new Error(
-            `Azure Cost Management API permission denied. ` +
-            `The service principal needs 'Cost Management Reader' role assigned at the subscription level. ` +
-            `See docs/AZURE_PERMISSIONS_SETUP.md for setup instructions.`
-          );
+
+        const page = await pageResponse.json();
+        const pageRows = page.properties?.rows ?? [];
+        rows.push(...pageRows);
+
+        nextUrl = page.properties?.nextLink ?? null;
+        if (nextUrl) {
+          console.log(`[Azure] Page ${pages}: ${pageRows.length} rows; more to fetch.`);
         }
-        
-        throw new Error(`Azure Cost Management API failed: ${response.status} ${errorText}`);
       }
 
-      const data = await response.json();
+      if (nextUrl) {
+        // Bounded above, so say so rather than quietly under-reporting again.
+        throw new Error(
+          `Azure returned more than ${MAX_PAGES} pages of cost data for ${startDate}..${endDate}. ` +
+          `Narrow the date range; reporting a truncated total would understate the bill.`
+        );
+      }
+
+      if (pages > 1) {
+        console.log(`[Azure] Combined ${rows.length} rows across ${pages} pages.`);
+      }
+
       const costData: AzureCostData[] = [];
 
-      if (data.properties?.rows) {
-        for (const row of data.properties.rows) {
+      {
+        for (const row of rows as any[][]) {
           // Row format: [PreTaxCost, UsageDate, SubscriptionName, ResourceGroup, ServiceName, Currency]
           const [preTaxCost, usageDateNum, subscriptionName, resourceGroup, serviceName, currency] = row;
           
@@ -232,7 +403,11 @@ export async function fetchAzureCostData(
             continue;
           }
 
-          if (preTaxCost > 0) {
+          // Non-zero, not just positive. A negative PreTaxCost is a credit,
+          // refund or adjustment — a real part of the bill, and dropping it
+          // overstates what the customer owes. Exact zeros are skipped only
+          // because they add rows without adding information.
+          if (preTaxCost !== 0) {
             costData.push({
               date,
               provider: "azure",
@@ -249,7 +424,11 @@ export async function fetchAzureCostData(
       console.log(`[Azure] Fetched ${costData.length} cost records from Cost Management API (after date filtering)`);
       return costData;
     },
-    2 * 60 * 1000 // 2-minute cache
+    // 15 minutes, not 2. Every call here risks a 429 that costs the user their
+    // Azure figures entirely, and this is daily-granularity billing data —
+    // it does not change between two requests a minute apart. A short TTL was
+    // buying freshness that does not exist at the cost of the data itself.
+    15 * 60 * 1000
   );
 }
 

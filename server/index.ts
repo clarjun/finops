@@ -19,6 +19,7 @@ import { registerSavingsRoutes } from "./savings/routes";
 import { startIngestionScheduler } from "./ingestion/scheduler";
 import { startReportScheduler } from "./reports/scheduler";
 import { registerInfraAgentRoutes } from "./infra-agent/routes";
+import { registerAwsConnectionRoutes } from "./aws/connection-routes";
 import { startInfraWorker } from "./infra-agent/worker";
 import { registerTerraformTools } from "./infra-agent/tools/terraform-tools";
 import { log } from "./vite";
@@ -98,6 +99,8 @@ app.use((req, res, next) => {
   registerCostFactRoutes(app);
   registerSavingsRoutes(app);
   registerInfraAgentRoutes(app);
+  // Cross-account IAM role onboarding and validation for AWS.
+  registerAwsConnectionRoutes(app);
 
   // Surfaces any endpoint that slipped past the policy table, in the boot log.
   reportRoutePolicyGaps(app);

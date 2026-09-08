@@ -27,41 +27,58 @@ import {
   DescribeLogGroupsCommand 
 } from "@aws-sdk/client-cloudwatch-logs";
 
-// AWS region from environment
-const AWS_REGION = process.env.AWS_REGION || 'us-east-1';
+/*
+ * Credentials are resolved per call from the calling tenant's connection, via
+ * the read-only role.
+ *
+ * This file previously built five clients at MODULE LOAD with no explicit
+ * credentials, so the SDK's default chain picked up process.env.AWS_ACCESS_KEY_ID
+ * — the server's own keys, not the customer's. Three faults followed from that:
+ *
+ *   1. isAWSResourceInventoryConfigured() tested those env vars, so on a
+ *      deployment that (correctly) has no AWS keys in its environment, inventory
+ *      reported itself unconfigured and the agent planner silently degraded to
+ *      "recommendations based on cost data only".
+ *
+ *   2. optimization-generator.ts worked around that by writing a tenant's
+ *      credentials into process.env before importing this module. ESM caches a
+ *      module after first evaluation, so the FIRST tenant's credentials were
+ *      captured by these consts and every later tenant reused them — one
+ *      customer's keys reading another customer's account.
+ *
+ *   3. Module-level singletons cannot express a tenant boundary at all.
+ *
+ * Resolving per call fixes all three, and is why the env-injection dance in
+ * optimization-generator.ts is no longer needed.
+ */
+import { awsReadClient, DEFAULT_AWS_REGION } from "./aws/client-factory";
+import { loadAwsConnection } from "./aws/credential-provider";
+import { runProviderQuery } from "./cloud/query-runner";
 
-// Check if AWS is configured
-export function isAWSResourceInventoryConfigured(): boolean {
-  return !!(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+const AWS_REGION = process.env.AWS_REGION || DEFAULT_AWS_REGION;
+
+/**
+ * Whether this tenant has a usable AWS connection.
+ *
+ * Async now, because the answer is in the database rather than in the process
+ * environment. Callers must await it; the previous synchronous version answered
+ * a question about the server instead of about the customer.
+ */
+export async function isAWSResourceInventoryConfigured(): Promise<boolean> {
+  try {
+    return (await loadAwsConnection()) !== null;
+  } catch {
+    // currentOrgId() throws outside a request or runAsSystem() block. "Not
+    // configured" is the honest and safe answer there.
+    return false;
+  }
 }
 
-// AWS SDK retry configuration to prevent throttling in large accounts
-const awsRetryConfig = {
-  maxAttempts: 5,
-  retryMode: 'adaptive' as const,
-};
-
-// Initialize AWS clients with retry configuration
-const ec2Client = new EC2Client({ 
-  region: AWS_REGION,
-  ...awsRetryConfig 
-});
-const lambdaClient = new LambdaClient({ 
-  region: AWS_REGION,
-  ...awsRetryConfig 
-});
-const rdsClient = new RDSClient({ 
-  region: AWS_REGION,
-  ...awsRetryConfig 
-});
-const s3Client = new S3Client({ 
-  region: AWS_REGION,
-  ...awsRetryConfig 
-});
-const cloudwatchLogsClient = new CloudWatchLogsClient({ 
-  region: AWS_REGION,
-  ...awsRetryConfig 
-});
+const ec2 = () => awsReadClient(EC2Client, { region: AWS_REGION });
+const lambda = () => awsReadClient(LambdaClient, { region: AWS_REGION });
+const rds = () => awsReadClient(RDSClient, { region: AWS_REGION });
+const s3 = () => awsReadClient(S3Client, { region: AWS_REGION });
+const cwLogs = () => awsReadClient(CloudWatchLogsClient, { region: AWS_REGION });
 
 export interface EC2Instance {
   instanceId: string;
@@ -145,7 +162,7 @@ export async function fetchEC2Instances(): Promise<EC2Instance[]> {
       const command = new DescribeInstancesCommand({
         NextToken: nextToken,
       });
-      const response = await ec2Client.send(command);
+      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
       
       for (const reservation of response.Reservations || []) {
         for (const instance of reservation.Instances || []) {
@@ -190,7 +207,7 @@ export async function fetchLambdaFunctions(): Promise<LambdaFunction[]> {
       const command = new ListFunctionsCommand({
         Marker: nextMarker,
       });
-      const response = await lambdaClient.send(command);
+      const response = await runProviderQuery('aws', 'inventory:lambda', async () => (await lambda()).send(command));
       
       for (const fn of response.Functions || []) {
         functions.push({
@@ -227,7 +244,7 @@ export async function fetchRDSInstances(): Promise<RDSInstance[]> {
       const command = new DescribeDBInstancesCommand({
         Marker: nextMarker,
       });
-      const response = await rdsClient.send(command);
+      const response = await runProviderQuery('aws', 'inventory:rds', async () => (await rds()).send(command));
       
       for (const db of response.DBInstances || []) {
         instances.push({
@@ -260,7 +277,7 @@ export async function fetchRDSInstances(): Promise<RDSInstance[]> {
 export async function fetchS3Buckets(): Promise<S3Bucket[]> {
   try {
     const command = new ListBucketsCommand({});
-    const response = await s3Client.send(command);
+    const response = await runProviderQuery('aws', 'inventory:s3', async () => (await s3()).send(command));
     
     const buckets: S3Bucket[] = (response.Buckets || []).map(bucket => ({
       name: bucket.Name || '',
@@ -287,7 +304,7 @@ export async function fetchEBSVolumes(): Promise<EBSVolume[]> {
       const command = new DescribeVolumesCommand({
         NextToken: nextToken,
       });
-      const response = await ec2Client.send(command);
+      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
       
       for (const vol of response.Volumes || []) {
         volumes.push({
@@ -325,7 +342,7 @@ export async function fetchCloudWatchLogGroups(): Promise<CloudWatchLogGroup[]> 
       const command = new DescribeLogGroupsCommand({
         nextToken,
       });
-      const response = await cloudwatchLogsClient.send(command);
+      const response = await runProviderQuery('aws', 'inventory:cwLogs', async () => (await cwLogs()).send(command));
       
       for (const lg of response.logGroups || []) {
         logGroups.push({
@@ -360,7 +377,7 @@ export async function fetchEBSSnapshots(): Promise<any[]> {
         OwnerIds: ['self'],
         NextToken: nextToken,
       });
-      const response = await ec2Client.send(command);
+      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
       
       snapshots.push(...(response.Snapshots || []));
       nextToken = response.NextToken;
@@ -380,7 +397,7 @@ export async function fetchEBSSnapshots(): Promise<any[]> {
 export async function fetchElasticIPs(): Promise<any[]> {
   try {
     const command = new DescribeAddressesCommand({});
-    const response = await ec2Client.send(command);
+    const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
     
     console.log(`[AWS Inventory] Fetched ${response.Addresses?.length || 0} Elastic IPs`);
     return response.Addresses || [];
@@ -419,8 +436,12 @@ export interface AWSResourceInventoryWithErrors extends AWSResourceInventory {
 export async function fetchAWSResourceInventory(): Promise<AWSResourceInventoryWithErrors> {
   console.log('[AWS Inventory] Fetching AWS resource inventory...');
   
-  if (!isAWSResourceInventoryConfigured()) {
-    console.log('[AWS Inventory] AWS credentials not configured - returning empty inventory');
+  // Awaited. The check became async when it moved from process.env to the
+  // database, and `if (!promise)` is always false — the guard would have been
+  // silently skipped and every fetch would have failed one layer deeper with a
+  // less useful message.
+  if (!(await isAWSResourceInventoryConfigured())) {
+    console.log('[AWS Inventory] No AWS connection for this organization - returning empty inventory');
     return {
       ec2Instances: [],
       lambdaFunctions: [],
@@ -430,7 +451,10 @@ export async function fetchAWSResourceInventory(): Promise<AWSResourceInventoryW
       cloudwatchLogGroups: [],
       ebsSnapshots: [],
       elasticIPs: [],
-      errors: [{ resourceType: 'all', error: 'AWS credentials not configured' }],
+      errors: [{
+        resourceType: 'all',
+        error: 'No active AWS connection for this organization. Connect an account in Configuration.',
+      }],
       hasErrors: true,
     };
   }

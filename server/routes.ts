@@ -4,6 +4,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { eq, and, gte, lte } from "drizzle-orm";
 import { z } from "zod";
+import { reconcileTotals, applyReconciledTotals } from "./reports/reconcile";
 import { azureCostResponseSchema, aiQueryRequestSchema, azureConfigSchema, type AzureConfig, azureAccounts, costHistory, insertCostHistorySchema, forecastData } from "@shared/schema";
 import * as schema from "@shared/schema";
 import { processAzureCostData } from "./utils/process-cost-data";
@@ -267,11 +268,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const provider = (req.query.provider as CloudProvider | 'all') || 'all';
 
-      // Parse date range — default to month-to-date
+      // Parse date range — default to month-to-date.
+      //
+      // Built in UTC. `new Date(y, m, 1)` is local midnight, which east of
+      // Greenwich is the previous month's last day once converted: in IST the
+      // first of August became 2026-07-31T18:30Z, and the range handed to every
+      // provider therefore started a day early. Measured against AWS Cost
+      // Explorer that added $391.27 to a $9,062.76 month — a 4.3% overstatement
+      // that looked like a data problem rather than a timezone one.
       const endDate = req.query.endDate ? new Date(req.query.endDate as string) : new Date();
       const startDate = req.query.startDate
         ? new Date(req.query.startDate as string)
-        : new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+        : new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
 
       const { fetchLiveCosts } = await import('./utils/live-cost-fetcher');
       const { processMultiCloudCosts } = await import('./utils/multi-cloud-processor');
@@ -1005,9 +1013,11 @@ When answering:
         startDate = new Date(req.query.startDate as string);
         endDate = new Date(req.query.endDate as string);
       } else {
+        // UTC, matching /api/cost-data. `new Date(); setDate(1)` is local
+        // midnight, which east of Greenwich resolves to the previous month once
+        // converted — the same off-by-one already fixed on the dashboard path.
         endDate = new Date();
-        startDate = new Date();
-        startDate.setDate(1);
+        startDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
       }
 
       const startDateStr = startDate.toISOString().split('T')[0];
@@ -1019,14 +1029,22 @@ When answering:
       // Only trigger background refresh if data is older than this threshold
       const REFRESH_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
-      const shouldRefresh = (fetchedAtMs: number) =>
-        Date.now() - fetchedAtMs > REFRESH_THRESHOLD_MS;
+      // A report is cached even when some of its sections failed to compute, and
+      // the failures are recorded on it as `degradedSections`. Such a copy must
+      // never count as fresh: on 2026-09-06 a transient AWS failure zeroed the AI
+      // and budget sections, that copy was persisted, and the 30-minute freshness
+      // window then served it for the rest of the day. An incomplete report is
+      // always due for a refresh, however recently it was written.
+      const isDegraded = (report: any) => Array.isArray(report?.degradedSections) && report.degradedSections.length > 0;
+
+      const shouldRefresh = (fetchedAtMs: number, report?: any) =>
+        isDegraded(report) || Date.now() - fetchedAtMs > REFRESH_THRESHOLD_MS;
 
       // Fetches fresh data from APIs, saves to memory cache + DB
       const fetchAndRefresh = async (): Promise<any> => {
         console.log(`[FinOps Report] Fetching fresh data from APIs for ${provider} (${startDateStr} to ${endDateStr})`);
         const { generateFinOpsReport } = await import('./reports/report-engine');
-        const { fetchCostRecords } = await import('./ingestion/cost-records');
+        const { fetchCostRecords, aggregateByDayAndService } = await import('./ingestion/cost-records');
         const { fetchExpensiveResources } = await import('./reports/expensive-resources-fetcher');
 
         const sixMonthsAgo = new Date(startDate);
@@ -1057,9 +1075,10 @@ When answering:
           resourceId: `${service}-aggregate`, service, cost, resourceName: service, region: 'us-east-1', owner: 'Unknown',
         }));
 
-        const uniqueData = Array.from(
-          new Map([...formattedCurrent, ...formattedHistorical].map(item => [`${item.date}-${item.service}`, item])).values()
-        );
+        // The history window fully contains the current one, so the overlap must
+        // be deduplicated — but on the full natural key. Keying on date+service
+        // alone kept one region per service per day and dropped the rest.
+        const uniqueData = aggregateByDayAndService([current.records, historical.records]);
 
         const report = await generateFinOpsReport(
           provider as 'aws' | 'azure' | 'gcp',
@@ -1084,20 +1103,31 @@ When answering:
         });
 
         console.log(`[FinOps Report] Report refreshed and saved to DB`);
-        return report;
+        // Applied here too: the report engine derives its own total from the
+        // records it was handed, and a single source means one query decides.
+        const totals = await reconcileTotals(provider as CloudProvider, startDate, endDate);
+        return applyReconciledTotals(report as Record<string, any>, totals);
       }
 
       // 1. Memory cache — fastest path
       const memCached = persistentCache.get(cacheKey);
       if (memCached) {
         const cachedAt = persistentCache.getTimestamp(cacheKey) ?? 0;
-        if (shouldRefresh(cachedAt)) {
+        if (shouldRefresh(cachedAt, memCached)) {
           console.log(`[FinOps Report] Memory cache hit (stale ${Math.round((Date.now() - cachedAt) / 60000)}min) — triggering background refresh`);
           setImmediate(() => fetchAndRefresh().catch(err => console.error('[FinOps Report] Background refresh error:', err)));
         } else {
           console.log(`[FinOps Report] Memory cache hit (fresh ${Math.round((Date.now() - cachedAt) / 60000)}min) — skipping refresh`);
         }
-        return res.json({ success: true, report: memCached, cached: true, source: 'memory' });
+        // Headline cost recomputed from the fact store even on a cache hit, so
+        // the report never disagrees with the dashboard about the same month.
+        const totals = await reconcileTotals(provider as CloudProvider, startDate, endDate);
+        return res.json({
+          success: true,
+          report: applyReconciledTotals(memCached, totals),
+          cached: true,
+          source: 'memory',
+        });
       }
 
       // 2. DB cache — works after restarts or days without visits
@@ -1105,13 +1135,19 @@ When answering:
       if (dbCached) {
         persistentCache.set(cacheKey, dbCached.reportData, 60 * 60 * 1000);
         const fetchedAtMs = dbCached.fetchedAt ? new Date(dbCached.fetchedAt).getTime() : 0;
-        if (shouldRefresh(fetchedAtMs)) {
+        if (shouldRefresh(fetchedAtMs, dbCached.reportData)) {
           console.log(`[FinOps Report] DB cache hit (stale ${Math.round((Date.now() - fetchedAtMs) / 60000)}min) — triggering background refresh`);
           setImmediate(() => fetchAndRefresh().catch(err => console.error('[FinOps Report] Background refresh error:', err)));
         } else {
           console.log(`[FinOps Report] DB cache hit (fresh ${Math.round((Date.now() - fetchedAtMs) / 60000)}min) — skipping refresh`);
         }
-        return res.json({ success: true, report: dbCached.reportData, cached: true, source: 'db' });
+        const totals = await reconcileTotals(provider as CloudProvider, startDate, endDate);
+        return res.json({
+          success: true,
+          report: applyReconciledTotals(dbCached.reportData as Record<string, any>, totals),
+          cached: true,
+          source: 'db',
+        });
       }
 
       // 3. No cache — tell frontend to use the stream endpoint instead
@@ -1158,12 +1194,23 @@ When answering:
       res.write(`data: ${JSON.stringify({ section, data })}\n\n`);
     };
 
+    // Sections that failed to compute. A report is cached even when part of it
+    // failed, and stale-while-revalidate then serves that copy — which is how a
+    // single transient AWS failure produced a report showing no AI spend and no
+    // budget for a whole day. Recording the failures lets the read path refuse
+    // to treat such a report as fresh.
+    const degradedSections: string[] = [];
+
     const sendError = (section: string, error: string) => {
-      res.write(`data: ${JSON.stringify({ section, error })}\n\n`);
+      degradedSections.push(section);
+      console.error(`[FinOps Stream] Section "${section}" failed: ${error}`);
+      res.write(`data: ${JSON.stringify({ section, error })}
+
+`);
     };
 
     try {
-      const { fetchCostRecords } = await import('./ingestion/cost-records');
+      const { fetchCostRecords, aggregateByDayAndService } = await import('./ingestion/cost-records');
       const { fetchExpensiveResources } = await import('./reports/expensive-resources-fetcher');
 
       // ── Step 1: Fetch data ──────────────────────────────────────────────
@@ -1202,9 +1249,8 @@ When answering:
         resourceId: `${service}-aggregate`, service, cost, resourceName: service, region: 'us-east-1', owner: 'Unknown',
       }));
 
-      const uniqueData = Array.from(
-        new Map([...formattedCurrent, ...formattedHistorical].map(item => [`${item.date}-${item.service}`, item])).values()
-      );
+      // Deduplicated on the full natural key, then summed. See the report route.
+      const uniqueData = aggregateByDayAndService([current.records, historical.records]);
 
       // ── Step 2-11: Run each section and stream as it completes ───────────
       const now = endDate;
@@ -1234,7 +1280,7 @@ When answering:
       try {
         send('status', { message: 'Detecting waste...', step: 4, total: 11 });
         const { detectWaste } = await import('./reports/waste-detector');
-        wasteDetection = await detectWaste(provider as any, resourceCosts);
+        wasteDetection = await detectWaste(provider as any, resourceCosts, { startDate, endDate });
         send('wasteDetection', wasteDetection);
       } catch (e: any) { sendError('wasteDetection', e.message); }
 
@@ -1296,7 +1342,7 @@ When answering:
         send('status', { message: 'Calculating optimization opportunities...', step: 8, total: 11 });
         const { getResourceUtilization } = await import('./reports/waste-detector');
         const { calculateOptimizationOpportunities } = await import('./reports/optimization-calculator');
-        _utilizationData = await getResourceUtilization(provider as any, resourceCosts);
+        _utilizationData = await getResourceUtilization(provider as any, resourceCosts, { startDate, endDate });
         send('utilizationData', _utilizationData);
         const totalCost = currentMonthData.reduce((s, d) => s + d.cost, 0);
         const storageCost = currentMonthData.filter(d => d.service.toLowerCase().includes('storage') || d.service.toLowerCase().includes('s3')).reduce((s, d) => s + d.cost, 0);
@@ -1329,9 +1375,9 @@ When answering:
       try {
         send('status', { message: 'Analyzing AI service costs...', step: 10, total: 11 });
         const { analyzeAICosts } = await import('./reports/ai-cost-analyzer');
-        _aiSpendAnalysis = accountId
-          ? await analyzeAICosts(provider as any, accountId, periodStartStr, periodEndStr)
-          : { totalAISpend: 0, aiServices: [], aiPercentageOfTotal: 0, topAIService: 'None', monthOverMonthChange: 0 };
+        // Same records as every other section — no separate live call to fail,
+        // and no accountId gate on an analysis that never used accountId.
+        _aiSpendAnalysis = analyzeAICosts(provider as any, currentMonthData, previousMonthData);
         send('aiSpendAnalysis', _aiSpendAnalysis);
       } catch (e: any) { sendError('aiSpendAnalysis', e.message); }
 
@@ -1356,6 +1402,9 @@ When answering:
           departmentAllocation: _departmentAllocation,
           heatmapData: _heatmapData,
           aiSpendAnalysis: _aiSpendAnalysis,
+          // Empty on a clean run. Non-empty marks the report as incomplete, so
+          // it is never mistaken for a fresh, complete one on a later visit.
+          degradedSections,
         };
         persistentCache.set(cacheKey, builtReport, 60 * 60 * 1000);
         await storage.upsertReportCache({

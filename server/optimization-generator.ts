@@ -51,19 +51,14 @@ async function generateAWSRecommendations(context: RecommendationContext): Promi
       return recommendations;
     }
     
-    // Set environment variables temporarily for AWS SDK
-    const originalAccessKey = process.env.AWS_ACCESS_KEY_ID;
-    const originalSecretKey = process.env.AWS_SECRET_ACCESS_KEY;
-    const originalRegion = process.env.AWS_REGION;
-    
     try {
-      process.env.AWS_ACCESS_KEY_ID = credentials.credentials.accessKeyId;
-      process.env.AWS_SECRET_ACCESS_KEY = credentials.credentials.secretAccessKey;
-      process.env.AWS_REGION = credentials.credentials.region || 'us-east-1';
-      
-      console.log('[Optimization Generator] AWS credentials set from database');
-      
-      // Import AWS resource inventory dynamically
+      // The inventory module resolves this tenant's credentials itself, through
+      // the read-only role. It used to read process.env at module-evaluation
+      // time, so this function had to inject credentials into the environment
+      // and restore them afterwards — which only ever worked for the first
+      // caller, because ESM caches a module after its first evaluation and the
+      // captured values never changed again. With two tenants that meant one
+      // customer's keys being used against another customer's account.
       const { getAWSResourceInventory } = await import('./aws-resource-inventory');
       const inventory = await getAWSResourceInventory(true); // Force refresh
       
@@ -205,16 +200,8 @@ async function generateAWSRecommendations(context: RecommendationContext): Promi
         actionRequired: 'Check AWS credentials and permissions. Error: ' + (inventoryError as Error).message,
         status: 'active',
       });
-    } finally {
-      // Restore original environment variables
-      if (originalAccessKey) process.env.AWS_ACCESS_KEY_ID = originalAccessKey;
-      else delete process.env.AWS_ACCESS_KEY_ID;
-      if (originalSecretKey) process.env.AWS_SECRET_ACCESS_KEY = originalSecretKey;
-      else delete process.env.AWS_SECRET_ACCESS_KEY;
-      if (originalRegion) process.env.AWS_REGION = originalRegion;
-      else delete process.env.AWS_REGION;
     }
-    
+
   } catch (error) {
     console.error('[Optimization Generator] Error generating AWS recommendations:', error);
   }
@@ -255,21 +242,13 @@ async function generateAzureRecommendations(context: RecommendationContext): Pro
       return recommendations;
     }
     
-    // Set environment variables temporarily for Azure SDK
-    const originalTenantId = process.env.AZURE_TENANT_ID;
-    const originalClientId = process.env.AZURE_CLIENT_ID;
-    const originalClientSecret = process.env.AZURE_CLIENT_SECRET;
-    const originalSubscriptionId = process.env.AZURE_SUBSCRIPTION_ID;
-    
     try {
-      process.env.AZURE_TENANT_ID = credentials.credentials.tenantId;
-      process.env.AZURE_CLIENT_ID = credentials.credentials.clientId;
-      process.env.AZURE_CLIENT_SECRET = credentials.credentials.clientSecret;
-      process.env.AZURE_SUBSCRIPTION_ID = context.accountId;
-      
-      console.log('[Optimization Generator] Azure credentials set from database');
-      
-      // Import Azure resource inventory dynamically
+      // The inventory module resolves this tenant's credentials from the
+      // database itself. It used to read process.env at module-evaluation time,
+      // so this function had to inject the credentials into the environment and
+      // restore them afterwards — which only worked for the first call, because
+      // ESM caches a module after its first evaluation and the captured values
+      // never changed again.
       const { fetchAzureResourceInventory } = await import('./azure-resource-inventory');
       const inventory = await fetchAzureResourceInventory();
       
@@ -378,18 +357,8 @@ async function generateAzureRecommendations(context: RecommendationContext): Pro
         actionRequired: 'Check Azure credentials and permissions. Error: ' + (inventoryError as Error).message,
         status: 'active',
       });
-    } finally {
-      // Restore original environment variables
-      if (originalTenantId) process.env.AZURE_TENANT_ID = originalTenantId;
-      else delete process.env.AZURE_TENANT_ID;
-      if (originalClientId) process.env.AZURE_CLIENT_ID = originalClientId;
-      else delete process.env.AZURE_CLIENT_ID;
-      if (originalClientSecret) process.env.AZURE_CLIENT_SECRET = originalClientSecret;
-      else delete process.env.AZURE_CLIENT_SECRET;
-      if (originalSubscriptionId) process.env.AZURE_SUBSCRIPTION_ID = originalSubscriptionId;
-      else delete process.env.AZURE_SUBSCRIPTION_ID;
     }
-    
+
   } catch (error) {
     console.error('[Optimization Generator] Error generating Azure recommendations:', error);
   }

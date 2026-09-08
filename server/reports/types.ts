@@ -43,22 +43,63 @@ export interface AnomalyAlert {
   service: string;
   type: 'spike' | 'drop' | 'unusual';
   changePercent: number;
-  previousCost: number;
+  /**
+   * Mean daily cost over `baselinePeriod` — NOT the previous day.
+   *
+   * Named `previousCost` before, and rendered as "$45.17 -> $579.80", which
+   * states something untrue: it made two consecutive elevated days look like the
+   * cost had fallen back to $45 in between. Same value on every finding for a
+   * service, because there is one baseline per service.
+   */
+  baselineCost: number;
   currentCost: number;
+  /** The genuine prior day, for an honest day-over-day comparison. */
+  previousDayCost?: number;
+  /** Window the baseline was measured over, e.g. "2026-08-09 to 2026-08-29". */
+  baselinePeriod?: string;
+  baselineDays?: number;
+  /**
+   * Consecutive anomalous days collapsed into this one finding. A sustained
+   * shift used to appear as one "spike" per day for the same service.
+   */
+  sustainedDays?: number;
+  sustainedThrough?: string;
   severity: 'low' | 'medium' | 'high' | 'critical';
 }
 
+/**
+ * Attachment and power state are read live, so this section describes the
+ * account NOW — not the reported period, which cannot be reconstructed because
+ * nothing recorded which volumes were unattached last March. The extra fields
+ * exist so the UI can say that, instead of leaving a reader to conclude that
+ * twelve months of identical-looking waste figures are a historical finding.
+ */
 export interface WasteDetection {
   idleInstances: number;
   unattachedDisks: number;
   lowCpuVMs: number;
   potentialSaving: number;
+  /** When current-state resources were read. Absent if nothing was assessed. */
+  asOf?: string;
+  /** Only one region is queried; resources elsewhere are not assessed. */
+  regionAssessed?: string;
+  /** Window used for the CPU utilisation reading — this DOES follow the report. */
+  utilizationPeriod?: string;
+  /** Running instances metrics were pulled for, and how many were skipped. */
+  instancesAssessed?: number;
+  instancesNotAssessed?: number;
+  /** Set when the assessment could not run — distinct from finding no waste. */
+  unavailableReason?: string;
+  /** Set when any price fell back to a dated constant. */
+  costBasisNote?: string;
   details: {
     idleResources: Array<{
       resourceId: string;
       type: string;
       cost: number;
       reason: string;
+      /** How the cost was derived. Previously always a hardcoded guess. */
+      costBasis?: 'list-price' | 'estimated';
     }>;
     underutilizedResources: Array<{
       resourceId: string;
@@ -66,6 +107,7 @@ export interface WasteDetection {
       cost: number;
       utilization: number;
       recommendation: string;
+      costBasis?: 'list-price' | 'estimated';
     }>;
   };
 }

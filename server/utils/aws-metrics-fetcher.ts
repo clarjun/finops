@@ -5,18 +5,19 @@
 
 import { CloudWatchClient, GetMetricStatisticsCommand } from "@aws-sdk/client-cloudwatch";
 import { getProviderCredentials } from "../cloud-config-manager";
+import { awsReadClient } from "../aws/client-factory";
+import { runProviderQuery } from "../cloud/query-runner";
 
-export interface ResourceMetrics {
-  resourceId: string;
-  resourceType: string;
-  avgCpuUtilization?: number;
-  maxCpuUtilization?: number;
-  avgNetworkIn?: number;
-  avgNetworkOut?: number;
-  period: string; // e.g., "30 days"
-  isIdle: boolean;
-  idleReason?: string;
-}
+/**
+ * The utilisation contract now lives in server/cloud/metrics.ts, because a
+ * shared type owned by one provider's file is a type nobody owns — the Azure
+ * fetcher was importing ResourceMetrics from this AWS file.
+ *
+ * Re-exported so existing importers keep working.
+ */
+export type { ResourceMetrics } from '../cloud/metrics';
+// Also imported locally: a re-export does not bind the name in this module.
+import type { ResourceMetrics } from '../cloud/metrics';
 
 /**
  * Fetch CPU utilization for EC2 instances over a specified period
@@ -35,12 +36,12 @@ export async function fetchEC2Metrics(instanceIds: string[], days: number = 30):
     }
 
     const credentials = accountConfig.credentials;
-    const cloudwatch = new CloudWatchClient({
-      region: credentials.region || "us-east-1",
-      credentials: {
-        accessKeyId: credentials.accessKeyId,
-        secretAccessKey: credentials.secretAccessKey,
-      },
+    // Read-only tier via the factory: works with cross-account roles as well as
+    // legacy keys, and cannot hold credentials able to change anything. Building
+    // the client from accessKeyId/secretAccessKey would break outright once a
+    // customer migrates to STS.
+    const cloudwatch = await awsReadClient(CloudWatchClient, {
+      region: credentials.region || undefined,
     });
     
     const endTime = new Date();
@@ -70,7 +71,7 @@ export async function fetchEC2Metrics(instanceIds: string[], days: number = 30):
           Statistics: ['Average', 'Maximum'],
         });
 
-        const cpuResponse = await cloudwatch.send(cpuCommand);
+        const cpuResponse = await runProviderQuery('aws', 'metrics:cloudwatch', () => cloudwatch.send(cpuCommand));
         
         // Calculate average CPU over the period
         const cpuDatapoints = cpuResponse.Datapoints || [];
@@ -97,7 +98,7 @@ export async function fetchEC2Metrics(instanceIds: string[], days: number = 30):
           Statistics: ['Average'],
         });
 
-        const networkInResponse = await cloudwatch.send(networkInCommand);
+        const networkInResponse = await runProviderQuery('aws', 'metrics:cloudwatch', () => cloudwatch.send(networkInCommand));
         const networkInDatapoints = networkInResponse.Datapoints || [];
         const avgNetworkIn = networkInDatapoints.length > 0
           ? networkInDatapoints.reduce((sum, dp) => sum + (dp.Average || 0), 0) / networkInDatapoints.length
@@ -119,7 +120,7 @@ export async function fetchEC2Metrics(instanceIds: string[], days: number = 30):
           Statistics: ['Average'],
         });
 
-        const networkOutResponse = await cloudwatch.send(networkOutCommand);
+        const networkOutResponse = await runProviderQuery('aws', 'metrics:cloudwatch', () => cloudwatch.send(networkOutCommand));
         const networkOutDatapoints = networkOutResponse.Datapoints || [];
         const avgNetworkOut = networkOutDatapoints.length > 0
           ? networkOutDatapoints.reduce((sum, dp) => sum + (dp.Average || 0), 0) / networkOutDatapoints.length
@@ -176,12 +177,12 @@ export async function fetchRDSMetrics(dbInstanceIds: string[], days: number = 30
     }
 
     const credentials = accountConfig.credentials;
-    const cloudwatch = new CloudWatchClient({
-      region: credentials.region || "us-east-1",
-      credentials: {
-        accessKeyId: credentials.accessKeyId,
-        secretAccessKey: credentials.secretAccessKey,
-      },
+    // Read-only tier via the factory: works with cross-account roles as well as
+    // legacy keys, and cannot hold credentials able to change anything. Building
+    // the client from accessKeyId/secretAccessKey would break outright once a
+    // customer migrates to STS.
+    const cloudwatch = await awsReadClient(CloudWatchClient, {
+      region: credentials.region || undefined,
     });
     
     const endTime = new Date();
@@ -210,7 +211,7 @@ export async function fetchRDSMetrics(dbInstanceIds: string[], days: number = 30
           Statistics: ['Average', 'Maximum'],
         });
 
-        const cpuResponse = await cloudwatch.send(cpuCommand);
+        const cpuResponse = await runProviderQuery('aws', 'metrics:cloudwatch', () => cloudwatch.send(cpuCommand));
         const cpuDatapoints = cpuResponse.Datapoints || [];
         const avgCpu = cpuDatapoints.length > 0
           ? cpuDatapoints.reduce((sum, dp) => sum + (dp.Average || 0), 0) / cpuDatapoints.length
@@ -235,7 +236,7 @@ export async function fetchRDSMetrics(dbInstanceIds: string[], days: number = 30
           Statistics: ['Average'],
         });
 
-        const connectionsResponse = await cloudwatch.send(connectionsCommand);
+        const connectionsResponse = await runProviderQuery('aws', 'metrics:cloudwatch', () => cloudwatch.send(connectionsCommand));
         const connectionsDatapoints = connectionsResponse.Datapoints || [];
         const avgConnections = connectionsDatapoints.length > 0
           ? connectionsDatapoints.reduce((sum, dp) => sum + (dp.Average || 0), 0) / connectionsDatapoints.length

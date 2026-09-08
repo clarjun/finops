@@ -4,6 +4,7 @@
  */
 
 import { getProviderCredentials } from "../cloud-config-manager";
+import { runPaginatedQuery, ProviderQueryError } from "../cloud/query-runner";
 
 export interface AzureMeterCategoryCost {
   meterCategory: string;
@@ -84,42 +85,71 @@ export async function getAzureCostByMeterCategory(
       "Content-Type": "application/json",
     };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
+    /*
+     * Paginated and retried through the shared query runner.
+     *
+     * Previously this issued one unretried fetch and returned [] on any failure,
+     * so Cost Management throttling — which has caused three visible outages on
+     * this account — read as "this service has no meter categories". It also
+     * ignored `nextLink`, so a service with many meter categories was silently
+     * truncated.
+     */
+    const rows = await runPaginatedQuery<any[]>(
+      'azure',
+      `meter-category:${serviceName}`,
+      async (cursor) => {
+        const res = await fetch(cursor ?? url, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[Azure Cost Explorer] API failed: ${response.status}`, errorText);
-      return [];
-    }
-
-    const data = await response.json();
-    const costs: AzureMeterCategoryCost[] = [];
-    
-    if (data.properties?.rows) {
-      for (const row of data.properties.rows) {
-        // Row format: [PreTaxCost, MeterCategory, ResourceGroup]
-        const [preTaxCost, meterCategory, resourceGroup] = row;
-        const cost = parseFloat(preTaxCost) || 0;
-        
-        if (cost > 0) {
-          costs.push({
-            meterCategory: meterCategory || "Unknown",
-            resourceGroup: resourceGroup || "No Resource Group",
-            cost,
-          });
+        if (!res.ok) {
+          // Status and headers attached so the runner can classify it and read
+          // Azure's Retry-After rather than guessing a backoff.
+          throw Object.assign(
+            new Error(`Azure Cost Management returned ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`),
+            { status: res.status, headers: res.headers },
+          );
         }
+
+        const payload = await res.json();
+        return {
+          items: (payload?.properties?.rows ?? []) as any[][],
+          nextCursor: payload?.properties?.nextLink ?? undefined,
+        };
+      },
+    );
+
+    const costs: AzureMeterCategoryCost[] = [];
+    for (const row of rows) {
+      // Row format: [PreTaxCost, MeterCategory, ResourceGroup]
+      const [preTaxCost, meterCategory, resourceGroup] = row;
+      const cost = parseFloat(preTaxCost) || 0;
+
+      // Non-zero rather than positive: a negative amount is a credit against
+      // this meter category, and dropping it overstates the service's cost.
+      if (cost !== 0) {
+        costs.push({
+          meterCategory: meterCategory || "Unknown",
+          resourceGroup: resourceGroup || "No Resource Group",
+          cost,
+        });
       }
     }
-    
-    console.log(`[Azure Cost Explorer] ✓ Found ${costs.length} meter category costs`);
+
+    console.log(`[Azure Cost Explorer] ${serviceName}: ${costs.length} meter categories`);
     return costs;
-    
+
   } catch (error: any) {
-    console.error('[Azure Cost Explorer] Error:', error.message);
+    // Still returns [] so one failed drill-down cannot break an analysis run,
+    // but the classification is logged so "throttled" is distinguishable from
+    // "genuinely no data".
+    if (error instanceof ProviderQueryError) {
+      console.error(`[Azure Cost Explorer] ${serviceName}: ${error.message} (${error.classification.kind})`);
+    } else {
+      console.error(`[Azure Cost Explorer] ${serviceName}:`, error?.message ?? error);
+    }
     return [];
   }
 }

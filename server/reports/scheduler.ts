@@ -12,7 +12,8 @@
  * the answer.
  */
 import { and, eq, lte } from "drizzle-orm";
-import { db, pool } from "../db";
+import { db } from "../db";
+import { runExclusively, startTicker } from "../utils/advisory-lock";
 import { reportSchedules, type ReportSchedule } from "@shared/schema";
 import { storage } from "../storage";
 import { runAsSystem, currentOrgId } from "../tenant-context";
@@ -178,24 +179,8 @@ export async function runDueReportSchedules(): Promise<ReportRunResult[]> {
   return results;
 }
 
-async function withJobLock(fn: () => Promise<void>): Promise<void> {
-  const client = await pool.connect();
-  try {
-    const { rows } = await client.query<{ locked: boolean }>(
-      'SELECT pg_try_advisory_lock($1) AS locked', [REPORT_JOB_LOCK_KEY]
-    );
-    if (!rows[0]?.locked) return;   // another replica is handling this tick
-    try {
-      await fn();
-    } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [REPORT_JOB_LOCK_KEY]);
-    }
-  } catch (err: any) {
-    console.error('[Report Scheduler] Job lock error:', err?.message ?? err);
-  } finally {
-    client.release();
-  }
-}
+// Lock/tick mechanics moved to utils/advisory-lock.ts — the copy here took its
+// connection outside the try, so a dropped connection exited the process.
 
 /** Deliver due reports for every active tenant. */
 export async function runReportsForAllTenants() {
@@ -232,8 +217,8 @@ export async function runReportsForAllTenants() {
 export function startReportScheduler(intervalMinutes = 15): NodeJS.Timeout {
   console.log(`[Report Scheduler] Starting (checking every ${intervalMinutes} minutes)`);
 
-  const tick = async () => {
-    await withJobLock(async () => {
+  return startTicker('Report Scheduler', intervalMinutes * 60 * 1000, async () => {
+    await runExclusively('Report Scheduler', REPORT_JOB_LOCK_KEY, async () => {
       const result = await runReportsForAllTenants();
       if (result.sent || result.failed || result.skipped) {
         console.log(
@@ -242,9 +227,5 @@ export function startReportScheduler(intervalMinutes = 15): NodeJS.Timeout {
         );
       }
     });
-  };
-
-  void tick();
-
-  return setInterval(() => { void tick(); }, intervalMinutes * 60 * 1000);
+  });
 }

@@ -22,6 +22,7 @@ import {
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { SectionBoundary } from '@/components/section-boundary';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -337,18 +338,18 @@ export default function Reports() {
           <div ref={reportRef} className="space-y-6">
             {/* Spend Overview — shows as soon as spendOverview arrives */}
             {report.spendOverview
-              ? <SpendOverviewSection overview={report.spendOverview} />
+              ? <SectionBoundary name="Spend overview"><SpendOverviewSection overview={report.spendOverview} /></SectionBoundary>
               : <Skeleton className="h-40 w-full" />
             }
 
             {/* Top Cost Drivers & Expensive Resources */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {report.topCostDrivers
-                ? <TopCostDriversCard drivers={report.topCostDrivers} />
+                ? <SectionBoundary name="Top cost drivers"><TopCostDriversCard drivers={report.topCostDrivers} /></SectionBoundary>
                 : <Skeleton className="h-64" />
               }
               {report.expensiveResources && report.expensiveResources.length > 0
-                ? <ExpensiveResourcesCard resources={report.expensiveResources} />
+                ? <SectionBoundary name="Most expensive resources"><ExpensiveResourcesCard resources={report.expensiveResources} /></SectionBoundary>
                 : report.expensiveResources !== undefined
                   ? <Card className="hover:shadow-lg transition-shadow"><CardContent className="flex items-center justify-center h-32 text-muted-foreground text-sm">No resource-level data available</CardContent></Card>
                   : <Skeleton className="h-64" />
@@ -357,42 +358,42 @@ export default function Reports() {
 
             {/* Cost Trend */}
             {report.costTrend
-              ? <CostTrendCard trend={report.costTrend} />
+              ? <SectionBoundary name="Cost trend"><CostTrendCard trend={report.costTrend} /></SectionBoundary>
               : <Skeleton className="h-80 w-full" />
             }
 
             {/* Anomalies & Waste Detection */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {report.anomalies
-                ? <AnomaliesCard anomalies={report.anomalies} />
+                ? <SectionBoundary name="Cost anomalies"><AnomaliesCard anomalies={report.anomalies} /></SectionBoundary>
                 : <Skeleton className="h-64" />
               }
               {report.wasteDetection
-                ? <WasteDetectionCard waste={report.wasteDetection} />
+                ? <SectionBoundary name="Waste detection"><WasteDetectionCard waste={report.wasteDetection} /></SectionBoundary>
                 : <Skeleton className="h-64" />
               }
             </div>
 
             {/* Optimization Opportunities */}
             {report.optimizationOpportunities
-              ? <OptimizationCard opportunities={report.optimizationOpportunities} />
+              ? <SectionBoundary name="Optimization opportunities"><OptimizationCard opportunities={report.optimizationOpportunities} /></SectionBoundary>
               : <Skeleton className="h-64 w-full" />
             }
 
             {/* AI Spend Analysis */}
             {report.aiSpendAnalysis
-              ? <AISpendCard aiSpend={report.aiSpendAnalysis} />
+              ? <SectionBoundary name="AI spend analysis"><AISpendCard aiSpend={report.aiSpendAnalysis} /></SectionBoundary>
               : <Skeleton className="h-48 w-full" />
             }
 
             {/* Department Allocation & Heatmap */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pdf-layout-section">
               {report.departmentAllocation
-                ? <DepartmentAllocationCard allocation={report.departmentAllocation} />
+                ? <SectionBoundary name="Department allocation"><DepartmentAllocationCard allocation={report.departmentAllocation} /></SectionBoundary>
                 : <Skeleton className="h-64" />
               }
               {report.heatmapData
-                ? <HeatmapCard heatmap={report.heatmapData} />
+                ? <SectionBoundary name="Spend heatmap"><HeatmapCard heatmap={report.heatmapData} /></SectionBoundary>
                 : <Skeleton className="h-64" />
               }
             </div>
@@ -405,9 +406,20 @@ export default function Reports() {
 
 // Spend Overview Section
 function SpendOverviewSection({ overview }: { overview: any }) {
-  const hasBudget = overview.budget !== undefined && overview.budget !== null;
-  const budgetStatus = hasBudget && overview.budgetUtilization > 90 ? 'critical' : 
-                       hasBudget && overview.budgetUtilization > 75 ? 'warning' : 'good';
+  // The budget card needs BOTH the amount and the utilisation. Testing only
+  // `budget` let a payload with budget but no utilisation through, and the card
+  // then called .toFixed() on undefined — which unmounts the entire Reports
+  // page, since there is no error boundary above it. A budget of 0 is also not
+  // a budget worth rendering, and would make utilisation a division by zero.
+  const hasBudget =
+    typeof overview.budget === 'number' &&
+    overview.budget > 0 &&
+    typeof overview.budgetUtilization === 'number';
+
+  const budgetStatus = !hasBudget ? 'good'
+    : overview.budgetUtilization > 90 ? 'critical'
+    : overview.budgetUtilization > 75 ? 'warning'
+    : 'good';
   
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -668,7 +680,14 @@ function AnomaliesCard({ anomalies }: { anomalies: any[] }) {
                 <div className="flex items-start justify-between mb-2">
                   <div>
                     <div className="font-medium">{anomaly.service}</div>
-                    <div className="text-xs text-muted-foreground">{anomaly.date}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {anomaly.date}
+                      {/* A run of elevated days is one event. Showing only the
+                          first date made a sustained rise look like a one-day
+                          blip that had already been fixed. */}
+                      {anomaly.sustainedThrough && ` – ${anomaly.sustainedThrough}`}
+                      {anomaly.sustainedDays > 1 && ` (${anomaly.sustainedDays} days)`}
+                    </div>
                   </div>
                   <Badge variant={getSeverityColor(anomaly.severity)}>
                     {anomaly.severity}
@@ -677,10 +696,22 @@ function AnomaliesCard({ anomalies }: { anomalies: any[] }) {
                 <div className="text-sm">
                   <span className="capitalize">{anomaly.type}</span> of{' '}
                   <span className="font-bold text-red-500">{anomaly.changePercent.toFixed(0)}%</span>
+                  {' '}vs baseline
                 </div>
+                {/* Spelled out as a baseline comparison. Rendering it as
+                    "$45.17 → $579.80" claimed the cost had been $45.17 the day
+                    before, when $45.17 was a three-week average and the previous
+                    day was $673.25. */}
                 <div className="text-xs text-muted-foreground mt-1">
-                  ${anomaly.previousCost.toFixed(2)} → ${anomaly.currentCost.toFixed(2)}
+                  {anomaly.sustainedDays > 1 ? 'Peak ' : ''}${anomaly.currentCost.toFixed(2)}/day vs ${(anomaly.baselineCost ?? anomaly.previousCost ?? 0).toFixed(2)}/day average
+                  {anomaly.baselineDays ? ` over ${anomaly.baselineDays} days` : ''}
+                  {anomaly.baselinePeriod ? ` (${anomaly.baselinePeriod})` : ''}
                 </div>
+                {typeof anomaly.previousDayCost === 'number' && (
+                  <div className="text-xs text-muted-foreground">
+                    Day before it started: ${anomaly.previousDayCost.toFixed(2)}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -703,6 +734,24 @@ function WasteDetectionCard({ waste }: { waste: any }) {
       </CardHeader>
       <CardContent>
         <div className="space-y-4">
+          {/* Attachment and power state are read live, so these counts describe
+              the account now — not the reported period. Without saying so, a
+              reader comparing several monthly reports sees near-identical waste
+              figures and reasonably concludes the data is stale or fake. */}
+          {waste.unavailableReason ? (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+              <p className="text-xs text-amber-700 dark:text-amber-300">{waste.unavailableReason}</p>
+            </div>
+          ) : waste.asOf && (
+            <p className="text-xs text-muted-foreground">
+              Current state as of {new Date(waste.asOf).toLocaleString()}
+              {waste.regionAssessed && ` in ${waste.regionAssessed}`}
+              {'. '}
+              {waste.utilizationPeriod && `CPU measured over ${waste.utilizationPeriod}. `}
+              Unattached and stopped resources reflect the account today, not the report period.
+            </p>
+          )}
           <div className="grid grid-cols-3 gap-4">
             <div className="text-center p-3 rounded-lg bg-orange-50 dark:bg-orange-950">
               <div className="text-2xl font-bold text-orange-600">{waste.idleInstances}</div>
@@ -721,8 +770,20 @@ function WasteDetectionCard({ waste }: { waste: any }) {
           <div className="p-4 rounded-lg bg-gradient-to-r from-orange-50 to-red-50 dark:from-orange-950 dark:to-red-950 border border-orange-200 dark:border-orange-800">
             <div className="text-sm text-muted-foreground mb-1">Potential Monthly Savings</div>
             <div className="text-3xl font-bold text-orange-600 dark:text-orange-400">
-              ${waste.potentialSaving.toLocaleString('en-US', { useGrouping: false })}
+              ${waste.potentialSaving.toLocaleString('en-US', { maximumFractionDigits: 2, useGrouping: false })}
             </div>
+            {/* Every one of these numbers used to be a hardcoded constant. Saying
+                where they come from is the difference between a figure someone
+                can act on and one they have to take on faith. */}
+            {typeof waste.instancesAssessed === 'number' && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Priced from AWS list prices. {waste.instancesAssessed} running instance(s) assessed
+                {waste.instancesNotAssessed ? `, ${waste.instancesNotAssessed} not assessed` : ''}.
+              </p>
+            )}
+            {waste.costBasisNote && (
+              <p className="text-xs text-muted-foreground mt-1">{waste.costBasisNote}</p>
+            )}
           </div>
 
           {waste.details.idleResources.length > 0 && (

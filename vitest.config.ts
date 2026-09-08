@@ -26,5 +26,12 @@ export default defineConfig({
     // Integration tests are opted into explicitly.
     exclude: ['**/node_modules/**', '**/dist/**', '**/*.itest.ts'],
     globals: false,
+    env: {
+      // Retry tests exercise real backoff paths. At the production base of
+      // 5s they sleep for tens of seconds, which is slow and — under
+      // parallel execution — flaky, because a starved timer overruns the
+      // test timeout. 10ms keeps the logic identical and the clock honest.
+      CLOUD_BACKOFF_BASE_MS: '10',
+    },
   },
 });

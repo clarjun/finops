@@ -99,10 +99,33 @@ const RULES: Rule[] = [
   R(['GET'],  /^\/api\/infra\/accounts$/,                     'account:read'),
   R(['GET'],  /^\/api\/infra\//,                              'cost:read'),
 
+  // ── AWS cross-account connections ─────────────────────────────────────────
+  // findRule() takes the FIRST match, so the specific validate rule must
+  // precede the general POST rule or it would never be reached.
+  //
+  // Validation performs a real AssumeRole, so it is not a free read — but it
+  // creates nothing, returns no credentials, and an operator needs to diagnose
+  // a broken connection without holding write permission.
+  // Reports how Cloudwise itself authenticates to AWS, and the IAM values an
+  // operator must configure. Claims only — no token, no credential.
+  R(['GET'],  /^\/api\/aws\/federation$/,                     'account:read'),
+  R(['POST'], /^\/api\/aws\/connections\/\d+\/validate$/,      'account:read'),
+  // Connecting, re-pointing or revoking an account is the most consequential
+  // configuration change in the product: it decides which AWS account Cloudwise
+  // reads and, where a remediation role is supplied, can modify. account:write
+  // excludes viewer and finops.
+  R(['POST', 'PATCH', 'DELETE'], /^\/api\/aws\/connections/,   'account:write'),
+  R(['GET'],  /^\/api\/aws\/connections/,                      'account:read'),
+
   // ── Cost fact store ───────────────────────────────────────────────────────
   // Triggering ingestion spends money on billing APIs (Cost Explorer bills per
   // request) and a backfill can issue a lot of them, so it is an account-level
   // action, not a read.
+  // Refresh takes no date range and cannot backfill, so it is a read of current
+  // figures rather than a configuration change — cost:read, the same permission
+  // as viewing the dashboard it refreshes. Abuse is bounded by the server-side
+  // cooldown, not by the permission.
+  R(['POST'], /^\/api\/costs\/refresh$/,                       'cost:read'),
   R(['POST'], /^\/api\/costs\/ingest$/,                        'account:write'),
   R(['GET'],  /^\/api\/costs\/ingestion-status$/,              'account:read'),
   R(['GET'],  /^\/api\/costs\//,                               'cost:read'),

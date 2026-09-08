@@ -233,9 +233,34 @@ export const cloudAccounts = pgTable("cloud_accounts", {
   refreshInterval: integer("refresh_interval").notNull().default(86400),
   isActive: boolean("is_active").notNull().default(true),
   lastSyncAt: timestamp("last_sync_at"),
+
+  // ── Cross-account role authentication (migration 0018) ────────────────────
+  // `credentials` stays for the legacy access-key path, selected by authType,
+  // so existing connections keep working while customers migrate.
+  authType: varchar("auth_type", { length: 32 }).notNull().default('access_keys'),
+  roleArn: varchar("role_arn", { length: 2048 }),
+  remediationRoleArn: varchar("remediation_role_arn", { length: 2048 }),
+  deployRoleArn: varchar("deploy_role_arn", { length: 2048 }),
+  /** Encrypted. Meaningless without control of the Cloudwise AWS principal. */
+  externalId: text("external_id"),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  lastValidationError: text("last_validation_error"),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+/** How Cloudwise authenticates to a customer cloud. */
+export const CLOUD_AUTH_TYPES = ['access_keys', 'assume_role', 'workload_identity'] as const;
+export type CloudAuthType = (typeof CLOUD_AUTH_TYPES)[number];
+
+/**
+ * Privilege tiers. Each maps to a distinct customer IAM role, so a read path
+ * physically cannot mutate infrastructure — the separation is enforced by AWS,
+ * not by our own code being careful.
+ */
+export const AWS_ROLE_TIERS = ['readonly', 'remediation', 'deploy'] as const;
+export type AwsRoleTier = (typeof AWS_ROLE_TIERS)[number];
 
 export const insertCloudAccountSchema = createInsertSchema(cloudAccounts).omit({ id: true, createdAt: true, updatedAt: true });
 export type InsertCloudAccount = z.infer<typeof insertCloudAccountSchema>;

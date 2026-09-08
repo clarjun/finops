@@ -95,15 +95,23 @@ export async function fetchGCPCostData(
         DATE(usage_start_time) as usage_date,
         service.description as service_name,
         location.region as region,
-        SUM(cost) as total_cost,
+        -- Net of credits, which is what Google actually bills.
+        --
+        -- This was SUM(cost), and the cost column in the billing export is the
+        -- gross list amount before sustained-use and committed-use discounts.
+        -- The credits array holds those as negative amounts and was ignored
+        -- entirely, so a $1,399.91 bill was reported as $1,542.62, 10.2% high.
+        SUM(cost + IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) as total_cost,
         TO_JSON_STRING(labels) as labels_json
-      FROM 
+      FROM
         \`${projectId}.${billingDataset}.${billingTable}\`
-      WHERE 
+      WHERE
         DATE(usage_start_time) >= @startDate
         AND DATE(usage_start_time) < @endDate
-        AND cost > 0
-      GROUP BY 
+        -- Was a cost > 0 filter, which discarded 5773 refund and adjustment
+        -- rows in a single month. A negative line is part of the bill.
+        AND (cost != 0 OR ARRAY_LENGTH(credits) > 0)
+      GROUP BY
         usage_date,
         service_name,
         region,

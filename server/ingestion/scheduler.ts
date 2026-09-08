@@ -9,7 +9,7 @@
  * appears, replace both of these with pg-boss rather than copying the pattern a
  * third time.
  */
-import { pool } from "../db";
+import { runExclusively, startTicker } from "../utils/advisory-lock";
 import { storage } from "../storage";
 import { runAsSystem } from "../tenant-context";
 import { ingestAllProviders, defaultRange, type ProviderIngestResult } from "./ingest";
@@ -18,27 +18,8 @@ import { runDueMeasurements } from "../savings/measurement";
 /** Distinct from the alert scheduler's key so the two jobs never block each other. */
 const INGEST_JOB_LOCK_KEY = 4711002;
 
-async function withJobLock(fn: () => Promise<void>): Promise<void> {
-  const client = await pool.connect();
-  try {
-    const { rows } = await client.query<{ locked: boolean }>(
-      'SELECT pg_try_advisory_lock($1) AS locked', [INGEST_JOB_LOCK_KEY]
-    );
-    if (!rows[0]?.locked) {
-      console.log('[Ingest Scheduler] Another replica holds the lock, skipping this tick');
-      return;
-    }
-    try {
-      await fn();
-    } finally {
-      await client.query('SELECT pg_advisory_unlock($1)', [INGEST_JOB_LOCK_KEY]);
-    }
-  } catch (err: any) {
-    console.error('[Ingest Scheduler] Job lock error:', err?.message ?? err);
-  } finally {
-    client.release();
-  }
-}
+// Lock/tick mechanics moved to utils/advisory-lock.ts — the copy here took its
+// connection outside the try, so a dropped connection exited the process.
 
 /** Ingest the rolling restatement window for every active tenant. */
 export async function ingestAllTenants(): Promise<{
@@ -96,8 +77,8 @@ export async function ingestAllTenants(): Promise<{
 export function startIngestionScheduler(intervalHours = 6): NodeJS.Timeout {
   console.log(`[Ingest Scheduler] Starting (every ${intervalHours}h, ${defaultRange().start}..${defaultRange().end} window)`);
 
-  const tick = async () => {
-    await withJobLock(async () => {
+  return startTicker('Ingest Scheduler', intervalHours * 60 * 60 * 1000, async () => {
+    await runExclusively('Ingest Scheduler', INGEST_JOB_LOCK_KEY, async () => {
       const result = await ingestAllTenants();
       console.log(
         `[Ingest Scheduler] ${result.organizations} org(s): ` +
@@ -108,9 +89,5 @@ export function startIngestionScheduler(intervalHours = 6): NodeJS.Timeout {
         console.error('[Ingest Scheduler] Failures:', result.failures);
       }
     });
-  };
-
-  void tick();
-
-  return setInterval(() => { void tick(); }, intervalHours * 60 * 60 * 1000);
+  });
 }

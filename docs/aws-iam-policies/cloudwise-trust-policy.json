@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Trust policy for every Cloudwise role in a customer account.",
+    "",
+    "Replace <CLOUDWISE_AWS_PRINCIPAL_ARN> with the value shown in the Cloudwise",
+    "connection screen, and <EXTERNAL_ID> with the External ID Cloudwise generated",
+    "for this specific connection. The External ID is per-connection and is shown",
+    "exactly once, at creation.",
+    "",
+    "Two conditions matter and neither is optional:",
+    "  sts:ExternalId  defeats the confused-deputy problem. Without it, anyone who",
+    "                  learns this role ARN could induce Cloudwise to assume it.",
+    "  aws:PrincipalArn is pinned to a single Cloudwise role rather than to the",
+    "                  account root, so a compromised unrelated principal inside",
+    "                  the Cloudwise account cannot assume this role."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudwiseToAssumeWithExternalId",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "<CLOUDWISE_AWS_PRINCIPAL_ARN>"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "<EXTERNAL_ID>"
+        }
+      }
+    },
+    {
+      "Sid": "DenyAssumeWithoutExternalId",
+      "Effect": "Deny",
+      "Principal": {
+        "AWS": "*"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "Null": {
+          "sts:ExternalId": "true"
+        }
+      }
+    }
+  ]
+}

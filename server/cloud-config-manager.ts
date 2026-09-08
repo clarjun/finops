@@ -5,10 +5,21 @@ import { decrypt } from "./encryption";
 import { currentOrgId } from "./tenant-context";
 
 export interface CloudCredentials {
+  /**
+   * cloud_accounts.id — the connection this came from.
+   *
+   * Needed so a caller can name the specific connection when asking the AWS
+   * client factory for credentials. Without it a tenant with two AWS accounts
+   * could only be served "whichever one comes first", which is how the wrong
+   * account gets read or mutated.
+   */
+  id: number;
   organizationId: number;
   provider: 'aws' | 'gcp' | 'azure';
   accountId: string;
   accountName: string;
+  /** How Cloudwise authenticates: 'access_keys' (legacy) or 'assume_role'. */
+  authType: string;
   credentials: any;
 }
 
@@ -39,12 +50,20 @@ export async function getActiveCloudAccounts(provider?: 'aws' | 'gcp' | 'azure')
     console.log(`[CloudConfig] Found ${accounts.length} active ${provider || 'all'} account(s) for org ${orgId}`);
 
     return accounts.map(account => {
-      const decrypted = decryptCredentials(account.credentials);
+      // Role-based connections have no static credentials to decrypt, and
+      // attempting it would log a spurious failure on every call. The AWS client
+      // factory resolves those via STS instead.
+      const decrypted = account.authType === 'access_keys'
+        ? decryptCredentials(account.credentials)
+        : {};
+
       return {
+        id: account.id,
         organizationId: account.organizationId,
         provider: account.provider as 'aws' | 'gcp' | 'azure',
         accountId: account.accountId,
         accountName: account.accountName,
+        authType: account.authType,
         credentials: decrypted,
       };
     });

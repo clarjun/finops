@@ -16,6 +16,7 @@
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { S3Client } from "@aws-sdk/client-s3";
 import { getActiveCloudAccounts, type CloudCredentials } from "../cloud-config-manager";
+import { awsClient } from "../aws/client-factory";
 
 export class CredentialResolutionError extends Error {}
 
@@ -72,33 +73,40 @@ export async function resolveAccountForAction(
   );
 }
 
-/** AWS clients scoped to the account this action targets. */
+/**
+ * AWS clients for executing an approved action, on the REMEDIATION tier.
+ *
+ * This is the only place in the application that builds write-capable AWS
+ * clients for the optimization agent, and it deliberately asks for a different
+ * customer IAM role than every read path does. The separation is enforced by
+ * AWS: a cost query holds credentials that cannot call ec2:StopInstances, and
+ * these credentials cannot read Cost Explorer. Previously a single access key
+ * served both, so "read-only" was a property of our code being careful rather
+ * than of the credential.
+ *
+ * Called after the guardrail and approval checks, so the write-capable session
+ * is minted only once an action has been permitted — and expires within the
+ * hour regardless.
+ */
 export async function getAwsClientsForAction(
   accountId: string | null,
   region?: string,
 ): Promise<ResolvedAwsClients> {
   const { account, warning } = await resolveAccountForAction('aws', accountId);
-  const creds = account.credentials ?? {};
 
-  if (!creds.accessKeyId || !creds.secretAccessKey) {
+  try {
+    const [ec2, s3] = await Promise.all([
+      awsClient('remediation', EC2Client, { region, connectionId: account.id }),
+      awsClient('remediation', S3Client, { region, connectionId: account.id }),
+    ]);
+
+    return { ec2, s3, account, warning };
+  } catch (err) {
+    // AwsAuthError messages already name what the operator must fix — most
+    // often that the connection has no remediation role configured, which is a
+    // deliberate default: read-only is the safe starting posture.
     throw new CredentialResolutionError(
-      `AWS account '${account.accountName}' has no access key stored; cannot execute against it.`
+      `Cannot execute against AWS account '${account.accountName}': ${(err as Error).message}`,
     );
   }
-
-  const config = {
-    region: region || creds.region || 'us-east-1',
-    credentials: {
-      accessKeyId: creds.accessKeyId,
-      secretAccessKey: creds.secretAccessKey,
-      ...(creds.sessionToken ? { sessionToken: creds.sessionToken } : {}),
-    },
-  };
-
-  return {
-    ec2: new EC2Client(config),
-    s3: new S3Client(config),
-    account,
-    warning,
-  };
 }
