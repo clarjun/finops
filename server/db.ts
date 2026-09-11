@@ -19,6 +19,10 @@ import * as schema from '@shared/schema';
 
 const { Pool } = pkg;
 
+// The TLS check lives in server/index.ts, not here. Constructing a Pool opens no
+// connection, and this module is imported transitively by unit tests that never
+// query — throwing at import time made nine test files fail to load rather than
+// catching a misconfiguration. See assertDatabaseUrlIsSafe in ./db-url.
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   // Bounded so several Container Apps replicas cannot exhaust the server's

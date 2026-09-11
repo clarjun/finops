@@ -8,6 +8,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { pool } from "./db";
+import { assertDatabaseUrlIsSafe } from "./db-url";
 import { registerRoutes } from "./routes";
 import { registerAuthRoutes } from "./auth";
 import { installAuthGuard } from "./middleware/auth-guard";
@@ -25,6 +26,12 @@ import { registerTerraformTools } from "./infra-agent/tools/terraform-tools";
 import { log } from "./vite";
 import { serveStatic } from "./static";
 import { startBudgetAlertScheduler } from "./utils/budget-alert-checker-new";
+
+// Fail before serving traffic, not on the first query. node-postgres does not
+// enable TLS unless the URL asks for it, so a production DATABASE_URL missing
+// ?sslmode=require would send the password and every row in plaintext to any
+// server that tolerates it — a failure that looks like success.
+assertDatabaseUrlIsSafe(process.env.DATABASE_URL);
 
 const app = express();
 app.use(express.json());
