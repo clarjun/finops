@@ -132,3 +132,48 @@ describe('route policy: budgets and reports', () => {
     expect(requiredPermission('GET', '/api/reports/schedules')).toBe('cost:read');
   });
 });
+
+describe('route policy: governance', () => {
+  it('lets any authenticated role read the posture', () => {
+    expect(requiredPermission('GET', '/api/governance/summary')).toBe('governance:read');
+    expect(access('viewer', 'GET', '/api/governance/summary')).toBe('allow');
+    expect(access('viewer', 'GET', '/api/governance/violations')).toBe('allow');
+    expect(access('viewer', 'GET', '/api/governance/frameworks')).toBe('allow');
+  });
+
+  it('reserves changing a policy for finops and above', () => {
+    // Editing a threshold redefines what the whole organization is measured
+    // against. A viewer who could lower it could make the score green.
+    expect(requiredPermission('PUT', '/api/governance/policies/tagging.required-tags')).toBe('governance:write');
+    expect(access('viewer', 'PUT', '/api/governance/policies/tagging.required-tags')).toBe('deny');
+    expect(access('engineer', 'PUT', '/api/governance/policies/tagging.required-tags')).toBe('deny');
+    expect(access('finops', 'PUT', '/api/governance/policies/tagging.required-tags')).toBe('allow');
+  });
+
+  it('separates granting an exemption from editing a policy', () => {
+    // An exemption is accepting the risk a policy exists to prevent, so it sits
+    // one rung higher than setting the policy. Without the split, whoever sets
+    // the standard can also quietly excuse themselves from it.
+    expect(requiredPermission('POST', '/api/governance/exemptions')).toBe('governance:exempt');
+    expect(requiredPermission('DELETE', '/api/governance/exemptions/12')).toBe('governance:exempt');
+    expect(access('finops', 'POST', '/api/governance/exemptions')).toBe('deny');
+    expect(access('admin', 'POST', '/api/governance/exemptions')).toBe('allow');
+  });
+
+  it('treats acknowledging as triage, not suppression', () => {
+    expect(requiredPermission('POST', '/api/governance/violations/5/acknowledge')).toBe('governance:write');
+    expect(access('finops', 'POST', '/api/governance/violations/5/acknowledge')).toBe('allow');
+  });
+
+  it('requires write permission to trigger a sweep', () => {
+    expect(requiredPermission('POST', '/api/governance/evaluate')).toBe('governance:write');
+    expect(access('viewer', 'POST', '/api/governance/evaluate')).toBe('deny');
+  });
+
+  it('matches the specific exemption rules before the read-all prefix', () => {
+    // findRule takes the first match, so a GET-only catch-all placed above the
+    // POST rules would silently make exemptions readable-permission writes.
+    expect(requiredPermission('POST', '/api/governance/exemptions')).not.toBe('governance:read');
+    expect(requiredPermission('GET', '/api/governance/exemptions')).toBe('governance:read');
+  });
+});

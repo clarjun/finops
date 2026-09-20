@@ -646,6 +646,15 @@ export const users = pgTable("users", {
   isActive: boolean("is_active").notNull().default(true),
   createdBy: integer("created_by"), // admin user id who created this user
   lastLoginAt: timestamp("last_login_at"),
+
+  // Per-account brute-force protection (migration 0020). Counted here rather
+  // than only in the per-IP rate limiter because credential stuffing arrives
+  // from thousands of addresses, each staying comfortably under an IP limit.
+  failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
+  /** Null when not locked. A past timestamp is an expired lock, not a live one. */
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+  lastLoginIp: varchar("last_login_ip", { length: 64 }),
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -1020,3 +1029,139 @@ export const auditLogs = pgTable("audit_logs", {
 export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({ id: true, createdAt: true });
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
+
+// ==================== GOVERNANCE & COMPLIANCE ====================
+
+// Policy definitions are code (server/governance/catalog.ts), not rows. What a
+// tenant owns is the assignment: whether a policy runs, how loudly, with which
+// thresholds, over which slice of the estate. Everything below is per-tenant
+// configuration and per-tenant results — nothing here is a shared catalog.
+//
+// See migration 0019.
+
+/**
+ * One row per policy a tenant has customised. Absence means "catalog defaults",
+ * so a fresh tenant gets a working governance baseline with zero configuration
+ * and the table stays small.
+ */
+export const governancePolicyAssignments = pgTable("governance_policy_assignments", {
+  id: serial("id").primaryKey(),
+  organizationId: organizationId(),
+  policyKey: varchar("policy_key", { length: 100 }).notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  /** Overrides the catalog severity. Null keeps whatever the catalog says. */
+  severity: varchar("severity", { length: 20 }),
+  enforcement: varchar("enforcement", { length: 20 }).notNull().default('audit'),
+  parameters: jsonb("parameters").notNull().default({}),
+  scope: jsonb("scope").notNull().default({}),
+  updatedBy: integer("updated_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertGovernancePolicyAssignmentSchema =
+  createInsertSchema(governancePolicyAssignments).omit({ id: true, createdAt: true, updatedAt: true });
+export type InsertGovernancePolicyAssignment = z.infer<typeof insertGovernancePolicyAssignmentSchema>;
+export type GovernancePolicyAssignment = typeof governancePolicyAssignments.$inferSelect;
+
+/** One row per evaluation sweep. Keeps the score history that shows a trend. */
+export const governanceRuns = pgTable("governance_runs", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  trigger: varchar("trigger", { length: 20 }).notNull().default('scheduled'), // scheduled|manual
+  status: varchar("status", { length: 20 }).notNull().default('running'),     // running|success|failed
+  policiesEvaluated: integer("policies_evaluated").notNull().default(0),
+  policiesFailed: integer("policies_failed").notNull().default(0),
+  violationsOpened: integer("violations_opened").notNull().default(0),
+  violationsResolved: integer("violations_resolved").notNull().default(0),
+  openViolations: integer("open_violations").notNull().default(0),
+  score: numeric("score", { precision: 5, scale: 2 }),
+  /** Per-domain scores, so the trend can be broken down without re-evaluating. */
+  domainScores: jsonb("domain_scores"),
+  /** Policy keys that reached no verdict. Never the same thing as passing. */
+  notAssessed: jsonb("not_assessed"),
+  costAtRisk: numeric("cost_at_risk", { precision: 20, scale: 2 }),
+  error: text("error"),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+  finishedAt: timestamp("finished_at", { withTimezone: true }),
+});
+
+export const insertGovernanceRunSchema = createInsertSchema(governanceRuns).omit({ id: true });
+export type InsertGovernanceRun = z.infer<typeof insertGovernanceRunSchema>;
+export type GovernanceRun = typeof governanceRuns.$inferSelect;
+
+/**
+ * A finding, identified by a fingerprint rather than by row id.
+ *
+ * Re-running the engine must not produce a second copy of a violation that was
+ * already there, and must not lose the date it was first seen — that date is
+ * what an ageing report and an SLA are computed from. So findings are upserted
+ * on (organization_id, fingerprint) and anything not seen in the latest run is
+ * closed rather than deleted.
+ */
+export const governanceViolations = pgTable("governance_violations", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  policyKey: varchar("policy_key", { length: 100 }).notNull(),
+  /** Stable hash of policy + resource identity. Unique per tenant. */
+  fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+  severity: varchar("severity", { length: 20 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull().default('open'), // open|acknowledged|exempt|resolved
+
+  provider: varchar("provider", { length: 20 }),
+  accountId: varchar("account_id", { length: 255 }),
+  region: varchar("region", { length: 100 }),
+  resourceId: varchar("resource_id", { length: 500 }),
+  resourceType: varchar("resource_type", { length: 100 }),
+  resourceName: varchar("resource_name", { length: 255 }),
+
+  title: varchar("title", { length: 500 }).notNull(),
+  detail: text("detail").notNull(),
+  /** The numbers the finding was derived from, so it can be argued with. */
+  evidence: jsonb("evidence"),
+  monthlyCostImpact: numeric("monthly_cost_impact", { precision: 20, scale: 2 }),
+
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  /** Run that most recently observed it. */
+  lastRunId: integer("last_run_id"),
+  acknowledgedBy: integer("acknowledged_by"),
+  acknowledgedAt: timestamp("acknowledged_at", { withTimezone: true }),
+  acknowledgeNote: text("acknowledge_note"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertGovernanceViolationSchema =
+  createInsertSchema(governanceViolations).omit({ id: true, createdAt: true });
+export type InsertGovernanceViolation = z.infer<typeof insertGovernanceViolationSchema>;
+export type GovernanceViolation = typeof governanceViolations.$inferSelect;
+
+/**
+ * A time-boxed, justified suppression.
+ *
+ * Three properties make this an exemption rather than a mute button: the reason
+ * is mandatory, the expiry is mandatory and capped, and the grant is written to
+ * the audit log. An exemption that never expires is a policy change made
+ * without anyone agreeing to change the policy.
+ */
+export const governanceExemptions = pgTable("governance_exemptions", {
+  id: serial("id").primaryKey(),
+  organizationId: organizationId(),
+  policyKey: varchar("policy_key", { length: 100 }).notNull(),
+  /** Null means "the whole scope below"; set for a single-resource exemption. */
+  resourceId: varchar("resource_id", { length: 500 }),
+  scope: jsonb("scope").notNull().default({}),
+  reason: text("reason").notNull(),
+  requestedBy: integer("requested_by"),
+  approvedBy: integer("approved_by"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  revokedBy: integer("revoked_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertGovernanceExemptionSchema =
+  createInsertSchema(governanceExemptions).omit({ id: true, createdAt: true });
+export type InsertGovernanceExemption = z.infer<typeof insertGovernanceExemptionSchema>;
+export type GovernanceExemption = typeof governanceExemptions.$inferSelect;

@@ -17,6 +17,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { agentConfig, type OptimizationAction } from "@shared/schema";
 import { currentOrgId } from "../tenant-context";
+import { blockingViolationsFor } from "../governance/engine";
 
 /**
  * Action types that destroy state rather than resize or reconfigure it. These
@@ -39,6 +40,8 @@ export interface GuardrailDecision {
   outcome: 'allow' | 'simulate' | 'block';
   dryRun: boolean;
   reasons: string[];
+  /** Governance policies in `block` mode that refused this action, if any. */
+  blockedByPolicies?: string[];
   config: {
     dryRunMode: boolean;
     safetyMode: boolean;
@@ -169,7 +172,32 @@ export async function evaluate(action: OptimizationAction): Promise<GuardrailDec
     };
   }
 
-  return decide(action, config);
+  const decision = decide(action, config);
+
+  // Governance enforcement, applied AFTER the configuration guardrails rather
+  // than instead of them. The two answer different questions: agent_config asks
+  // "is the agent allowed to do this kind of thing", governance asks "is this
+  // particular resource in a state we have agreed to leave alone".
+  //
+  // Only relevant for an action that would otherwise touch live infrastructure;
+  // a simulation changes nothing, and blocking one would remove the safest way
+  // to find out what an action would do.
+  if (decision.outcome !== 'allow' || !action.resourceId) return decision;
+
+  const blocking = await blockingViolationsFor(action.resourceId);
+  if (blocking.length === 0) return decision;
+
+  return {
+    ...decision,
+    outcome: 'block',
+    dryRun: true,
+    blockedByPolicies: blocking.map(b => b.policyKey),
+    reasons: [
+      `Blocked by ${blocking.length} governance polic${blocking.length === 1 ? 'y' : 'ies'} in enforcing mode: ` +
+        blocking.map(b => b.title).join('; ') + '.',
+      'Fix the violation, or record a time-boxed exemption naming who accepted the risk.',
+    ],
+  };
 }
 
 export function isDestructive(actionType: string): boolean {

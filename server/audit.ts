@@ -86,6 +86,10 @@ const ACTION_RULES: Array<{ test: RegExp; resourceType: string; action: (method:
   { test: /^\/api\/alerts\/rules/,                    resourceType: 'alert_rule',          action: (m) => `alert_rule.${verb(m)}` },
   { test: /^\/api\/reports\/schedules/,               resourceType: 'report_schedule',     action: (m) => `report_schedule.${verb(m)}` },
   { test: /^\/api\/optimization\/recommendations/,    resourceType: 'recommendation',      action: (m) => `recommendation.${verb(m)}` },
+  { test: /^\/api\/governance\/policies/,             resourceType: 'governance_policy',    action: () => 'governance.policy.update' },
+  { test: /^\/api\/governance\/exemptions/,           resourceType: 'governance_exemption', action: (m) => `governance.exemption.${m === 'DELETE' ? 'revoke' : 'grant'}` },
+  { test: /^\/api\/governance\/violations/,           resourceType: 'governance_violation', action: () => 'governance.violation.acknowledge' },
+  { test: /^\/api\/governance\/evaluate/,             resourceType: 'governance_run',       action: () => 'governance.evaluate' },
   { test: /^\/api\/users/,                            resourceType: 'user',                action: (m) => `user.${verb(m)}` },
   { test: /^\/api\/organizations/,                    resourceType: 'organization',        action: (m) => `organization.${verb(m)}` },
 ];

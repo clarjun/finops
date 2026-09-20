@@ -111,6 +111,14 @@ export interface RDSInstance {
   multiAZ?: boolean;
   storageType?: string;
   iops?: number;
+  /**
+   * Security posture, carried in the SAME DescribeDBInstances response we
+   * already pay for. These were being discarded, which is why the governance
+   * encryption and exposure policies had nothing to evaluate.
+   */
+  storageEncrypted?: boolean;
+  publiclyAccessible?: boolean;
+  availabilityZone?: string;
 }
 
 export interface S3Bucket {
@@ -130,6 +138,9 @@ export interface EBSVolume {
   throughput?: number;
   attachedTo?: string;
   createTime?: Date;
+  /** Already present in DescribeVolumes; previously discarded. */
+  encrypted?: boolean;
+  availabilityZone?: string;
 }
 
 export interface CloudWatchLogGroup {
@@ -257,6 +268,9 @@ export async function fetchRDSInstances(): Promise<RDSInstance[]> {
           multiAZ: db.MultiAZ,
           storageType: db.StorageType,
           iops: db.Iops,
+          storageEncrypted: db.StorageEncrypted,
+          publiclyAccessible: db.PubliclyAccessible,
+          availabilityZone: db.AvailabilityZone,
         });
       }
       
@@ -316,6 +330,8 @@ export async function fetchEBSVolumes(): Promise<EBSVolume[]> {
           throughput: vol.Throughput,
           attachedTo: vol.Attachments?.[0]?.InstanceId,
           createTime: vol.CreateTime,
+          encrypted: vol.Encrypted,
+          availabilityZone: vol.AvailabilityZone,
         });
       }
       

@@ -1,4 +1,4 @@
-import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator, Users, ScrollText, Rocket, Library, Server } from "lucide-react";
+import { LayoutDashboard, MessageSquare, TrendingUp, DollarSign, Lightbulb, Brain, Settings, Cloud, FileText, Calculator, Users, ScrollText, Rocket, Library, Server, ShieldCheck } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth, type Permission } from "@/hooks/use-auth";
 import {
@@ -33,6 +33,7 @@ const menuItems = [
  * that 403s is worse than not showing it.
  */
 const permissionedMenuItems: Array<{ title: string; url: string; icon: typeof Users; permission: Permission }> = [
+  { title: "Governance", url: "/governance", icon: ShieldCheck, permission: 'governance:read' },
   { title: "User Management", url: "/users", icon: Users, permission: 'user:manage' },
   { title: "Audit Log", url: "/audit", icon: ScrollText, permission: 'audit:read' },
 ];

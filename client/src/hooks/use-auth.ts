@@ -9,6 +9,7 @@ export type Permission =
   | 'budget:write' | 'report:write'
   | 'account:read' | 'account:write'
   | 'agent:propose' | 'agent:approve' | 'agent:execute' | 'agent:configure'
+  | 'governance:read' | 'governance:write' | 'governance:exempt'
   | 'user:manage' | 'org:manage' | 'audit:read';
 
 export const ROLE_LABELS: Record<UserRole, string> = {
@@ -20,10 +21,10 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 };
 
 export const ROLE_DESCRIPTIONS: Record<UserRole, string> = {
-  viewer: 'Read dashboards, reports and cost data',
+  viewer: 'Read dashboards, reports, cost data and the governance posture',
   engineer: 'Viewer, plus exports and proposing optimizations',
-  finops: 'Engineer, plus budgets, schedules and approving actions',
-  admin: 'FinOps, plus cloud credentials, executing actions and user management',
+  finops: 'Engineer, plus budgets, schedules, governance policies and approving actions',
+  admin: 'FinOps, plus cloud credentials, executing actions, policy exemptions and user management',
   owner: 'Full control including organization settings',
 };
 

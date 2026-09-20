@@ -23,6 +23,9 @@ export const PERMISSIONS = [
   'agent:approve',    // approve a proposed action
   'agent:execute',    // execute or roll back an approved action
   'agent:configure',  // change agent safety settings (dry-run, auto-execute)
+  'governance:read',  // posture score, policy catalog, violations, exemptions
+  'governance:write', // enable/disable policies, change thresholds and scope, run a sweep
+  'governance:exempt',// grant or revoke a time-boxed exemption from a policy
   'user:manage',      // create/update/remove users in the tenant
   'org:manage',       // organization settings
   'audit:read',       // read the audit log
@@ -30,7 +33,7 @@ export const PERMISSIONS = [
 
 export type Permission = typeof PERMISSIONS[number];
 
-const VIEWER: Permission[] = ['cost:read', 'account:read'];
+const VIEWER: Permission[] = ['cost:read', 'account:read', 'governance:read'];
 
 const ENGINEER: Permission[] = [
   ...VIEWER,
@@ -43,10 +46,15 @@ const FINOPS: Permission[] = [
   'budget:write',
   'report:write',
   'agent:approve',
+  // Setting the organization's cost and tagging standards is the FinOps job.
+  // Granting an exemption from one is not: that is accepting the risk the
+  // standard exists to prevent, which sits with an administrator.
+  'governance:write',
 ];
 
 const ADMIN: Permission[] = [
   ...FINOPS,
+  'governance:exempt',
   'account:write',
   'agent:execute',
   'agent:configure',

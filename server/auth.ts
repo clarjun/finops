@@ -14,6 +14,7 @@ import { currentOrgId } from './tenant-context';
 import { normalizeRole, permissionsForRole } from './rbac';
 import { validatePassword, BCRYPT_ROUNDS } from '@shared/password-policy';
 import { requirePermission, requirePlatformAdmin } from './middleware/auth-guard';
+import { mintCsrfToken, setCsrfCookie, clearCsrfCookie } from './middleware/csrf';
 import { recordAudit } from './audit';
 
 // Session shape is declared once, in middleware/auth-guard.ts.
@@ -22,6 +23,20 @@ import { recordAudit } from './audit';
 const ROLE_RANK: Record<UserRole, number> = {
   viewer: 0, engineer: 1, finops: 2, admin: 3, owner: 4,
 };
+
+/**
+ * Per-account lockout.
+ *
+ * Five attempts then fifteen minutes. Short enough that a user who genuinely
+ * mistyped their password is not calling support, long enough that an automated
+ * list of ten thousand passwords takes years rather than an afternoon.
+ *
+ * Deliberately NOT permanent: a permanent lock hands any anonymous attacker a
+ * denial-of-service against a named user, which is a worse outcome than the
+ * guessing it prevents.
+ */
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
 
 function clientIp(req: Request): string | null {
   const fwd = req.headers['x-forwarded-for'];
@@ -58,25 +73,74 @@ export function registerAuthRoutes(app: Express) {
       return res.status(400).json({ error: 'Username and password required' });
     }
 
+    /** One response shape for every failure, so this cannot enumerate accounts. */
+    const reject = (user: typeof users.$inferSelect | undefined, reason: string) => {
+      void recordAudit({
+        organizationId: user?.organizationId,
+        action: 'auth.login',
+        outcome: 'failure',
+        actorUserId: user?.id ?? null,
+        actorUsername: username,
+        actorIp: ip,
+        method: 'POST',
+        path: '/api/auth/login',
+        statusCode: 401,
+        metadata: { reason },
+      });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    };
+
     try {
       const [user] = await db.select().from(users).where(eq(users.username, username));
 
-      // Same response for "no such user" and "wrong password" so the endpoint
-      // cannot be used to enumerate accounts.
-      if (!user || !user.isActive || !(await bcrypt.compare(password, user.passwordHash))) {
+      // Timing note: an unknown username skips bcrypt and so answers faster
+      // than a wrong password does. Closing that gap means hashing against a
+      // dummy digest on every miss — worth doing, and a separate change from
+      // this one so it can be measured rather than assumed.
+      if (!user) return reject(undefined, 'unknown_user');
+      if (!user.isActive) return reject(user, 'inactive');
+
+      const now = new Date();
+
+      if (user.lockedUntil && user.lockedUntil > now) {
+        const minutes = Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 60_000);
         void recordAudit({
-          organizationId: user?.organizationId,
-          action: 'auth.login',
-          outcome: 'failure',
-          actorUserId: user?.id ?? null,
-          actorUsername: username,
-          actorIp: ip,
-          method: 'POST',
-          path: '/api/auth/login',
-          statusCode: 401,
-          metadata: { reason: !user ? 'unknown_user' : !user.isActive ? 'inactive' : 'bad_password' },
+          organizationId: user.organizationId, action: 'auth.login', outcome: 'denied',
+          actorUserId: user.id, actorUsername: user.username, actorIp: ip, statusCode: 423,
+          metadata: { reason: 'locked_out', unlocksInMinutes: minutes },
         });
-        return res.status(401).json({ error: 'Invalid credentials' });
+        // A distinct status, unlike the enumeration-safe 401 above. Whoever
+        // triggered the lock already knows the account exists, so telling the
+        // real owner why they cannot sign in leaks nothing and saves a support
+        // call.
+        return res.status(423).json({
+          error: 'Account temporarily locked',
+          detail: `Too many failed sign-in attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
+        });
+      }
+
+      if (!(await bcrypt.compare(password, user.passwordHash))) {
+        // An expired lock resets the count: the previous window was already
+        // served, and carrying its attempts forward would lock the account
+        // again on the first typo after it unlocked.
+        const priorAttempts = user.lockedUntil && user.lockedUntil <= now ? 0 : user.failedLoginAttempts;
+        const attempts = priorAttempts + 1;
+        const locking = attempts >= MAX_FAILED_ATTEMPTS;
+
+        await db.update(users).set({
+          failedLoginAttempts: locking ? 0 : attempts,
+          lockedUntil: locking ? new Date(now.getTime() + LOCKOUT_MINUTES * 60_000) : null,
+        }).where(eq(users.id, user.id));
+
+        if (locking) {
+          void recordAudit({
+            organizationId: user.organizationId, action: 'auth.lockout', outcome: 'denied',
+            actorUserId: user.id, actorUsername: user.username, actorIp: ip, statusCode: 423,
+            metadata: { failedAttempts: attempts, lockoutMinutes: LOCKOUT_MINUTES },
+          });
+        }
+
+        return reject(user, 'bad_password');
       }
 
       const [org] = await db.select().from(organizations).where(eq(organizations.id, user.organizationId));
@@ -89,28 +153,56 @@ export function registerAuthRoutes(app: Express) {
         return res.status(403).json({ error: 'Organization is not active' });
       }
 
-      req.session.userId = user.id;
-      req.session.username = user.username;
-      req.session.role = normalizeRole(user.role);
-      req.session.activeOrganizationId = user.organizationId;
+      // Session fixation: take a NEW session id at the moment privilege
+      // changes. Without this, anyone who can plant a cookie on the victim's
+      // browser before sign-in — a shared parent domain, an XSS on a sibling
+      // app — holds an id that silently becomes an authenticated session.
+      req.session.regenerate((regenErr) => {
+        if (regenErr) {
+          console.error('[Auth] Session regeneration failed:', regenErr);
+          return res.status(500).json({ error: 'Session error' });
+        }
 
-      await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
+        req.session.userId = user.id;
+        req.session.username = user.username;
+        req.session.role = normalizeRole(user.role);
+        req.session.activeOrganizationId = user.organizationId;
+        // Minted with the new session id, so a token observed before sign-in
+        // cannot be replayed against the authenticated session.
+        req.session.csrfToken = mintCsrfToken();
 
-      // Save explicitly so the cookie is set before we respond.
-      req.session.save((err) => {
-        if (err) return res.status(500).json({ error: 'Session error' });
+        // Save explicitly so the cookie is set before we respond.
+        req.session.save(async (err) => {
+          if (err) return res.status(500).json({ error: 'Session error' });
 
-        void recordAudit({
-          organizationId: user.organizationId, action: 'auth.login', outcome: 'success',
-          actorUserId: user.id, actorUsername: user.username, actorIp: ip,
-          method: 'POST', path: '/api/auth/login', statusCode: 200,
-        });
+          setCsrfCookie(res, req.session.csrfToken!);
 
-        res.json({
-          success: true,
-          user: publicUser(user),
-          organization: { id: org.id, name: org.name, slug: org.slug, plan: org.plan },
-          permissions: permissionsForRole(normalizeRole(user.role)),
+          // After the session exists: failing to clear the counter must not
+          // cost the user the sign-in they just completed correctly.
+          try {
+            await db.update(users).set({
+              lastLoginAt: new Date(),
+              lastLoginIp: ip,
+              failedLoginAttempts: 0,
+              lockedUntil: null,
+            }).where(eq(users.id, user.id));
+          } catch (e: any) {
+            console.error('[Auth] Failed to record successful login:', e?.message ?? e);
+          }
+
+          void recordAudit({
+            organizationId: user.organizationId, action: 'auth.login', outcome: 'success',
+            actorUserId: user.id, actorUsername: user.username, actorIp: ip,
+            method: 'POST', path: '/api/auth/login', statusCode: 200,
+            metadata: { priorFailedAttempts: user.failedLoginAttempts },
+          });
+
+          res.json({
+            success: true,
+            user: publicUser(user),
+            organization: { id: org.id, name: org.name, slug: org.slug, plan: org.plan },
+            permissions: permissionsForRole(normalizeRole(user.role)),
+          });
         });
       });
     } catch (e: any) {
@@ -127,7 +219,13 @@ export function registerAuthRoutes(app: Express) {
         actorUserId: userId, actorUsername: username, actorIp: clientIp(req),
       });
     }
-    req.session.destroy(() => res.json({ success: true }));
+    req.session.destroy(() => {
+      // The token is worthless without the session, but leaving it behind means
+      // the next visitor to this browser sends a stale one and gets a confusing
+      // 403 instead of a clean 401.
+      clearCsrfCookie(res);
+      res.json({ success: true });
+    });
   });
 
   // GET /api/auth/me

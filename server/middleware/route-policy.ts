@@ -130,6 +130,25 @@ const RULES: Rule[] = [
   R(['GET'],  /^\/api\/costs\/ingestion-status$/,              'account:read'),
   R(['GET'],  /^\/api\/costs\//,                               'cost:read'),
 
+  // ── Governance & compliance ───────────────────────────────────────────────
+  // Reading the posture is a read. Changing a policy redefines what the whole
+  // organization is measured against, and granting an exemption is a decision
+  // to accept the risk a policy exists to prevent — three different things, so
+  // three different permissions.
+  R(['POST'],   /^\/api\/governance\/exemptions$/,            'governance:exempt'),
+  R(['DELETE'], /^\/api\/governance\/exemptions\/\d+$/,        'governance:exempt'),
+  R(['GET'],    /^\/api\/governance\/exemptions/,             'governance:read'),
+  // Acknowledging records that a finding has been seen and triaged. It does not
+  // suppress it, so it stops short of needing the exemption permission.
+  R(['POST'],   /^\/api\/governance\/violations\/\d+\/acknowledge$/, 'governance:write'),
+  R(['GET'],    /^\/api\/governance\/violations/,             'governance:read'),
+  // A sweep reads ingested data and writes findings. It spends nothing at a
+  // provider, but it does change what the organization is reported as.
+  R(['POST'],   /^\/api\/governance\/evaluate$/,              'governance:write'),
+  R(['PUT', 'PATCH'], /^\/api\/governance\/policies\/[^/]+$/,   'governance:write'),
+  R(['POST'],   /^\/api\/governance\/policies\/[^/]+\/reset$/,  'governance:write'),
+  R(['GET'],    /^\/api\/governance\//,                       'governance:read'),
+
   // ── Users, organizations, audit ───────────────────────────────────────────
   R('*',      /^\/api\/users/,                                'user:manage'),
   R(['GET'],  /^\/api\/audit-logs/,                           'audit:read'),

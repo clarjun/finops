@@ -22,6 +22,7 @@ import Settings from "@/pages/settings";
 import CostEstimator from "@/pages/cost-estimator";
 import UsersPage from "@/pages/users";
 import AuditPage from "@/pages/audit";
+import GovernancePage from "@/pages/governance";
 import InfraAgentPage from "@/pages/infra-agent";
 import InfraLibraryPage from "@/pages/infra-library";
 import DeploymentsPage from "@/pages/deployments";
@@ -58,6 +59,9 @@ function ProtectedRouter() {
       <Route path="/settings" component={Settings} />
       {/* Permission-gated routes. The API enforces these independently; this
           only avoids rendering a page that would 403 on every request. */}
+      <Route path="/governance">
+        {can('governance:read') ? <GovernancePage /> : <Redirect to="/" />}
+      </Route>
       <Route path="/users">
         {can('user:manage') ? <UsersPage /> : <Redirect to="/" />}
       </Route>
