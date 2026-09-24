@@ -76,9 +76,20 @@ export interface ProcessedCostData {
 }
 
 // AI Query Request/Response
+
+// One turn of the conversation, so follow-ups like "yes" or "break that down"
+// resolve against what was said before instead of being answered in isolation.
+export const aiTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+});
+
+export type AiTurn = z.infer<typeof aiTurnSchema>;
+
 export const aiQueryRequestSchema = z.object({
   query: z.string().min(1, "Query cannot be empty"),
-  costData: z.any(), // The processed cost data to analyze
+  costData: z.any().optional(), // The processed cost data to analyze
+  history: z.array(aiTurnSchema).max(20).optional(), // prior turns for context
 });
 
 export type AiQueryRequest = z.infer<typeof aiQueryRequestSchema>;

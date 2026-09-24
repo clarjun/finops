@@ -5,9 +5,10 @@ import { Input } from "@/components/ui/input";
 import { Send, Sparkles, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import type { AiTurn } from "@shared/schema";
 
 interface AiQueryInterfaceProps {
-  onQuery: (query: string) => Promise<{ answer: string; data?: any; success: boolean }>;
+  onQuery: (query: string, history: AiTurn[]) => Promise<{ answer: string; data?: any; success: boolean }>;
 }
 
 const EXAMPLE_QUERIES = [
@@ -27,17 +28,31 @@ export function AiQueryInterface({ onQuery }: AiQueryInterfaceProps) {
     e.preventDefault();
     if (!query.trim() || loading) return;
 
+    // Keep the question visible in the (disabled) input while the slow answer
+    // generates, so the user can see what they asked. It's cleared only once
+    // the response arrives.
     const currentQuery = query;
-    setQuery("");
     setLoading(true);
 
+    // Send the last few exchanges so follow-ups ("yes", "break that down")
+    // have context. `responses` is newest-first, so reverse to oldest-first —
+    // the order the model reads the thread in.
+    const history: AiTurn[] = responses
+      .slice(0, 4)
+      .reverse()
+      .flatMap((r) => [
+        { role: "user" as const, content: r.query },
+        { role: "assistant" as const, content: r.answer },
+      ]);
+
     try {
-      const result = await onQuery(currentQuery);
+      const result = await onQuery(currentQuery, history);
       const answerText = result?.answer || "No answer received from AI";
       setResponses((prev) => [
         { query: currentQuery, answer: answerText, success: result?.success ?? false },
         ...prev,
       ]);
+      setQuery("");
     } catch (error) {
       setResponses((prev) => [
         { query: currentQuery, answer: "An error occurred while processing your query.", success: false },

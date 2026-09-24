@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { AiQueryInterface } from "@/components/ai-query-interface";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { ProcessedCostData, AiQueryResponse } from "@shared/schema";
+import type { ProcessedCostData, AiQueryResponse, AiTurn } from "@shared/schema";
 
 export default function AiQuery() {
   const { toast } = useToast();
@@ -11,11 +11,12 @@ export default function AiQuery() {
     queryKey: ["/api/cost-data"],
   });
 
-  const handleQuery = async (query: string): Promise<AiQueryResponse> => {
+  const handleQuery = async (query: string, history: AiTurn[]): Promise<AiQueryResponse> => {
     try {
       // Backend will use server-side cached data for security
       const response = await apiRequest<AiQueryResponse>("POST", "/api/analyze", {
         query,
+        history,
       });
       return response;
     } catch (error) {

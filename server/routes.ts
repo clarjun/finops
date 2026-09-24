@@ -381,14 +381,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // AI-powered natural language query analysis
   app.post("/api/analyze", async (req, res) => {
     try {
-      const { query } = req.body;
-      
+      const { query, history } = req.body;
+
       if (!query || typeof query !== 'string') {
-        return res.status(400).json({ 
-          answer: "Invalid query format", 
-          success: false 
+        return res.status(400).json({
+          answer: "Invalid query format",
+          success: false
         });
       }
+
+      // Prior conversation turns, so follow-ups ("yes", "break that down")
+      // resolve against the thread. Sanitized rather than trusted: only
+      // well-formed user/assistant turns, capped to the last 8 messages, and
+      // each trimmed so a long earlier answer can't blow the token budget.
+      const priorTurns: Array<{ role: 'user' | 'assistant'; content: string }> =
+        Array.isArray(history)
+          ? history
+              .filter(
+                (t: any) =>
+                  t &&
+                  (t.role === 'user' || t.role === 'assistant') &&
+                  typeof t.content === 'string' &&
+                  t.content.trim().length > 0,
+              )
+              .slice(-8)
+              .map((t: any) => ({ role: t.role, content: String(t.content).slice(0, 2000) }))
+          : [];
       
       // Detect which cloud provider(s) the user is asking about
       const queryLower = query.toLowerCase();
@@ -525,6 +543,7 @@ When answering:
         model: "gpt-5",
         messages: [
           { role: "system", content: context },
+          ...priorTurns,
           { role: "user", content: query }
         ],
         // GPT-5 spends reasoning tokens before output; the richer resource
@@ -578,9 +597,9 @@ When answering:
           if (anomalyData?.anomalies?.length > 0) {
             answer = `I detected ${anomalyData.anomalies.length} spending anomalies:\n\n` +
               anomalyData.anomalies.slice(0, 5).map((a: any) => 
-                `ÔÇó ${a.date}: $${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)`
+                `- ${a.date}: $${a.cost.toFixed(2)} - ${a.description} (${a.severity} severity)`
               ).join('\n') +
-              (anomalyData.insights?.length > 0 ? `\n\nKey insights:\n${anomalyData.insights.slice(0, 3).map((i: any) => `ÔÇó ${i}`).join('\n')}` : '');
+              (anomalyData.insights?.length > 0 ? `\n\nKey insights:\n${anomalyData.insights.slice(0, 3).map((i: any) => `- ${i}`).join('\n')}` : '');
           } else {
             answer = 'No significant spending anomalies were detected in your cost data.';
           }
