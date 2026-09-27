@@ -16,7 +16,20 @@ afterAll(() => {
   else process.env.SESSION_SECRET = saved;
 });
 
-const load = async () => import('./routes');
+/**
+ * Loaded once, with a generous hook timeout.
+ *
+ * Importing ./routes pulls in the database graph, which takes a couple of
+ * seconds the first time. Doing that inside a test spent that on the FIRST
+ * test's 5s budget and made it fail under parallel load while passing alone --
+ * a timeout that looks like a flaky assertion and is really module loading.
+ */
+type Routes = typeof import('./routes');
+let routes: Routes;
+
+beforeAll(async () => { routes = await import('./routes'); }, 30_000);
+
+const load = async (): Promise<Routes> => routes;
 
 describe('setup state', () => {
   it('round-trips the organization it was signed for', async () => {
@@ -104,5 +117,79 @@ describe('setup result page', () => {
     const { setupResultPage } = await load();
     expect(setupResultPage(false, 'nope')).toMatch(/}, 6000\)/);
     expect(setupResultPage(true, 'yes')).toMatch(/}, 1200\)/);
+  });
+});
+
+describe('manifest form page', () => {
+  const manifest = {
+    name: 'CloudWise Infra (1)',
+    url: 'https://app.example.com',
+    redirect_url: 'https://app.example.com/api/infra/git/app/setup',
+    default_permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
+  };
+
+  /** Reads the field back exactly as a browser parsing the attribute would. */
+  const extract = (html: string) => {
+    const m = html.match(/name="manifest" value="([^"]*)"/);
+    if (!m) throw new Error('no manifest field rendered');
+    return JSON.parse(
+      m[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'),
+    );
+  };
+
+  it('renders a manifest that survives the HTML attribute intact', async () => {
+    // The regression this exists for: GitHub answered "url wasn't supplied"
+    // because the manifest never arrived. Anything that mangles the JSON on the
+    // way into the attribute reproduces that, and it is invisible until a
+    // customer is staring at GitHub's error page.
+    const { manifestFormPage } = await import('./routes');
+    expect(extract(manifestFormPage(manifest, 'https://github.com/settings/apps/new?state=x')))
+      .toEqual(manifest);
+  });
+
+  it('escapes the quotes in the JSON rather than ending the attribute early', async () => {
+    const { manifestFormPage } = await import('./routes');
+    const html = manifestFormPage(manifest, 'https://github.com/settings/apps/new?state=x');
+
+    // A raw " inside value="..." truncates the field at the first key.
+    const field = html.match(/name="manifest" value="([^"]*)"/)![1];
+    expect(field).toContain('&quot;');
+    expect(field).not.toContain('"');
+  });
+
+  it('posts to the URL it was given, with the state preserved', async () => {
+    const { manifestFormPage } = await import('./routes');
+    const html = manifestFormPage(manifest, 'https://github.com/settings/apps/new?state=1.2.abc');
+
+    expect(html).toMatch(/method="post"/);
+    expect(html).toContain('action="https://github.com/settings/apps/new?state=1.2.abc"');
+  });
+
+  it('escapes the action URL too', async () => {
+    const { manifestFormPage } = await import('./routes');
+    const html = manifestFormPage(manifest, 'https://github.com/x?state=a"><script>alert(1)</script>');
+
+    expect(html).not.toContain('<script>alert(1)');
+    expect(html).toContain('&quot;&gt;&lt;script&gt;');
+  });
+
+  it('keeps a visible button as well as auto-submitting', async () => {
+    // Not cosmetic. An operator who is not signed in to GitHub is bounced
+    // through login, which discards the POST body; with the form still on
+    // screen they can sign in and press it again.
+    const { manifestFormPage } = await import('./routes');
+    const html = manifestFormPage(manifest, 'https://github.com/settings/apps/new?state=x');
+
+    expect(html).toContain('type="submit"');
+    expect(html).toContain('.submit()');
+
+    // And it must name the symptom, not just the remedy. Landing on GitHub's
+    // long empty "Register new GitHub App" form looks like a step to complete
+    // rather than a failure — filling it in by hand produces an App whose
+    // private key we never receive.
+    expect(html).toMatch(/signed out/i);
+    expect(html).toMatch(/sign in to GitHub/i);
+    expect(html).toMatch(/do not fill that form in by hand/i);
   });
 });

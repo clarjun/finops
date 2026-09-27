@@ -27,12 +27,30 @@ declare module 'express-session' {
   }
 }
 
-/** Routes reachable without a session. Everything else under /api requires one. */
+/**
+ * Routes reachable without a session. Everything else under /api requires one.
+ *
+ * This list and the EXEMPT pattern in route-policy.ts must agree. They are two
+ * separate middlewares, and a route allowlisted in only one of them is still
+ * refused by the other — which is how the GitHub setup callback below returned
+ * 401 to GitHub's redirect while looking correctly configured.
+ */
 const PUBLIC_PATHS: Array<RegExp> = [
   /^\/api\/health$/,
   /^\/api\/auth\/login$/,
   /^\/api\/auth\/logout$/,
   /^\/api\/auth\/me$/,   // returns 401 itself, so the client can probe cheaply
+
+  // GitHub redirects the BROWSER to these after the App is created or
+  // installed. It is a plain top-level navigation from github.com, so no
+  // session cookie is guaranteed to survive it and a session check rejects the
+  // very response the flow depends on.
+  //
+  // They are not unauthenticated: the organization arrives in an HMAC-signed,
+  // ten-minute `state` that the handler verifies in constant time before it
+  // writes anything, and it establishes its own tenant context from that.
+  /^\/api\/infra\/git\/app\/setup$/,
+  /^\/api\/infra\/git\/app\/installed$/,
 ];
 
 function isPublic(path: string): boolean {

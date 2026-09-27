@@ -99,6 +99,10 @@ function fromRow(row: InfraGitConnection): ResolvedConnection {
       provider: new GitHubProvider({
         repo,
         token: () => getInstallationToken(installationId, [row.repoName]),
+        // Proved at connect time against the installation. The repository's own
+        // permissions object always reports false for an App, so leaving this
+        // unset would make any later verify() call contradict the setup.
+        knownWritable: true,
       }),
       basePath: row.basePath,
       baseBranch: row.baseBranch,

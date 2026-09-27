@@ -313,6 +313,10 @@ export interface InstallationInfo {
   installationId: string;
   account: string | null;
   repositorySelection: string | null;
+  /** What this installation granted, e.g. { contents: 'write' }. */
+  permissions: Record<string, string>;
+  /** True when contents AND pull_requests are both writable. */
+  canWrite: boolean;
 }
 
 /**
@@ -352,10 +356,14 @@ export async function findInstallationForRepo(owner: string, repo: string): Prom
     throw new GitProviderError(`GitHub returned no installation for ${owner}/${repo}.`, null);
   }
 
+  const permissions: Record<string, string> = payload.permissions ?? {};
+
   return {
     installationId: String(payload.id),
     account: payload.account?.login ?? null,
     repositorySelection: payload.repository_selection ?? null,
+    permissions,
+    canWrite: permissions.contents === 'write' && permissions.pull_requests === 'write',
   };
 }
 
@@ -403,6 +411,11 @@ export function buildManifest(appName: string, baseUrl: string): Record<string, 
       // Write the Terraform files and open the pull request. Nothing else.
       contents: 'write',
       pull_requests: 'write',
+      // Separate from contents, and easy to miss: GitHub refuses to create or
+      // update ANY file under .github/workflows/ without it, with a bare
+      // "Resource not accessible by integration". Every pull request carries a
+      // workflow file, so without this the very first one fails.
+      workflows: 'write',
       // Read-only, so the branch protection state can be reported honestly
       // rather than guessed at.
       metadata: 'read',
@@ -463,7 +476,18 @@ export interface InstallationRepo {
   name: string;
   private: boolean;
   defaultBranch: string | null;
-  /** False when the App was installed without write access to this repo. */
+  /**
+   * Whether the App may write here.
+   *
+   * Comes from the INSTALLATION's permissions, not from the repository's own
+   * `permissions` object. That object is the collaborator model — admin /
+   * maintain / push / triage / pull — and it does not apply to Apps: GitHub
+   * returns every field as false for an installation token, because an App is
+   * not a collaborator. Reading `push` from it marks every repository
+   * read-only on an installation with full write access, which disables the
+   * whole dropdown and looks exactly like a permissions problem on the
+   * customer's side.
+   */
   canWrite: boolean;
 }
 
@@ -474,7 +498,13 @@ export interface InstallationRepo {
  * type "owner/repo" removes the entire class of "connected, but the App cannot
  * see that repository" failure: if it is in the list, access already exists.
  */
-export async function listInstallationRepos(installationId: string): Promise<InstallationRepo[]> {
+export async function listInstallationRepos(
+  installationId: string,
+  /** What the installation is allowed to do. Unknown defaults to writable, so a
+   *  repository is never hidden on a guess; connect-time verification is the
+   *  authoritative check. */
+  canWrite = true,
+): Promise<InstallationRepo[]> {
   const token = await getInstallationToken(installationId);
   const out: InstallationRepo[] = [];
 
@@ -493,10 +523,9 @@ export async function listInstallationRepos(installationId: string): Promise<Ins
         name: r.name,
         private: !!r.private,
         defaultBranch: r.default_branch ?? null,
-        // `permissions` is absent on some responses. Absent is not the same as
-        // false, so an unknown is treated as writable and the real check
-        // happens at connect time rather than hiding the repo from the list.
-        canWrite: r.permissions?.push !== false,
+        // Set by the caller from the installation's permissions; the
+        // repository's own `permissions` object is meaningless for an App.
+        canWrite,
       });
     }
 
@@ -504,4 +533,247 @@ export async function listInstallationRepos(installationId: string): Promise<Ins
   }
 
   return out.sort((a, b) => a.fullName.localeCompare(b.fullName));
+}
+
+// ── Manual registration ──────────────────────────────────────────────────────
+//
+// The manifest flow is the intended path: GitHub creates the App and returns
+// its key without anyone handling it. But an operator who has already made an
+// App by hand — or who was signed out when the manifest POST fired and finished
+// the form GitHub showed them instead — is left holding a .pem with nowhere to
+// put it. This is that somewhere.
+//
+// It is NOT the environment fallback that was deliberately removed: the key is
+// stored encrypted in the database, per organization, exactly where the
+// manifest exchange puts it.
+
+export interface VerifiedApp {
+  appId: string;
+  slug: string | null;
+  name: string | null;
+  htmlUrl: string | null;
+  permissions: Record<string, string>;
+  /** Permissions the App is missing for the pull-request flow to work. */
+  missing: string[];
+  /**
+   * Missing permissions that only affect the generated CI/CD workflow. The
+   * pull request still succeeds without them; it just carries no pipeline.
+   */
+  missingForPipeline: string[];
+}
+
+/** What the App must be able to do before a pull request can be raised. */
+const REQUIRED_PERMISSIONS: Record<string, string> = {
+  contents: 'write',
+  pull_requests: 'write',
+};
+
+/**
+ * Needed to deliver the CI/CD workflow, but not to deliver Terraform.
+ *
+ * Reported rather than enforced. An App without it can still raise a pull
+ * request containing the configuration; it just cannot include the workflow
+ * that applies it. Refusing registration outright would strand anyone whose App
+ * was created before this was asked for.
+ */
+const PIPELINE_PERMISSIONS: Record<string, string> = {
+  workflows: 'write',
+};
+
+/**
+ * Proves a hand-entered App id and private key actually work, and reports what
+ * the App can do.
+ *
+ * Verified before anything is stored. A wrong id, a key belonging to a
+ * different App, or an App created without "Contents: write" all produce the
+ * same symptom otherwise — a 401 or 403 at the first pull request, days later,
+ * with nothing pointing back at the setup screen.
+ *
+ * `GET /app` is the only endpoint a bare App JWT can call, which makes it both
+ * the cheapest and the most direct proof that the pair is valid.
+ */
+export async function verifyAppCredentials(appId: string, privateKey: string): Promise<VerifiedApp> {
+  const normalized = normalizePrivateKey(privateKey);
+  if (!normalized) {
+    throw new GitProviderError(
+      'That does not look like a private key. Open the .pem file GitHub downloaded and paste its ' +
+      'whole contents, including the BEGIN and END lines.',
+      null,
+    );
+  }
+
+  if (!/^\d+$/.test(appId.trim())) {
+    throw new GitProviderError(
+      `"${appId}" is not an App ID. The App ID is the number shown on the App's settings page — ` +
+      'not its name and not the Client ID.',
+      null,
+    );
+  }
+
+  const creds: AppCredentials = { appId: appId.trim(), privateKey: normalized, slug: null };
+
+  const app = await githubJson('/app', {
+    headers: { Authorization: `Bearer ${mintAppJwt(creds)}` },
+  });
+
+  // GitHub answers for whichever App the JWT's `iss` names, so a mismatch here
+  // means the id and the key belong to different Apps.
+  if (app?.id != null && String(app.id) !== creds.appId) {
+    throw new GitProviderError(
+      `That private key belongs to App ${app.id}, not App ${creds.appId}. Check you copied the ID ` +
+      'and the key from the same App.',
+      null,
+    );
+  }
+
+  const permissions: Record<string, string> = app?.permissions ?? {};
+  const shortfall = (required: Record<string, string>) =>
+    Object.entries(required)
+      .filter(([key, needed]) => permissions[key] !== needed)
+      .map(([key]) => key.replace('_', ' '));
+
+  const missing = shortfall(REQUIRED_PERMISSIONS);
+  const missingForPipeline = shortfall(PIPELINE_PERMISSIONS);
+
+  return {
+    appId: creds.appId,
+    slug: app?.slug ?? null,
+    name: app?.name ?? null,
+    htmlUrl: app?.html_url ?? null,
+    permissions,
+    missing,
+    missingForPipeline,
+  };
+}
+
+/** One place this App has been installed. */
+export interface AppInstallation {
+  installationId: string;
+  account: string | null;
+  accountType: string | null;
+  repositorySelection: string | null;
+  /** What this installation actually granted, e.g. { contents: 'write' }. */
+  permissions: Record<string, string>;
+  /** True when contents AND pull_requests are both writable. */
+  canWrite: boolean;
+}
+
+/**
+ * Every installation of this App.
+ *
+ * Asked of GitHub rather than remembered from the install redirect. The
+ * redirect only happens when the App has a Setup URL configured, which one
+ * created by hand does not — so a customer could install the App correctly and
+ * still be told to type a repository name, because we had simply never been
+ * told the installation id.
+ *
+ * The App JWT can list its own installations, so there is no need to depend on
+ * a browser round trip for something GitHub will answer directly.
+ */
+export async function listAppInstallations(): Promise<AppInstallation[]> {
+  const creds = await appCredentials();
+  if (!creds) {
+    throw new GitProviderError(
+      'No GitHub App has been registered for this organization yet. Set it up in Settings first.',
+      null,
+    );
+  }
+
+  const jwt = mintAppJwt(creds);
+  const out: AppInstallation[] = [];
+
+  for (let page = 1; page <= 10; page++) {
+    const batch = await githubJson(`/app/installations?per_page=100&page=${page}`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+
+    if (!Array.isArray(batch)) break;
+
+    for (const i of batch) {
+      if (i?.id == null) continue;
+      const permissions: Record<string, string> = i.permissions ?? {};
+      out.push({
+        installationId: String(i.id),
+        account: i.account?.login ?? null,
+        accountType: i.account?.type ?? null,
+        repositorySelection: i.repository_selection ?? null,
+        permissions,
+        // An installation created before the App's permissions were widened
+        // keeps the OLD set until the customer accepts the update, so this is
+        // read per installation rather than assumed from the App.
+        canWrite: permissions.contents === 'write' && permissions.pull_requests === 'write',
+      });
+    }
+
+    if (batch.length < 100) break;
+  }
+
+  return out;
+}
+
+/** A repository, carrying the installation that can reach it. */
+export interface SelectableRepo extends InstallationRepo {
+  installationId: string;
+  /** Which account it was installed under, for disambiguating same-named repos. */
+  account: string | null;
+}
+
+/**
+ * Every repository this App can reach, across every installation.
+ *
+ * What the repository dropdown is built from. One failed installation does not
+ * lose the others: a customer with the App on two organizations, one of which
+ * has been suspended, should still see the repositories from the other rather
+ * than an error.
+ */
+export async function listAllAccessibleRepos(): Promise<{
+  repositories: SelectableRepo[];
+  installations: AppInstallation[];
+  warning?: string;
+}> {
+  const installations = await listAppInstallations();
+  if (installations.length === 0) {
+    return { repositories: [], installations: [] };
+  }
+
+  const repositories: SelectableRepo[] = [];
+  const failures: string[] = [];
+
+  for (const installation of installations) {
+    try {
+      const repos = await listInstallationRepos(installation.installationId, installation.canWrite);
+      for (const r of repos) {
+        repositories.push({
+          ...r,
+          installationId: installation.installationId,
+          account: installation.account,
+        });
+      }
+    } catch (err: any) {
+      failures.push(`${installation.account ?? installation.installationId}: ${err?.message ?? err}`);
+    }
+  }
+
+  repositories.sort((a, b) => a.fullName.localeCompare(b.fullName));
+
+  const stale = installations.filter(i => !i.canWrite).map(i => i.account ?? i.installationId);
+
+  const notes: string[] = [];
+  if (failures.length > 0) {
+    notes.push(`Could not read repositories for ${failures.length} installation(s): ${failures.join('; ')}`);
+  }
+  if (stale.length > 0) {
+    // Almost always an installation predating a permission change. GitHub
+    // keeps it on the old permissions until someone accepts the new ones.
+    notes.push(
+      `The installation on ${stale.join(', ')} has not been granted write access. ` +
+      'Open it on GitHub and accept the updated permissions, then refresh.',
+    );
+  }
+
+  return {
+    repositories,
+    installations,
+    warning: notes.length > 0 ? notes.join(' ') : undefined,
+  };
 }

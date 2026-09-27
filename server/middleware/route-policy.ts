@@ -107,6 +107,12 @@ const RULES: Rule[] = [
   // requests with, so it sits with account administration. The two callbacks
   // GitHub redirects to are in EXEMPT below and verify a signed state instead.
   R(['POST'],   /^\/api\/infra\/git\/app\/manifest$/,            'account:write'),
+  // Renders the self-submitting manifest form. A GET, but it starts a
+  // credential change, so it carries the same permission as the POST.
+  R(['GET'],    /^\/api\/infra\/git\/app\/register$/,            'account:write'),
+  // Accepts a hand-created App's id and private key. Same credential
+  // change as the manifest flow, so the same permission.
+  R(['POST'],   /^\/api\/infra\/git\/app\/manual$/,              'account:write'),
   R(['DELETE'], /^\/api\/infra\/git\/app$/,                     'account:write'),
   R(['GET'],    /^\/api\/infra\/git\/app$/,                     'account:read'),
   R(['GET'],    /^\/api\/infra\/git\/repositories$/,            'account:read'),

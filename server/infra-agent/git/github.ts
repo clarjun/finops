@@ -43,6 +43,13 @@ export interface GitHubOptions {
   token: GitHubAuth;
   /** For GitHub Enterprise Server. Defaults to github.com. */
   baseUrl?: string;
+  /**
+   * Whether writes are permitted, when the caller already knows.
+   *
+   * Supplied on the GitHub App path, where the repository's own `permissions`
+   * object cannot answer the question — see verify().
+   */
+  knownWritable?: boolean;
 }
 
 export class GitHubProvider implements GitProvider {
@@ -50,11 +57,13 @@ export class GitHubProvider implements GitProvider {
   readonly repo: RepoRef;
   private readonly auth: GitHubAuth;
   private readonly baseUrl: string;
+  private readonly knownWritable?: boolean;
 
   constructor(opts: GitHubOptions) {
     this.repo = opts.repo;
     this.auth = opts.token;
     this.baseUrl = (opts.baseUrl ?? API).replace(/\/+$/, '');
+    this.knownWritable = opts.knownWritable;
   }
 
   describe(): string {
@@ -142,9 +151,24 @@ export class GitHubProvider implements GitProvider {
     }
 
     if (res.status === 403) {
+      // "Resource not accessible by integration" is GitHub's answer when a
+      // GitHub App lacks one specific permission, and it names neither the
+      // permission nor the resource. By far the most common cause here is the
+      // workflow file: creating or updating anything under .github/workflows/
+      // needs a SEPARATE "Workflows" permission that "Contents: write" does not
+      // imply, so the first pull request fails on an App that looks correctly
+      // configured. Guessing is wrong sometimes; saying nothing is wrong every
+      // time, so the likely cause is named and the general case kept.
+      const integrationDenied = /not accessible by integration/i.test(detail ?? '');
+
       return new GitProviderError(
-        `The token cannot perform this action on ${this.describe()}. It needs repository "Contents: write" ` +
-        'and "Pull requests: write" permission.',
+        integrationDenied
+          ? `GitHub refused this action on ${this.describe()}. If the change includes a CI/CD ` +
+            'workflow, the App also needs the "Workflows: Read and write" permission — creating a ' +
+            'file under .github/workflows/ requires it in addition to "Contents: write". Add it in ' +
+            "the App's permissions, accept the update on the installation, then try again."
+          : `The token cannot perform this action on ${this.describe()}. It needs repository ` +
+            '"Contents: write" and "Pull requests: write" permission.',
         403, detail,
       );
     }
@@ -185,12 +209,21 @@ export class GitHubProvider implements GitProvider {
       'GET', this.repoPath,
     );
 
-    // `permissions` is absent for some token types rather than false. Treating
-    // absent as "cannot write" would reject working setups, so absence is
-    // optimistic and the real proof is the commit attempt.
-    const canWrite = repo.permissions === undefined
-      ? true
-      : Boolean(repo.permissions.push || repo.permissions.admin);
+    // A GitHub App installation reports its own answer, because this response
+    // cannot give one. `permissions` here is the COLLABORATOR model — admin /
+    // maintain / push / triage / pull — and an App is not a collaborator, so
+    // GitHub returns every field as false however much access the installation
+    // has. Deriving canWrite from it rejected a correctly configured App with
+    // "cannot write to it", pointing the customer at permissions that were
+    // already right.
+    //
+    // For a personal access token the fields are meaningful, and absent still
+    // means unknown rather than denied: absence stays optimistic and the commit
+    // attempt is the real proof.
+    const canWrite = this.knownWritable
+      ?? (repo.permissions === undefined
+        ? true
+        : Boolean(repo.permissions.push || repo.permissions.admin));
 
     return { defaultBranch: repo.default_branch, canWrite };
   }

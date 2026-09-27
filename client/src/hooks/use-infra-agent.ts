@@ -526,7 +526,12 @@ export function useRaisePullRequest() {
         headers: { 'Content-Type': 'application/json' },
       });
       const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.detail || body.error || `Request failed (${res.status})`);
+      // `error` first, then `detail` — the order matters and was the wrong way
+      // round here. `error` is the message the server composed for a human;
+      // `detail` is the provider's own text, kept for diagnosis. Preferring
+      // detail meant GitHub's "Resource not accessible by integration" replaced
+      // a message that named the missing permission and how to grant it.
+      if (!res.ok) throw new Error(body.error || body.detail || `Request failed (${res.status})`);
       return body as { pullRequest: InfraPullRequestView; reused: boolean; message: string };
     },
     onSuccess: (_d, planId) => {

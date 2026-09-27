@@ -27,13 +27,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useGitConnection } from "@/hooks/use-infra-agent";
 import {
   useAppRegistration, useInstallationRepos, useRegisterApp, useRemoveApp,
-  useConnectRepo, onSetupMessage,
+  useConnectRepo, useRegisterManualApp, onSetupMessage,
 } from "@/hooks/use-github-app";
 
 function Step({
@@ -64,12 +65,18 @@ export function GitHubSetup() {
   const register = useRegisterApp();
   const remove = useRemoveApp();
   const connect = useConnectRepo();
+  const manual = useRegisterManualApp();
 
   const [installationId, setInstallationId] = useState<string | null>(null);
   const [repository, setRepository] = useState<string>('');
   const [basePath, setBasePath] = useState('infrastructure');
+  const [showManual, setShowManual] = useState(false);
+  const [appId, setAppId] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
 
-  const repos = useInstallationRepos(installationId);
+  // Runs as soon as an App exists. The installation id is a nicety when we
+  // have one, not a prerequisite — the server discovers installations.
+  const repos = useInstallationRepos(installationId, registration.data?.registered === true);
 
   // Both popups report back this way. Registered once, for the lifetime of the
   // panel, because the popup can return at any point after it is opened.
@@ -97,6 +104,20 @@ export function GitHubSetup() {
       await register.mutateAsync({});
     } catch (err: any) {
       toast({ title: 'Could not start setup', description: err.message, variant: 'destructive' });
+    }
+  };
+
+  const saveManual = async () => {
+    try {
+      const res: any = await manual.mutateAsync({ appId: appId.trim(), privateKey });
+      setPrivateKey('');
+      setShowManual(false);
+      toast({
+        title: 'GitHub App registered',
+        description: `${res.name ?? res.appId} is connected. Next, install it on your repositories.`,
+      });
+    } catch (err: any) {
+      toast({ title: 'Could not register the App', description: err.message, variant: 'destructive' });
     }
   };
 
@@ -174,7 +195,8 @@ export function GitHubSetup() {
             <>
               <p className="text-sm text-muted-foreground mb-2">
                 GitHub creates the App and returns its key to us directly. You will not download or
-                paste anything.
+                paste anything. <strong>Sign in to GitHub first</strong> — if you are signed out,
+                GitHub shows its own long form instead and the details are lost.
               </p>
               <Button size="sm" onClick={startRegister} disabled={register.isPending}>
                 {register.isPending
@@ -182,11 +204,76 @@ export function GitHubSetup() {
                   : <ExternalLink className="h-4 w-4 mr-1.5" />}
                 Create the App on GitHub
               </Button>
+
+              {/* The escape hatch. Someone who filled in GitHub's own form is
+                  holding a .pem with nowhere to put it, and without this their
+                  only option is to delete the App and start over. */}
+              {!showManual ? (
+                <button
+                  type="button"
+                  onClick={() => setShowManual(true)}
+                  className="block mt-3 text-xs text-primary hover:underline"
+                >
+                  I already created the App on GitHub
+                </button>
+              ) : (
+                <div className="mt-4 space-y-3 max-w-md rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground">
+                    Both are on the App&rsquo;s settings page at{' '}
+                    <code>github.com/settings/apps</code>. The key is the <code>.pem</code> file
+                    GitHub downloaded when you pressed <em>Generate a private key</em> — GitHub
+                    will not show it again.
+                  </p>
+
+                  <div>
+                    <Label className="text-xs">App ID</Label>
+                    <Input
+                      value={appId}
+                      onChange={e => setAppId(e.target.value)}
+                      placeholder="1234567"
+                      inputMode="numeric"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      The number near the top — not the name, and not the Client ID.
+                    </p>
+                  </div>
+
+                  <div>
+                    <Label className="text-xs">Private key</Label>
+                    <Textarea
+                      value={privateKey}
+                      onChange={e => setPrivateKey(e.target.value)}
+                      placeholder={'-----BEGIN RSA PRIVATE KEY-----\n…\n-----END RSA PRIVATE KEY-----'}
+                      className="font-mono text-xs h-28"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Open the .pem in a text editor and paste all of it, BEGIN and END lines
+                      included. It is encrypted before it is stored.
+                    </p>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={saveManual}
+                      disabled={!appId.trim() || privateKey.trim().length < 40 || manual.isPending}
+                    >
+                      {manual.isPending
+                        ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                        : <Check className="h-4 w-4 mr-1.5" />}
+                      Verify and save
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => { setShowManual(false); setPrivateKey(''); }}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </Step>
 
-        <Step n={2} title="Install it on your repositories" done={!!installationId || isConnected}>
+        <Step n={2} title="Install it on your repositories" done={(repos.data?.repositories.length ?? 0) > 0 || isConnected}>
           {!isRegistered ? (
             <p className="text-sm text-muted-foreground">Create the App first.</p>
           ) : (
@@ -204,21 +291,30 @@ export function GitHubSetup() {
         </Step>
 
         <Step n={3} title="Choose the repository for pull requests" done={isConnected}>
-          {!installationId ? (
-            <p className="text-sm text-muted-foreground">
-              {isConnected
-                ? 'Already connected. Install again above to change which repositories are available.'
-                : 'Install the App first — the list below comes from what you grant it.'}
-            </p>
+          {!isRegistered ? (
+            <p className="text-sm text-muted-foreground">Create the App first.</p>
           ) : repos.isLoading ? (
             <p className="text-sm text-muted-foreground flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />Loading your repositories…
+              <Loader2 className="h-4 w-4 animate-spin" />Loading your repositories&hellip;
             </p>
           ) : repos.error ? (
             <p className="text-sm text-destructive flex items-start gap-2">
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
               {(repos.error as Error).message}
             </p>
+          ) : (repos.data?.repositories.length ?? 0) === 0 ? (
+            // Registered, reachable, and nothing granted — so the missing step
+            // is the install, not the connection. Say which.
+            <div className="text-sm text-muted-foreground space-y-2">
+              <p>
+                The App is registered but has no repositories yet. Use{' '}
+                <strong>Install on GitHub</strong> above and grant it at least one.
+              </p>
+              <Button size="sm" variant="ghost" onClick={() => repos.refetch()}>
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+                I have installed it &mdash; refresh
+              </Button>
+            </div>
           ) : (
             <div className="space-y-3 max-w-md">
               <div>
@@ -229,18 +325,28 @@ export function GitHubSetup() {
                     {(repos.data?.repositories ?? []).map(r => (
                       <SelectItem key={r.fullName} value={r.fullName} disabled={!r.canWrite}>
                         {r.fullName}
-                        {r.private && <span className="text-muted-foreground"> · private</span>}
-                        {!r.canWrite && <span className="text-muted-foreground"> · read-only</span>}
+                        {r.private && <span className="text-muted-foreground"> &middot; private</span>}
+                        {!r.canWrite && <span className="text-muted-foreground"> &middot; read-only</span>}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {repos.data?.repositories.length === 0 && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    The App has no repositories yet. Install it on at least one above.
-                  </p>
-                )}
+                <p className="text-xs text-muted-foreground mt-1">
+                  {repos.data?.repositories.length} repositor
+                  {repos.data?.repositories.length === 1 ? 'y' : 'ies'} the App can reach.{' '}
+                  <button type="button" onClick={() => repos.refetch()} className="text-primary hover:underline">
+                    Refresh
+                  </button>{' '}
+                  after changing access on GitHub.
+                </p>
               </div>
+
+              {repos.data?.warning && (
+                <p className="text-xs text-amber-600 flex items-start gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                  {repos.data.warning}
+                </p>
+              )}
 
               <div>
                 <Label className="text-xs">Folder inside the repository</Label>

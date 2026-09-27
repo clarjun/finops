@@ -25,6 +25,15 @@ export interface InstallationRepo {
   private: boolean;
   defaultBranch: string | null;
   canWrite: boolean;
+  installationId?: string;
+  account?: string | null;
+}
+
+export interface AppInstallation {
+  installationId: string;
+  account: string | null;
+  accountType: string | null;
+  repositorySelection: string | null;
 }
 
 export function useAppRegistration() {
@@ -35,15 +44,27 @@ export function useAppRegistration() {
   });
 }
 
-/** Repositories the installation can reach. This is the dropdown. */
-export function useInstallationRepos(installationId: string | null) {
-  return useQuery<{ repositories: InstallationRepo[] }>({
-    queryKey: ['/api/infra/git/repositories', installationId],
-    enabled: !!installationId,
-    queryFn: () => api(
-      `/api/infra/git/repositories?installationId=${encodeURIComponent(installationId!)}`,
-      { what: 'Loading repositories' },
-    ),
+/**
+ * Repositories the App can reach. This is the dropdown.
+ *
+ * Runs with or without an installation id. Without one the server asks GitHub
+ * where the App is installed, so the list works even when GitHub never
+ * redirected back after the install — which is the normal case for an App that
+ * has no Setup URL.
+ */
+export function useInstallationRepos(installationId: string | null, enabled = true) {
+  const qs = installationId ? `?installationId=${encodeURIComponent(installationId)}` : '';
+
+  return useQuery<{
+    repositories: InstallationRepo[];
+    installations: AppInstallation[];
+    warning?: string;
+    discovered: boolean;
+  }>({
+    queryKey: ['/api/infra/git/repositories', installationId ?? 'discover'],
+    enabled,
+    queryFn: () => api(`/api/infra/git/repositories${qs}`, { what: 'Loading repositories' }),
+    staleTime: 30_000,
   });
 }
 
@@ -56,35 +77,50 @@ interface ManifestResponse {
 /**
  * Opens GitHub's "create App" page with the manifest attached.
  *
- * GitHub requires a form POST — the manifest is too large for a query string
- * and must arrive as a field — so this builds and submits a real form into a
- * popup rather than setting window.location.
+ * GitHub needs the manifest as a form POST field — it is too large for a query
+ * string — so the popup is pointed at a page on OUR origin that carries the
+ * form and submits itself.
+ *
+ * It used to build that form inside an `about:blank` popup from this document.
+ * That reached GitHub without the manifest and produced "url wasn't supplied":
+ * a freshly opened about:blank may have no document.body yet, and an operator
+ * who is not signed in to GitHub is bounced through login, which discards the
+ * POST body. Navigating to a real page removes the first and leaves the second
+ * recoverable, because the form is still on screen to press again.
  */
 export function useRegisterApp() {
   return useMutation({
     mutationFn: async (input: { name?: string; organization?: string | null }) => {
-      const res = await api<ManifestResponse>('/api/infra/git/app/manifest', {
-        method: 'POST', body: input, what: 'Preparing the GitHub App',
-      });
+      const params = new URLSearchParams();
+      if (input.name) params.set('name', input.name);
+      if (input.organization) params.set('organization', input.organization);
 
-      const popup = window.open('', 'cloudwise-github-setup', 'width=980,height=760');
+      const url = `/api/infra/git/app/register${params.toString() ? `?${params}` : ''}`;
+      const popup = window.open(url, 'cloudwise-github-setup', 'width=980,height=760');
+
       if (!popup) {
         throw new Error('The browser blocked the GitHub window. Allow pop-ups for this site and try again.');
       }
-
-      const form = popup.document.createElement('form');
-      form.method = 'post';
-      form.action = res.postUrl;
-      const field = popup.document.createElement('input');
-      field.type = 'hidden';
-      field.name = 'manifest';
-      field.value = JSON.stringify(res.manifest);
-      form.appendChild(field);
-      popup.document.body.appendChild(form);
-      form.submit();
-
-      return res;
+      return { opened: true };
     },
+  });
+}
+
+/**
+ * Registers an App the operator created by hand.
+ *
+ * The escape hatch for anyone who finished GitHub's own form — usually because
+ * they were signed out when the manifest POST fired. Still database-only and
+ * per-organization; the key never goes near a file on the server.
+ */
+export function useRegisterManualApp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { appId: string; privateKey: string }) =>
+      api<AppRegistration & { name: string | null }>('/api/infra/git/app/manual', {
+        method: 'POST', body: input, what: 'Registering the GitHub App',
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/infra/git/app'] }),
   });
 }
 

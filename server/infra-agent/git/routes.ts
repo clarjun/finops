@@ -26,7 +26,8 @@ import { resolveGitConnection, parseRepo } from './connection';
 import {
   appCredentials, findInstallationForRepo, getInstallationToken,
   installationUrl, isAppConfigured, buildManifest, exchangeManifestCode,
-  listInstallationRepos, clearInstallationTokenCache,
+  listInstallationRepos, clearInstallationTokenCache, verifyAppCredentials,
+  listAllAccessibleRepos,
 } from './github-app';
 import { githubAppCredentials } from '@shared/schema';
 import { GitHubProvider } from './github';
@@ -130,6 +131,42 @@ export function registerGitOpsRoutes(app: Express) {
   });
 
   /**
+   * A real page that carries the manifest form and submits itself to GitHub.
+   *
+   * The previous version built this form inside an `about:blank` popup from the
+   * parent document. That fails in two ways that both end at GitHub's
+   * "url wasn't supplied" — its response to a manifest it never received:
+   *
+   *   1. A just-opened about:blank window may have no document.body yet, so
+   *      writing into it from the opener races the popup's own initialisation.
+   *   2. If the operator is not signed in to GitHub, the POST is redirected
+   *      through the login page and the body is discarded on the way back.
+   *
+   * Serving an ordinary same-origin page removes the first entirely and makes
+   * the second recoverable: the form is still on screen, so signing in and
+   * pressing the button again works.
+   */
+  app.get('/api/infra/git/app/register', async (req: Request, res: Response) => {
+    try {
+      const name = typeof req.query.name === 'string' && req.query.name.trim()
+        ? req.query.name.trim().slice(0, 34)
+        : 'CloudWise Infra';
+      const organization = typeof req.query.organization === 'string' && req.query.organization.trim()
+        ? req.query.organization.trim()
+        : null;
+
+      const { manifest, postUrl } = prepareManifest(req, name, organization);
+
+      res.type('html').send(manifestFormPage(manifest, postUrl));
+    } catch (err: any) {
+      console.error('[GitOps] Could not render the App registration form:', err?.message ?? err);
+      res.status(400).type('html').send(
+        setupResultPage(false, err?.message ?? 'Could not prepare the GitHub App registration.'),
+      );
+    }
+  });
+
+  /**
    * The manifest the browser POSTs to GitHub to create the App.
    *
    * Returned rather than redirected to, because GitHub requires a form POST
@@ -146,27 +183,7 @@ export function registerGitOpsRoutes(app: Express) {
         organization: z.string().max(255).nullish(),
       }).parse(req.body ?? {});
 
-      const orgId = currentOrgId();
-
-      // Derived from the request rather than configured: the callback has to
-      // come back to the host the operator is actually using, which a fixed
-      // setting gets wrong behind every proxy and on every laptop.
-      const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0] ?? req.protocol;
-      const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host');
-      const baseUrl = `${proto}://${host}`;
-
-      const state = signSetupState(orgId);
-
-      res.json({
-        // GitHub App names are globally unique, so a collision is likely on a
-        // common name. Suffixed here rather than failing at GitHub with an
-        // error the operator cannot act on.
-        manifest: buildManifest(`${body.name} (${orgId})`, baseUrl),
-        state,
-        postUrl: body.organization
-          ? `https://github.com/organizations/${encodeURIComponent(body.organization)}/settings/apps/new?state=${encodeURIComponent(state)}`
-          : `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`,
-      });
+      res.json(prepareManifest(req, body.name, body.organization ?? null));
     } catch (err) {
       fail(res, err, 'prepare the GitHub App registration');
     }
@@ -239,6 +256,81 @@ export function registerGitOpsRoutes(app: Express) {
     res.type('html').send(setupResultPage(true, 'Installed. You can close this tab.', { installationId }));
   });
 
+  /**
+   * Registers an App that was created by hand.
+   *
+   * The manifest flow is the intended path and needs none of this. But an
+   * operator who was signed out when the manifest POST fired finished GitHub's
+   * own form instead, and is now holding a .pem with nowhere to put it. Without
+   * this they would have to delete the App and start again.
+   *
+   * The credentials are PROVED before they are stored — a wrong id, a key from
+   * a different App, or an App created without "Contents: write" otherwise all
+   * surface identically as a failure at the first pull request, days later.
+   */
+  app.post('/api/infra/git/app/manual', async (req: Request, res: Response) => {
+    try {
+      const body = z.object({
+        appId: z.string().min(1),
+        privateKey: z.string().min(40),
+      }).parse(req.body ?? {});
+
+      const verified = await verifyAppCredentials(body.appId, body.privateKey);
+
+      if (verified.missing.length > 0) {
+        throw new GitProviderError(
+          `The App "${verified.name ?? verified.appId}" is missing ${verified.missing.join(' and ')} ` +
+          'permission. Grant Contents: Read and write and Pull requests: Read and write under the ' +
+          "App's Permissions, then try again.",
+          403,
+        );
+      }
+
+      const stored = {
+        appId: verified.appId,
+        // Normalised by verifyAppCredentials before it signed with it, so what
+        // is stored is exactly what was proved to work.
+        privateKey: encrypt(body.privateKey.trim()),
+        slug: verified.slug,
+        clientId: null,
+        // A hand-made App has a webhook secret only if one was set, and we
+        // never receive it. Nothing here consumes webhooks, so nothing is lost.
+        webhookSecret: null,
+        lastVerifiedAt: new Date(),
+        lastError: null,
+      };
+
+      await db
+        .insert(githubAppCredentials)
+        .values({ organizationId: currentOrgId(), ...stored, createdBy: currentUserId() ?? null })
+        .onConflictDoUpdate({
+          target: [githubAppCredentials.organizationId],
+          set: { ...stored, updatedAt: new Date() },
+        });
+
+      clearInstallationTokenCache();
+
+      void recordAudit({
+        action: 'infra.github_app.register',
+        resourceType: 'github_app',
+        resourceId: verified.appId,
+        metadata: { slug: verified.slug, name: verified.name, method: 'manual' },
+      });
+
+      res.json({
+        registered: true,
+        appId: verified.appId,
+        slug: verified.slug,
+        name: verified.name,
+        installUrl: verified.slug
+          ? `https://github.com/apps/${verified.slug}/installations/new`
+          : null,
+      });
+    } catch (err) {
+      fail(res, err, 'register the GitHub App');
+    }
+  });
+
   /** Registration status, for the settings screen. */
   app.get('/api/infra/git/app', async (_req: Request, res: Response) => {
     try {
@@ -279,10 +371,27 @@ export function registerGitOpsRoutes(app: Express) {
       const installationId = typeof req.query.installationId === 'string'
         ? req.query.installationId
         : null;
-      if (!installationId) {
-        throw new GitProviderError('No installation was given. Install the GitHub App first.', null);
+
+      // Narrowed to one installation when the browser knows which — it does
+      // after an install redirect. Otherwise the installations are DISCOVERED.
+      //
+      // That discovery is the point. Requiring an installation id meant the
+      // dropdown only worked when GitHub had redirected back, which only
+      // happens when the App has a Setup URL — something an App created by hand
+      // does not. A customer could install correctly and still be told to type
+      // a repository name, because nobody had told us an id we could have
+      // simply asked GitHub for.
+      if (installationId) {
+        const repositories = (await listInstallationRepos(installationId))
+          .map(r => ({ ...r, installationId, account: r.owner }));
+        // canWrite defaults to true on this path: the installation's own
+        // permissions are not fetched here, and connect-time verification is
+        // the authoritative check anyway.
+        return res.json({ repositories, installations: [], discovered: false });
       }
-      res.json({ repositories: await listInstallationRepos(installationId) });
+
+      const { repositories, installations, warning } = await listAllAccessibleRepos();
+      res.json({ repositories, installations, warning, discovered: true });
     } catch (err) {
       fail(res, err, 'list repositories');
     }
@@ -343,18 +452,28 @@ export function registerGitOpsRoutes(app: Express) {
       // Proved before it is stored, exactly as the token path is. A connection
       // that only fails at the first pull request is worse than one that
       // refuses to save.
-      const probe = new GitHubProvider({
-        repo,
-        token: () => getInstallationToken(installation.installationId, [repo.repo]),
-      });
-      const { canWrite } = await probe.verify();
-      if (!canWrite) {
+      // Checked against the INSTALLATION rather than the repository. A
+      // repository response cannot report an App's access — see verify().
+      if (!installation.canWrite) {
+        const granted = Object.entries(installation.permissions)
+          .map(([k, v]) => `${k}: ${v}`).join(', ') || 'none';
         throw new GitProviderError(
-          `The App is installed on ${probe.describe()} but cannot write to it. Grant it ` +
-          '"Contents: write" and "Pull requests: write" in the App repository permissions, then reconnect.',
+          `The App is installed on ${repo.owner}/${repo.repo} but that installation has not been ` +
+          `granted write access (it currently has ${granted}). Set Contents and Pull requests to ` +
+          '"Read and write" in the App\'s permissions. If the App is already installed, GitHub will ' +
+          'ask you to accept the updated permissions before they take effect.',
           403,
         );
       }
+
+      const probe = new GitHubProvider({
+        repo,
+        token: () => getInstallationToken(installation.installationId, [repo.repo]),
+        knownWritable: true,
+      });
+      // Still called: it proves the token works and reads the default branch,
+      // which is what the pull request will be opened against.
+      await probe.verify();
 
       const basePath = body.basePath.replace(/^\/+|\/+$/g, '') || 'infrastructure';
       const shared = {
@@ -652,5 +771,87 @@ b{display:block;font-size:1.1rem;margin-bottom:.5rem;color:${ok ? '#047857' : '#
 <script>
 try { window.opener && window.opener.postMessage(${payload}, window.location.origin); } catch (e) {}
 setTimeout(function () { try { window.close(); } catch (e) {} }, ${ok ? 1200 : 6000});
+</script>`;
+}
+
+
+/**
+ * Builds the manifest and the GitHub URL it is posted to.
+ *
+ * Shared by the JSON endpoint and the self-submitting page so the two can never
+ * drift — a manifest that works in one and not the other is a bug nobody finds
+ * until setup fails in front of a customer.
+ */
+function prepareManifest(
+  req: Request,
+  name: string,
+  organization: string | null,
+): { manifest: Record<string, unknown>; state: string; postUrl: string } {
+  const orgId = currentOrgId();
+
+  // Derived from the request rather than configured: the callback has to come
+  // back to the host the operator is actually using, which a fixed setting gets
+  // wrong behind every proxy and on every laptop.
+  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0] ?? req.protocol;
+  const host = (req.headers['x-forwarded-host'] as string) ?? req.get('host');
+  const baseUrl = `${proto}://${host}`;
+
+  const state = signSetupState(orgId);
+
+  return {
+    // GitHub App names are globally unique, so a collision is likely on a common
+    // name. Suffixed here rather than failing at GitHub with an error the
+    // operator cannot act on.
+    manifest: buildManifest(`${name} (${orgId})`, baseUrl),
+    state,
+    postUrl: organization
+      ? `https://github.com/organizations/${encodeURIComponent(organization)}/settings/apps/new?state=${encodeURIComponent(state)}`
+      : `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`,
+  };
+}
+
+const htmlAttr = (value: string): string =>
+  value.replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+  ));
+
+/**
+ * The page that hands the manifest to GitHub.
+ *
+ * Auto-submits, but keeps a visible button. Auto-submission is blocked in some
+ * configurations, and — more commonly — an operator who is not signed in to
+ * GitHub is bounced through the login page, which discards the POST body. With
+ * the form still on screen they sign in and press the button; with a script-only
+ * submit they get GitHub's "url wasn't supplied" and no way forward.
+ */
+export function manifestFormPage(manifest: Record<string, unknown>, postUrl: string): string {
+  const payload = htmlAttr(JSON.stringify(manifest));
+
+  return `<!doctype html><meta charset="utf-8"><title>Creating the GitHub App</title>
+<style>
+ body{font:15px system-ui;margin:0;display:grid;place-items:center;height:100vh;color:#1f2937;background:#f8fafc}
+ div{text-align:center;max-width:32rem;padding:2rem}
+ b{display:block;font-size:1.05rem;margin-bottom:.5rem}
+ p{color:#475569;line-height:1.5}
+ button{font:inherit;padding:.6rem 1.1rem;border:0;border-radius:.4rem;background:#2563eb;color:#fff;cursor:pointer}
+</style>
+<div>
+  <b>Taking you to GitHub&hellip;</b>
+  <p>GitHub should show a short <em>Create GitHub App</em> confirmation with the name and
+     permissions already filled in.</p>
+  <p><strong>If you land on GitHub&rsquo;s long, empty &ldquo;Register new GitHub App&rdquo; form
+     instead, you were signed out.</strong> GitHub sent the sign-in page in place of ours and
+     dropped the details on the way back. Do not fill that form in by hand &mdash; it cannot
+     complete the setup. Sign in to GitHub, come back here and press the button again.</p>
+  <form id="f" method="post" action="${htmlAttr(postUrl)}">
+    <input type="hidden" name="manifest" value="${payload}">
+    <button type="submit">Continue to GitHub</button>
+  </form>
+</div>
+<script>
+  // Submitted from the page that owns the form, so there is no cross-document
+  // timing to get wrong. A frame gives the button time to paint first, so a
+  // bounce through GitHub's login leaves something usable on screen.
+  requestAnimationFrame(function () { document.getElementById('f').submit(); });
 </script>`;
 }

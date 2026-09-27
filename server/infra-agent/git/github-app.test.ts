@@ -6,10 +6,10 @@
  * debugging it to regenerate a key that was fine. So the token is verified
  * here against a real RSA key rather than trusted.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { generateKeyPairSync, createVerify } from 'crypto';
 import {
-  mintAppJwt, normalizePrivateKey, buildManifest, type AppCredentials,
+  mintAppJwt, normalizePrivateKey, buildManifest, verifyAppCredentials, type AppCredentials,
 } from './github-app';
 
 let publicKey: string;
@@ -121,6 +121,9 @@ describe('buildManifest', () => {
     expect(m().default_permissions).toEqual({
       contents: 'write',
       pull_requests: 'write',
+      // Not implied by contents: write. Without it GitHub refuses every file
+      // under .github/workflows/, which is every pull request we raise.
+      workflows: 'write',
       metadata: 'read',
     });
   });
@@ -145,5 +148,125 @@ describe('buildManifest', () => {
     // Without this, adding a repository to an existing installation leaves the
     // customer on GitHub with no way back and a stale dropdown.
     expect(m().setup_on_update).toBe(true);
+  });
+});
+
+describe('verifyAppCredentials', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  /** Stands in for GET /app. */
+  const mockApp = (body: any, status = 200) => {
+    globalThis.fetch = (async () => new Response(JSON.stringify(body), {
+      status, headers: { 'content-type': 'application/json' },
+    })) as any;
+  };
+
+  it('accepts a valid pair and reports what the App can do', async () => {
+    mockApp({
+      id: 123456, slug: 'testingcloudwise', name: 'Testing CloudWise',
+      html_url: 'https://github.com/apps/testingcloudwise',
+      permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
+    });
+
+    const v = await verifyAppCredentials('123456', creds.privateKey);
+    expect(v).toMatchObject({ appId: '123456', slug: 'testingcloudwise', missing: [] });
+  });
+
+  it('rejects a key that belongs to a different App', async () => {
+    // Easy to do with two Apps open: the id from one, the .pem from the other.
+    // GitHub answers for whichever App the JWT names, so the mismatch is
+    // visible here and nowhere later.
+    mockApp({ id: 999999, slug: 'other', permissions: { contents: 'write', pull_requests: 'write' } });
+
+    await expect(verifyAppCredentials('123456', creds.privateKey))
+      .rejects.toThrow(/belongs to App 999999, not App 123456/);
+  });
+
+  it('names the missing permissions instead of failing later', async () => {
+    // An App created by hand defaults to no repository permissions at all.
+    // Without this the first pull request 403s with nothing pointing back here.
+    mockApp({ id: 1, slug: 'x', permissions: { metadata: 'read' } });
+
+    const v = await verifyAppCredentials('1', creds.privateKey);
+    expect(v.missing).toEqual(['contents', 'pull requests']);
+  });
+
+  it('spots read-only access, which is not the same as absent', async () => {
+    mockApp({ id: 1, slug: 'x', permissions: { contents: 'read', pull_requests: 'write' } });
+
+    const v = await verifyAppCredentials('1', creds.privateKey);
+    expect(v.missing).toEqual(['contents']);
+  });
+
+  it('refuses a Client ID pasted into the App ID field', async () => {
+    // The two sit next to each other on the settings page and only one is
+    // numeric. Caught before any network call.
+    await expect(verifyAppCredentials('Iv1.a1b2c3d4e5f6', creds.privateKey))
+      .rejects.toThrow(/not an App ID/);
+  });
+
+  it('refuses something that is not a key', async () => {
+    await expect(verifyAppCredentials('123', 'ghp_personalAccessTokenPastedByMistake'))
+      .rejects.toThrow(/does not look like a private key/i);
+  });
+
+  it('accepts a key whose newlines were mangled by the paste', async () => {
+    mockApp({ id: 7, slug: 'x', permissions: { contents: 'write', pull_requests: 'write' } });
+
+    const mangled = creds.privateKey.split('\n').join('\n');
+    await expect(verifyAppCredentials('7', mangled)).resolves.toMatchObject({ appId: '7' });
+  });
+
+  it('explains a GitHub rejection rather than surfacing a raw 401', async () => {
+    mockApp({ message: 'A JSON web token could not be decoded' }, 401);
+
+    await expect(verifyAppCredentials('123', creds.privateKey))
+      .rejects.toThrow(/App may have been deleted|clock is wrong/i);
+  });
+});
+
+describe('the workflows permission', () => {
+  // GitHub needs a permission separate from "Contents: write" to create or
+  // update anything under .github/workflows/. Every pull request we raise
+  // carries one, so an App without it fails on its very first delivery with
+  // "Resource not accessible by integration" — which names neither the
+  // permission nor the file.
+  it('is requested by the manifest', () => {
+    const m = buildManifest('CloudWise Infra (1)', 'https://app.example.com') as any;
+    expect(m.default_permissions.workflows).toBe('write');
+  });
+
+  it('is reported separately from the permissions that block registration', async () => {
+    // An App without it can still deliver Terraform, so it must not refuse
+    // registration — it must be reported and then explained.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: 1, slug: 'x',
+      permissions: { contents: 'write', pull_requests: 'write', metadata: 'read' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as any;
+
+    try {
+      const v = await verifyAppCredentials('1', creds.privateKey);
+      expect(v.missing).toEqual([]);                    // registration proceeds
+      expect(v.missingForPipeline).toEqual(['workflows']); // but the gap is named
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('is not reported missing once granted', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      id: 1, slug: 'x',
+      permissions: { contents: 'write', pull_requests: 'write', workflows: 'write', metadata: 'read' },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })) as any;
+
+    try {
+      const v = await verifyAppCredentials('1', creds.privateKey);
+      expect(v.missingForPipeline).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
