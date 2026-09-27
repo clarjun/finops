@@ -9,6 +9,7 @@ import { TrendingDown, TrendingUp, AlertTriangle, CheckCircle2, XCircle, Lightbu
 import { queryClient } from "@/lib/queryClient";
 import type { OptimizationRecommendation } from "@shared/schema";
 import { RealizedSavingsPanel } from "@/components/realized-savings-panel";
+import { throwIfFailed } from "@/lib/api";
 
 export default function OptimizationPage() {
   const [selectedProvider, setSelectedProvider] = useState<string>("all");
@@ -21,7 +22,7 @@ export default function OptimizationPage() {
         ? '/api/optimization/recommendations'
         : `/api/optimization/recommendations?provider=${selectedProvider}`;
       const response = await fetch(url, { credentials: 'include' });
-      if (!response.ok) throw new Error('Failed to fetch recommendations');
+      await throwIfFailed(response, 'Loading recommendations');
       return await response.json();
     },
   });
@@ -36,7 +37,7 @@ export default function OptimizationPage() {
         body: JSON.stringify({ status }),
         credentials: 'include',
       });
-      if (!response.ok) throw new Error('Failed to update status');
+      await throwIfFailed(response, 'Updating the status');
       return await response.json();
     },
     onSuccess: () => {
@@ -61,7 +62,7 @@ export default function OptimizationPage() {
         method: 'POST',
         credentials: 'include',
       });
-      if (!response.ok) throw new Error('Failed to generate recommendations');
+      await throwIfFailed(response, 'Generating recommendations');
       return await response.json();
     },
     onSuccess: () => {

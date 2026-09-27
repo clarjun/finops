@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useSearch } from "wouter";
 import {
-  Rocket, Loader2, AlertTriangle, CheckCircle2, XCircle, ShieldAlert, Server, DollarSign, GitBranch,
+  Rocket, Loader2, AlertTriangle, CheckCircle2, XCircle, ShieldAlert, Server, DollarSign, GitBranch, GitPullRequest,
   PauseCircle, PlayCircle, Stethoscope, ExternalLink, Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import { DeploymentSummaryCard } from "@/components/infra/deployment-summary";
 import { EstimatePanel } from "@/components/infra/estimate-panel";
 import {
   useCompilePlan, useStartRun, useCloudAccounts, useRun, useRunStream, useResumeRun, useDiagnosis, usePlan,
+  useGitConnection, useRaisePullRequest,
   useActiveRuns, type ActiveRun,
   type ClarificationQuestion, type CompileResult, type NodeStatus,
 } from "@/hooks/use-infra-agent";
@@ -50,6 +51,8 @@ export default function InfraAgentPage() {
   const accounts = useCloudAccounts();
   const compile = useCompilePlan();
   const startRun = useStartRun();
+  const gitConnection = useGitConnection();
+  const raisePr = useRaisePullRequest();
   const run = useRun(runId);
   // Known from the handoff before a run exists, and from the run afterwards, so
   // the estimate stays on screen for the whole deployment.
@@ -242,6 +245,35 @@ export default function InfraAgentPage() {
               <Button variant="outline" onClick={() => onDeploy('simulate')} disabled={startRun.isPending}>
                 Simulate — plan only
               </Button>
+
+              {/* Raising a pull request creates no infrastructure, so it needs
+                  only agent:propose. Whoever merges it in the repository is who
+                  actually authorises the deployment. */}
+              {gitConnection.data?.connected && (
+                <Button
+                  variant="secondary"
+                  className="gap-2"
+                  disabled={raisePr.isPending || !planId}
+                  onClick={() => {
+                    if (!planId) return;
+                    raisePr.mutate(planId, {
+                      onSuccess: (result) => {
+                        toast({
+                          title: result.reused ? 'Pull request already open' : 'Pull request raised',
+                          description: result.message,
+                        });
+                        if (result.pullRequest.url) window.open(result.pullRequest.url, '_blank', 'noopener');
+                      },
+                      onError: (err: Error) =>
+                        toast({ title: 'Could not raise pull request', description: err.message, variant: 'destructive' }),
+                    });
+                  }}
+                >
+                  <GitPullRequest className="h-4 w-4" />
+                  {raisePr.isPending ? 'Raising…' : 'Raise pull request'}
+                </Button>
+              )}
+
               {can('agent:execute') ? (
                 <Button onClick={() => onDeploy('live')} disabled={startRun.isPending} className="gap-2">
                   <Rocket className="h-4 w-4" /> Deploy for real
@@ -252,6 +284,19 @@ export default function InfraAgentPage() {
                 </p>
               )}
             </div>
+
+            {gitConnection.data?.connected ? (
+              <p className="text-xs text-muted-foreground">
+                Pull requests go to <strong>{gitConnection.data.repository}</strong>
+                {gitConnection.data.isDevFallback && ' (from GITHUB_REPO — local development only)'}.
+                {' '}Merging there is what creates the infrastructure, using that repository's own credentials.
+              </p>
+            ) : gitConnection.data?.devFallbackAvailable ? (
+              <p className="text-xs text-muted-foreground">
+                To review deployments as a pull request instead of applying them directly, connect a repository —
+                or for local testing set <code>GITHUB_TOKEN</code> and <code>GITHUB_REPO</code> in <code>.env</code> and restart.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       )}
@@ -264,6 +309,9 @@ export default function InfraAgentPage() {
             ref: a.ref, nodeKey: a.nodeKey, summary: a.summary, details: a.details,
             riskLevel: a.riskLevel, riskReasons: a.riskReasons ?? [],
             estimatedCostImpact: a.estimatedCostImpact,
+            planFindings: a.planFindings ?? [],
+            plannedChanges: a.plannedChanges ?? [],
+            planId: run.data?.run.planId ?? null,
           }}
         />
       ))}

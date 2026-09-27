@@ -88,6 +88,15 @@ export interface RunDetail {
     id: number; ref: string; nodeKey: string | null; summary: string; details: string | null;
     riskLevel: string; riskReasons: string[]; status: string; estimatedCostImpact: string | null;
     decidedBy: string | null; decisionReason: string | null;
+    // The evidence behind the decision: what Terraform will do per resource,
+    // and the attribute-level risks read out of the plan. Optional because an
+    // approval recorded before this existed has neither.
+    plannedChanges?: Array<{ address: string; resourceType: string; action: string }>;
+    planFindings?: Array<{
+      address: string; resourceType: string;
+      severity: 'critical' | 'high' | 'medium';
+      title: string; detail: string; attribute?: string;
+    }>;
   }>;
   /** Provider and region live on the plan; the run carries neither. */
   plan: { name: string; provider: string | null; region: string | null } | null;
@@ -444,5 +453,84 @@ export function useActiveRuns(enabled = true) {
     queryFn: () => json('/api/infra/runs/active'),
     enabled,
     refetchInterval: 10_000,
+  });
+}
+
+// ── GitOps delivery ───────────────────────────────────────────────────────────
+
+export interface InfraPullRequestView {
+  id: number;
+  planId: number;
+  repoOwner: string;
+  repoName: string;
+  baseBranch: string;
+  headBranch: string;
+  number: number | null;
+  url: string | null;
+  status: string;
+  resourceCount: number;
+  estimatedMonthlyCost: string | null;
+  stateBackend: string | null;
+  createdAt: string;
+}
+
+export interface GitConnectionView {
+  connected: boolean;
+  repository?: string;
+  basePath?: string;
+  baseBranch?: string | null;
+  emitPipeline?: boolean;
+  isDevFallback?: boolean;
+  devFallbackAvailable?: boolean;
+}
+
+/** Which repository this tenant raises pull requests into, if any. */
+export function useGitConnection() {
+  return useQuery<GitConnectionView>({
+    queryKey: ['/api/infra/git-connection'],
+    queryFn: async () => {
+      const res = await fetch('/api/infra/git-connection', { credentials: 'include' });
+      if (!res.ok) return { connected: false };
+      return res.json();
+    },
+    staleTime: 60_000,
+  });
+}
+
+export function usePlanPullRequests(planId: number | null) {
+  return useQuery<{ pullRequests: InfraPullRequestView[] }>({
+    queryKey: ['/api/infra/plans', planId, 'pull-requests'],
+    enabled: planId !== null,
+    queryFn: async () => {
+      const res = await fetch(`/api/infra/plans/${planId}/pull-requests`, { credentials: 'include' });
+      if (!res.ok) return { pullRequests: [] };
+      return res.json();
+    },
+  });
+}
+
+/**
+ * Raises the deployment as a pull request instead of applying it.
+ *
+ * Deliberately a different mutation from useStartRun: they are different acts
+ * with different consequences, and collapsing them behind one "deploy" button
+ * is how someone applies to production believing they opened a review.
+ */
+export function useRaisePullRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (planId: number) => {
+      const res = await fetch(`/api/infra/plans/${planId}/pull-request`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || body.error || `Request failed (${res.status})`);
+      return body as { pullRequest: InfraPullRequestView; reused: boolean; message: string };
+    },
+    onSuccess: (_d, planId) => {
+      qc.invalidateQueries({ queryKey: ['/api/infra/plans', planId, 'pull-requests'] });
+    },
   });
 }

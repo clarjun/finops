@@ -79,6 +79,10 @@ const AI_PATTERNS: Record<'aws' | 'azure' | 'gcp', RegExp[]> = {
     /healthlake/i,
     /amazon q\b/i,
     /\bclaude\b/i,
+    // AWS's agentic IDE. Billed as its own service and unmistakably AI spend,
+    // but matched by none of the patterns above, so it was being counted as
+    // ordinary compute in every AI total.
+    /\bkiro\b/i,
   ],
   azure: [
     /openai/i,

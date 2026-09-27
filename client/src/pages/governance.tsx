@@ -47,6 +47,8 @@ import {
 } from "@/hooks/use-governance";
 import { PolicyCatalog } from "@/components/governance/policy-catalog";
 import { Findings } from "@/components/governance/findings";
+import { GovernanceIntro, TAB_HELP, Term, WhatIsThis } from "@/components/governance/explain";
+import { FixFirst } from "@/components/governance/fix-first";
 import {
   ScoreNumber,
   ScoreBar,
@@ -173,7 +175,10 @@ function PostureTab({ drill }: { drill: Drilldown }) {
             card here, so "show me the score" has no narrower view to open. */}
         <Card>
           <CardHeader className="pb-2">
-            <CardDescription>Governance score</CardDescription>
+            <CardDescription className="flex items-center gap-1.5">
+              Governance score
+              <WhatIsThis k="score" />
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex items-baseline gap-2">
@@ -263,6 +268,14 @@ function PostureTab({ drill }: { drill: Drilldown }) {
         </DrillCard>
       </div>
 
+      {/* Placed immediately under the numbers: the score says how you are doing,
+          and this says what to do about it. Anything between them is a detour. */}
+      <FixFirst
+        impacts={posture.policyImpacts ?? []}
+        score={posture.score}
+        onOpenFindings={policyKey => drill.toFindings({ status: 'open', policyKey })}
+      />
+
       {posture.notAssessed.length > 0 && (
         <Card className="border-amber-500/40">
           <CardHeader>
@@ -271,8 +284,11 @@ function PostureTab({ drill }: { drill: Drilldown }) {
               {posture.notAssessed.length} polic{posture.notAssessed.length === 1 ? 'y' : 'ies'} reached no verdict
             </CardTitle>
             <CardDescription>
-              Excluded from the score rather than counted as passing. Each one is a question that
-              went unanswered — click to open the policy and fix the cause.
+              These rules ran but could not reach a verdict, so they are left{' '}
+              <strong>out of the score</strong> rather than counted as passing — a question nobody
+              answered is not a pass. Usually it means the rule had no data to look at, or it needs
+              a value from you first (which regions you allow, which tags you require). Click one to
+              see the reason and fix the cause.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -311,11 +327,27 @@ function PostureTab({ drill }: { drill: Drilldown }) {
 
       {posture.domains.length > 0 && (
         <div>
-          <h3 className="text-sm font-medium mb-3 text-muted-foreground">
-            By domain — click one to see its findings
+          <h3 className="text-sm font-medium mb-1">
+            Which areas are weakest
           </h3>
+          <p className="text-xs text-muted-foreground mb-3">
+            Worst first. Each area scores out of 100 on the rules that apply to it — click one to
+            see what is failing there.
+          </p>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            {posture.domains.map(d => {
+            {/* Ordered worst-first rather than by a fixed domain order. The
+                reader's first question is "where is the problem", and making
+                them scan five cards to find the low number answers it slowly.
+                Areas with nothing assessed sort last: they are not good news,
+                but they are not a failing score either. */}
+            {[...posture.domains]
+              .sort((a, b) => {
+                const unassessed = (d: typeof a) => (d.policiesEvaluated === 0 ? 1 : 0);
+                if (unassessed(a) !== unassessed(b)) return unassessed(a) - unassessed(b);
+                if (a.score !== b.score) return a.score - b.score;
+                return b.violations - a.violations;
+              })
+              .map(d => {
               const Icon = DOMAIN_ICON[d.domain];
               return (
                 <Card
@@ -639,7 +671,11 @@ function ControlDetail({
                       }}
                     >
                       <Settings2 className="h-3.5 w-3.5 mr-1.5" />
-                      {assignment.enabled ? 'Configure policy' : 'Enable policy'}
+                      {/* Was "Configure policy", which readers took to mean
+                          "you must set something up before this works". It means
+                          "change this rule's own settings" — rarely what anyone
+                          wants while looking at a broken resource. */}
+                      {assignment.enabled ? 'Rule settings' : 'Turn this rule on'}
                     </Button>
                   </div>
                 </div>
@@ -815,6 +851,8 @@ export default function GovernancePage() {
         </div>
       </div>
 
+      <GovernanceIntro policyCount={posture?.policiesAvailable ?? null} />
+
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
           <TabsTrigger value="posture">Posture</TabsTrigger>
@@ -828,6 +866,11 @@ export default function GovernancePage() {
           <TabsTrigger value="exemptions">Exemptions</TabsTrigger>
           <TabsTrigger value="frameworks">Frameworks</TabsTrigger>
         </TabsList>
+
+        {/* A tab name alone ("Posture", "Frameworks") tells a first-time reader
+            nothing. One sentence under the strip costs a line and removes the
+            guesswork about which tab answers which question. */}
+        <p className="text-sm text-muted-foreground mt-3 max-w-3xl">{TAB_HELP[tab]}</p>
 
         <TabsContent value="posture" className="mt-6">
           <PostureTab drill={drill} />

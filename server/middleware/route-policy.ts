@@ -87,6 +87,33 @@ const RULES: Rule[] = [
   // its own, which is a separate permission again.
   R(['POST'], /^\/api\/infra\/runs\/\d+\/teardown$/,          'agent:execute'),
   R(['POST'], /^\/api\/infra\/approvals\/[^/]+\/decide$/,     'agent:approve'),
+  // GitOps delivery. Raising a pull request creates NO infrastructure - it
+  // writes a proposal into a repository, and the customer's own review and
+  // pipeline decide whether it ever runs. So it is a proposal, not an
+  // execution, and deliberately does not need agent:execute.
+  R(['POST'], /^\/api\/infra\/plans\/\d+\/pull-request$/,      'agent:propose'),
+  R(['GET'],  /^\/api\/infra\/plans\/\d+\/pull-requests$/,     'cost:read'),
+  R(['GET'],  /^\/api\/infra\/pull-requests$/,                 'cost:read'),
+  // Storing a repository access token is a credential change: a token that can
+  // open a pull request can usually read every repository its owner can.
+  R(['PUT', 'DELETE'], /^\/api\/infra\/git-connection$/,        'account:write'),
+  R(['GET'],  /^\/api\/infra\/git-connection$/,                 'account:read'),
+  // Connecting through the GitHub App binds this tenant to an installation
+  // that can write to a repository, so it sits with the token path rather than
+  // being waved through for having no secret in the request body.
+  R(['POST'], /^\/api\/infra\/git-connection\/app$/,            'account:write'),
+  R(['GET'],  /^\/api\/infra\/git-connection\/app$/,            'account:read'),
+  // Registering a GitHub App creates a credential this tenant will open pull
+  // requests with, so it sits with account administration. The two callbacks
+  // GitHub redirects to are in EXEMPT below and verify a signed state instead.
+  R(['POST'],   /^\/api\/infra\/git\/app\/manifest$/,            'account:write'),
+  R(['DELETE'], /^\/api\/infra\/git\/app$/,                     'account:write'),
+  R(['GET'],    /^\/api\/infra\/git\/app$/,                     'account:read'),
+  R(['GET'],    /^\/api\/infra\/git\/repositories$/,            'account:read'),
+  // Where Terraform state lives decides whether infrastructure stays
+  // trackable at all, so changing it sits with account administration.
+  R(['PUT'],  /^\/api\/infra\/state-backend$/,                  'account:write'),
+  R(['GET'],  /^\/api\/infra\/state-backend$/,                  'account:read'),
   R(['POST'], /^\/api\/infra\/plans\/\d+\/compile$/,          'agent:propose'),
   // Saving a blueprint and cloning one are proposals: they create plans, never
   // infrastructure.
@@ -129,6 +156,21 @@ const RULES: Rule[] = [
   R(['POST'], /^\/api\/costs\/ingest$/,                        'account:write'),
   R(['GET'],  /^\/api\/costs\/ingestion-status$/,              'account:read'),
   R(['GET'],  /^\/api\/costs\//,                               'cost:read'),
+
+  // ── AI unit economics ─────────────────────────────────────────────────────
+  // The breakdown is a cost view like any other. Entering a business
+  // denominator is not: it changes every per-unit figure the organization
+  // reports, which makes it a finance input rather than a preference.
+  // Ingesting usage calls CloudWatch (billed per request) and writes what the
+  // organization is measured on, so it is an account-level action, not a read.
+  R(['POST'],   /^\/api\/ai-economics\/ingest$/,              'account:write'),
+  // A model rate changes every derived figure the organization reports.
+  // Fetching published rates writes what every cost figure is derived from.
+  R(['POST'],   /^\/api\/ai-economics\/pricing\/refresh$/,     'budget:write'),
+  R(['PUT'],    /^\/api\/ai-economics\/pricing$/,             'budget:write'),
+  R(['PUT'],    /^\/api\/ai-economics\/metrics$/,             'budget:write'),
+  R(['DELETE'], /^\/api\/ai-economics\/metrics\/\d+$/,         'budget:write'),
+  R(['GET'],    /^\/api\/ai-economics\//,                     'cost:read'),
 
   // ── Governance & compliance ───────────────────────────────────────────────
   // Reading the posture is a read. Changing a policy redefines what the whole
@@ -175,8 +217,18 @@ const RULES: Rule[] = [
   R(['GET'],  /^\/api\/aws\/account-summaries/,               'cost:read'),
 ];
 
-/** Routes the auth guard already lets through unauthenticated. */
-const EXEMPT = /^\/api\/(health$|auth\/)/;
+/**
+ * Routes the auth guard already lets through unauthenticated.
+ *
+ * The two GitHub App setup callbacks are here because GitHub sends the browser
+ * to them directly, as a plain top-level redirect with no cookie guaranteed to
+ * survive the round trip — a session check would reject the very response the
+ * flow depends on. They are not unauthenticated: the organization arrives in an
+ * HMAC-signed, ten-minute `state` parameter that the handler verifies in
+ * constant time before writing anything. Nothing else may be added here; new
+ * endpoints go in RULES.
+ */
+const EXEMPT = /^\/api\/(health$|auth\/|infra\/git\/app\/(setup|installed)$)/;
 
 /** Exported for tests: the authorization surface should be assertable directly. */
 export function findRule(method: string, path: string): Rule | undefined {

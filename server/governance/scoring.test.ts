@@ -165,3 +165,102 @@ describe('posture scoring', () => {
     expect(at(20)).toBe('F');
   });
 });
+
+// ── Per-policy score impact ───────────────────────────────────────────────────
+
+describe('policy impacts', () => {
+  const outcome = (over: Partial<PolicyOutcome>): PolicyOutcome => ({
+    policyKey: 'p', domain: 'security', severity: 'high',
+    checked: 10, violatingUnits: 0, exemptUnits: 0, costAtRisk: 0, ...over,
+  });
+
+  it('is exact: applying a gain reproduces the score after that policy is fixed', () => {
+    // The property the whole panel rests on. If this drifts, the UI promises a
+    // score the next run will not deliver.
+    const outcomes = [
+      outcome({ policyKey: 'a', severity: 'critical', checked: 30, violatingUnits: 14 }),
+      outcome({ policyKey: 'b', severity: 'high', checked: 13, violatingUnits: 13 }),
+      outcome({ policyKey: 'c', severity: 'low', checked: 100, violatingUnits: 2 }),
+    ];
+
+    const before = scorePolicies(outcomes);
+    const gainOfA = before.impacts.find(i => i.policyKey === 'a')!.potentialGain;
+
+    const afterFixingA = scorePolicies(
+      outcomes.map(o => (o.policyKey === 'a' ? { ...o, violatingUnits: 0 } : o)),
+    );
+
+    expect(afterFixingA.score).toBeCloseTo(before.score + gainOfA, 1);
+  });
+
+  it('gains are additive, so a running total is honest', () => {
+    const outcomes = [
+      outcome({ policyKey: 'a', severity: 'critical', checked: 20, violatingUnits: 10 }),
+      outcome({ policyKey: 'b', severity: 'medium', checked: 8, violatingUnits: 8 }),
+    ];
+    const before = scorePolicies(outcomes);
+    const total = before.impacts.reduce((s, i) => s + i.potentialGain, 0);
+
+    // Fixing everything reaches 100. The only slack is the score's own rounding
+    // to one decimal — the gains themselves are exact, which is why they can be
+    // summed into a running total at all.
+    expect(before.score + total).toBeCloseTo(100, 1);
+
+    // And the same thing proved the hard way, by actually fixing everything.
+    const allFixed = scorePolicies(outcomes.map(o => ({ ...o, violatingUnits: 0 })));
+    expect(allFixed.score).toBe(100);
+  });
+
+  it('ranks a wholly failing small rule above a partly failing big one', () => {
+    // The finding COUNT says the opposite, which is the entire reason this
+    // exists: 14 findings looks worse than 3 until you see the denominators.
+    const before = scorePolicies([
+      outcome({ policyKey: 'big', severity: 'critical', checked: 3000, violatingUnits: 14 }),
+      outcome({ policyKey: 'small', severity: 'high', checked: 3, violatingUnits: 3 }),
+    ]);
+
+    expect(before.impacts[0].policyKey).toBe('small');
+    expect(before.impacts[0].potentialGain).toBeGreaterThan(before.impacts[1].potentialGain);
+  });
+
+  it('leaves out rules with nothing failing', () => {
+    const r = scorePolicies([
+      outcome({ policyKey: 'clean', checked: 50, violatingUnits: 0 }),
+      outcome({ policyKey: 'dirty', checked: 50, violatingUnits: 5 }),
+    ]);
+    expect(r.impacts.map(i => i.policyKey)).toEqual(['dirty']);
+  });
+
+  it('leaves out rules that reached no verdict, exactly as the score does', () => {
+    // A policy excluded from the score must not appear as recoverable points;
+    // its gain would be points the score cannot actually move by.
+    const r = scorePolicies([
+      outcome({ policyKey: 'noData', checked: 0, violatingUnits: 0 }),
+      outcome({ policyKey: 'broke', checked: 10, violatingUnits: 4, error: 'boom' }),
+      outcome({ policyKey: 'unsure', checked: 10, violatingUnits: 4, inconclusive: 'no allow-list' }),
+      outcome({ policyKey: 'real', checked: 10, violatingUnits: 4 }),
+    ]);
+    expect(r.impacts.map(i => i.policyKey)).toEqual(['real']);
+  });
+
+  it('reports the denominator so a count can be read in context', () => {
+    const r = scorePolicies([outcome({ policyKey: 'a', checked: 30, violatingUnits: 14 })]);
+    expect(r.impacts[0]).toMatchObject({ checked: 30, violating: 14 });
+    expect(r.impacts[0].failRate).toBeCloseTo(0.467, 2);
+  });
+
+  it('gives informational rules no recoverable points', () => {
+    // Severity weight zero: they report without moving the number, so claiming
+    // a gain would promise a score change that never arrives.
+    const r = scorePolicies([
+      outcome({ policyKey: 'info', severity: 'info', checked: 10, violatingUnits: 10 }),
+      outcome({ policyKey: 'real', severity: 'high', checked: 10, violatingUnits: 5 }),
+    ]);
+    expect(r.impacts.find(i => i.policyKey === 'info')?.potentialGain).toBe(0);
+  });
+
+  it('returns nothing when no policy was scorable', () => {
+    expect(scorePolicies([outcome({ checked: 0 })]).impacts).toEqual([]);
+    expect(scorePolicies([]).impacts).toEqual([]);
+  });
+});

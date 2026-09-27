@@ -91,7 +91,8 @@ function ParameterField({
         {spec.help && <p className="text-xs text-muted-foreground">{spec.help}</p>}
         {list.length === 0 && (
           <p className="text-xs text-amber-600 dark:text-amber-400">
-            Empty. This policy will report as unconfigured rather than as passing.
+            Empty. Until you add at least one entry, this rule cannot reach a verdict, so it is
+            left out of your score rather than counted as a pass.
           </p>
         )}
       </div>
@@ -423,7 +424,8 @@ function PolicyRow({
 
           {unconfigured && (
             <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
-              Enabled but unconfigured — it has nothing to check until you fill in its list.
+              Switched on, but it has nothing to check until you fill in its list — so it reports
+              as “not assessed” rather than as passing.
             </p>
           )}
           {assignment.enabled && openViolations > 0 && (
@@ -440,7 +442,7 @@ function PolicyRow({
 
         <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
           <Settings2 className="h-4 w-4 mr-1.5" />
-          {canWrite ? 'Configure' : 'View'}
+          {canWrite ? 'Settings' : 'View'}
         </Button>
       </div>
 

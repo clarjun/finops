@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Pencil, Trash2, Users, ShieldCheck, User } from "lucide-react";
+import { throwIfFailed } from "@/lib/api";
 
 interface AppUser {
   id: number;
@@ -52,7 +53,7 @@ export default function UsersPage() {
     queryKey: ['/api/users'],
     queryFn: async () => {
       const res = await fetch('/api/users', { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to fetch users');
+      await throwIfFailed(res, 'Loading users');
       return res.json();
     },
   });
@@ -90,7 +91,7 @@ export default function UsersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isActive }),
       });
-      if (!res.ok) throw new Error('Failed to update user');
+      await throwIfFailed(res, 'Updating the user');
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['/api/users'] }),
     onError: (e: any) => toast({ title: 'Error', description: e.message, variant: 'destructive' }),
@@ -99,7 +100,7 @@ export default function UsersPage() {
   const deleteMutation = useMutation({
     mutationFn: async (id: number) => {
       const res = await fetch(`/api/users/${id}`, { method: 'DELETE', credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to delete user');
+      await throwIfFailed(res, 'Deleting the user');
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['/api/users'] });

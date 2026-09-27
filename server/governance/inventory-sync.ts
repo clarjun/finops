@@ -111,7 +111,11 @@ async function syncAws(now: Date): Promise<SyncResult> {
         resourceId: i.instanceId,
         resourceType: 'EC2',
         resourceName: i.tags?.Name ?? i.instanceId,
-        region: process.env.AWS_REGION ?? null,
+        // The resource's own region, not the server's configured one. The
+        // collector now scans every enabled region; stamping them all with
+        // AWS_REGION would file a Mumbai instance under us-east-1 and make
+        // every region-scoped policy and every finding message wrong.
+        region: i.region ?? process.env.AWS_REGION ?? null,
         // 'stopped' is not 'idle': a stopped instance bills only for its
         // storage, and the waste detector already treats the two differently.
         state: i.state,
@@ -139,7 +143,7 @@ async function syncAws(now: Date): Promise<SyncResult> {
         resourceId: v.volumeId,
         resourceType: 'EBSVolume',
         resourceName: v.volumeId,
-        region: v.availabilityZone ? v.availabilityZone.replace(/[a-z]$/, '') : (process.env.AWS_REGION ?? null),
+        region: v.region ?? (v.availabilityZone ? v.availabilityZone.replace(/[a-z]$/, '') : (process.env.AWS_REGION ?? null)),
         // An unattached volume is the canonical idle resource.
         state: v.attachedTo ? 'in-use' : 'idle',
         size: `${v.size} GiB ${v.volumeType}`,
@@ -166,7 +170,7 @@ async function syncAws(now: Date): Promise<SyncResult> {
         resourceId: d.instanceId,
         resourceType: 'RDSInstance',
         resourceName: d.instanceId,
-        region: d.availabilityZone ? d.availabilityZone.replace(/[a-z]$/, '') : (process.env.AWS_REGION ?? null),
+        region: d.region ?? (d.availabilityZone ? d.availabilityZone.replace(/[a-z]$/, '') : (process.env.AWS_REGION ?? null)),
         state: d.status,
         size: d.instanceClass,
         utilizationPercent: null,

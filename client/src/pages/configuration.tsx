@@ -12,7 +12,9 @@ import { useToast } from "@/hooks/use-toast";
 import { AwsConnectWizard } from "@/components/aws-connect-wizard";
 import { Cloud, Plus, Trash2, CheckCircle, XCircle, Loader2, Eye, EyeOff, AlertTriangle } from "lucide-react";
 import { IngestionPanel } from "@/components/ingestion-panel";
+import { GitHubSetup } from "@/components/infra/github-setup";
 import type { CloudProvider } from "@shared/schema";
+import { throwIfFailed } from "@/lib/api";
 
 interface CloudAccount {
   id: number;
@@ -98,7 +100,7 @@ export default function Configuration() {
         method: "DELETE",
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Failed to delete account");
+      await throwIfFailed(response, 'Deleting the account');
       return response.json();
     },
     onSuccess: () => {
@@ -126,7 +128,7 @@ export default function Configuration() {
         body: JSON.stringify({ isActive }),
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Failed to update account");
+      await throwIfFailed(response, 'Updating the account');
       return response.json();
     },
     onSuccess: () => {
@@ -149,9 +151,7 @@ export default function Configuration() {
         credentials: 'include',
       });
       
-      if (!response.ok) {
-        throw new Error('Failed to fetch account details');
-      }
+      await throwIfFailed(response, 'Loading the account details');
       
       const data = await response.json();
       
@@ -275,6 +275,11 @@ export default function Configuration() {
           />
         </TabsContent>
       </Tabs>
+
+      {/* Not a cloud provider, so not a fourth tab beside AWS/GCP/Azure.
+          This is where infrastructure CHANGES are proposed, which is a
+          different question from where cost data is read. */}
+      <GitHubSetup />
     </div>
   );
 }

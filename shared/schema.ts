@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { pgTable, text, varchar, timestamp, numeric, integer, jsonb, serial, bigserial, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp, numeric, integer, jsonb, serial, bigserial, boolean, date, bigint } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 
 // Cloud Provider Types
@@ -919,6 +919,10 @@ export const infraApprovals = pgTable("infra_approvals", {
   riskLevel: varchar("risk_level", { length: 20 }).notNull().default('medium'),
   riskReasons: jsonb("risk_reasons").notNull().default([]),
   proposedAction: jsonb("proposed_action"),
+  /** Per-resource actions from `terraform show -json`. Addresses only, no attribute values. */
+  plannedChanges: jsonb("planned_changes").notNull().default([]),
+  /** Attribute-level risks read out of the plan. See server/infra-agent/terraform/plan-risk.ts. */
+  planFindings: jsonb("plan_findings").notNull().default([]),
   estimatedCostImpact: numeric("estimated_cost_impact", { precision: 14, scale: 2 }),
   status: varchar("status", { length: 20 }).notNull().default('pending'),
   decidedByUserId: integer("decided_by_user_id"),
@@ -1080,6 +1084,13 @@ export const governanceRuns = pgTable("governance_runs", {
   domainScores: jsonb("domain_scores"),
   /** Policy keys that reached no verdict. Never the same thing as passing. */
   notAssessed: jsonb("not_assessed"),
+  /**
+   * Per-policy score impact: what each policy examined, how much failed, and
+   * the points fixing it would recover. Stored because `checked` — the
+   * denominator that makes a finding count meaningful — exists only while the
+   * policy runs and cannot be reconstructed afterwards.
+   */
+  policyImpacts: jsonb("policy_impacts"),
   costAtRisk: numeric("cost_at_risk", { precision: 20, scale: 2 }),
   error: text("error"),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1165,3 +1176,257 @@ export const insertGovernanceExemptionSchema =
   createInsertSchema(governanceExemptions).omit({ id: true, createdAt: true });
 export type InsertGovernanceExemption = z.infer<typeof insertGovernanceExemptionSchema>;
 export type GovernanceExemption = typeof governanceExemptions.$inferSelect;
+
+// ==================== GITOPS DELIVERY (migration 0022) ====================
+
+/** Where a tenant's Terraform state lives, per provider. See server/infra-agent/terraform/backend.ts. */
+export const infraStateBackends = pgTable("infra_state_backends", {
+  id: serial("id").primaryKey(),
+  organizationId: organizationId(),
+  provider: varchar("provider", { length: 20 }).notNull(),
+  kind: varchar("kind", { length: 20 }).notNull(),   // s3 | azurerm | gcs | local
+  settings: jsonb("settings").notNull().default({}),
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  verificationError: text("verification_error"),
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type InfraStateBackend = typeof infraStateBackends.$inferSelect;
+
+/**
+ * Where pull requests are raised. `accessToken` is encrypted at rest with the
+ * same key as cloud credentials: a token that can open a PR can usually read
+ * every repository its owner can.
+ */
+/**
+ * A GitHub App registered through the App Manifest flow.
+ *
+ * Deliberately per-organization rather than deployment-wide. GitHub's model is
+ * one App per product, but a shared row in a multi-tenant deployment would let
+ * one customer's administrator replace the App everyone else authenticates
+ * through. Registration is three clicks, so the isolation is free.
+ *
+ * There is no environment fallback. An unregistered tenant gets an error that
+ * says so, rather than silently borrowing credentials from a file.
+ */
+export const githubAppCredentials = pgTable("github_app_credentials", {
+  id: serial("id").primaryKey(),
+  organizationId: organizationId(),
+  /** Numeric App id, held as a string: an identifier, never arithmetic. */
+  appId: varchar("app_id", { length: 32 }).notNull(),
+  /** RSA private key, encrypted at rest. */
+  privateKey: text("private_key").notNull(),
+  slug: varchar("slug", { length: 255 }),
+  clientId: varchar("client_id", { length: 255 }),
+  /** Encrypted: GitHub issues one whether or not webhooks are used. */
+  webhookSecret: text("webhook_secret"),
+  lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type GithubAppCredentials = typeof githubAppCredentials.$inferSelect;
+
+export const infraGitConnections = pgTable("infra_git_connections", {
+  id: serial("id").primaryKey(),
+  organizationId: organizationId(),
+  provider: varchar("provider", { length: 20 }).notNull().default('github'),
+  repoOwner: varchar("repo_owner", { length: 255 }).notNull(),
+  repoName: varchar("repo_name", { length: 255 }).notNull(),
+  /** Null = read the repository's live default branch at PR time. */
+  baseBranch: varchar("base_branch", { length: 255 }),
+  /**
+   * 'pat' = a stored personal access token. 'app' = a GitHub App installation,
+   * whose token is minted per request and never stored.
+   */
+  authMethod: varchar("auth_method", { length: 20 }).notNull().default('pat'),
+  /** Null for App connections — there is no long-lived token to keep. */
+  accessToken: text("access_token"),
+  /** Per-tenant App installation. Useless without the deployment private key. */
+  appInstallationId: varchar("app_installation_id", { length: 64 }),
+  basePath: varchar("base_path", { length: 255 }).notNull().default('infrastructure'),
+  emitPipeline: boolean("emit_pipeline").notNull().default(true),
+  lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
+  lastError: text("last_error"),
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type InfraGitConnection = typeof infraGitConnections.$inferSelect;
+
+/** A raised pull request. Distinct from infra_runs: this is a handoff, not an execution. */
+export const infraPullRequests = pgTable("infra_pull_requests", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  planId: integer("plan_id").notNull(),
+  connectionId: integer("connection_id"),
+
+  provider: varchar("provider", { length: 20 }).notNull().default('github'),
+  repoOwner: varchar("repo_owner", { length: 255 }).notNull(),
+  repoName: varchar("repo_name", { length: 255 }).notNull(),
+  baseBranch: varchar("base_branch", { length: 255 }).notNull(),
+  headBranch: varchar("head_branch", { length: 255 }).notNull(),
+
+  number: integer("number"),
+  url: text("url"),
+  headSha: varchar("head_sha", { length: 64 }),
+
+  status: varchar("status", { length: 20 }).notNull().default('open'), // open|merged|closed|failed
+  error: text("error"),
+
+  filePaths: jsonb("file_paths").notNull().default([]),
+  resourceCount: integer("resource_count").notNull().default(0),
+  estimatedMonthlyCost: numeric("estimated_monthly_cost", { precision: 14, scale: 2 }),
+  stateBackend: text("state_backend"),
+
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type InfraPullRequest = typeof infraPullRequests.$inferSelect;
+
+// ==================== AI UNIT ECONOMICS (migration 0024) ====================
+
+/**
+ * The business denominator for AI cost-per-unit.
+ *
+ * Cannot be derived from billing: only the customer knows how many active
+ * users or documents a period had. Stored per period rather than as one
+ * mutable number, because the trend is the point — a cost per user that falls
+ * as usage grows is the signal, and a single overwritten value destroys it.
+ */
+export const aiUnitMetrics = pgTable("ai_unit_metrics", {
+  id: serial("id").primaryKey(),
+  organizationId: organizationId(),
+  /** The customer's own words: "Monthly active users", "Documents processed". */
+  name: varchar("name", { length: 120 }).notNull(),
+  /** Singular noun, so the UI can render "$0.37 per user". */
+  unitLabel: varchar("unit_label", { length: 60 }).notNull().default('unit'),
+  /** First day of the month this value describes. A date, not an instant. */
+  periodStart: date("period_start").notNull(),
+  /** Numeric because some denominators are genuinely fractional. */
+  value: numeric("value", { precision: 20, scale: 4 }).notNull(),
+  notes: text("notes"),
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type AiUnitMetric = typeof aiUnitMetrics.$inferSelect;
+
+// ==================== AI TOKEN ECONOMICS (migration 0025) ====================
+//
+// Usage ingested from provider APIs and priced by us, because billing does not
+// carry tokens or call counts. See db/migrations/0025 for why this is separate
+// from cost_facts and how the two differ.
+
+export const AI_PROVIDER_KEYS = ['bedrock', 'azure_openai', 'vertex', 'openai', 'anthropic'] as const;
+export type AiProviderKey = (typeof AI_PROVIDER_KEYS)[number];
+
+export const aiProviders = pgTable("ai_providers", {
+  key: varchar("key", { length: 40 }).primaryKey(),
+  displayName: varchar("display_name", { length: 120 }).notNull(),
+  /** 'cloud' = billed through a connected cloud account; 'direct' = vendor-billed. */
+  billingMode: varchar("billing_mode", { length: 20 }).notNull(),
+  usageSource: varchar("usage_source", { length: 120 }).notNull(),
+  docsUrl: text("docs_url"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type AiProvider = typeof aiProviders.$inferSelect;
+
+/** Null organizationId is the global catalog; a row with one is a tenant addition. */
+export const aiModels = pgTable("ai_models", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id"),
+  providerKey: varchar("provider_key", { length: 40 }).notNull(),
+  /** The provider's own identifier, exactly as it appears in usage data. */
+  modelId: varchar("model_id", { length: 200 }).notNull(),
+  displayName: varchar("display_name", { length: 200 }).notNull(),
+  family: varchar("family", { length: 120 }),
+  modality: varchar("modality", { length: 30 }).notNull().default('text'),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type AiModel = typeof aiModels.$inferSelect;
+
+/**
+ * Effective-dated pricing. Without the dates, a vendor price change would
+ * retroactively rewrite every historical figure.
+ */
+export const aiModelPricing = pgTable("ai_model_pricing", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id"),
+  providerKey: varchar("provider_key", { length: 40 }).notNull(),
+  modelId: varchar("model_id", { length: 200 }).notNull(),
+  inputPerMillion: numeric("input_per_million", { precision: 14, scale: 6 }).notNull(),
+  outputPerMillion: numeric("output_per_million", { precision: 14, scale: 6 }).notNull(),
+  cacheReadPerMillion: numeric("cache_read_per_million", { precision: 14, scale: 6 }),
+  cacheWritePerMillion: numeric("cache_write_per_million", { precision: 14, scale: 6 }),
+  perCallCost: numeric("per_call_cost", { precision: 14, scale: 8 }),
+  currency: varchar("currency", { length: 10 }).notNull().default('USD'),
+  effectiveFrom: date("effective_from").notNull(),
+  /** Null = still current. Inclusive when set. */
+  effectiveTo: date("effective_to"),
+  /** catalog | customer | contract — a negotiated rate is a different claim from list. */
+  source: varchar("source", { length: 20 }).notNull().default('catalog'),
+  sourceUrl: text("source_url"),
+  notes: text("notes"),
+  createdBy: integer("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type AiModelPricing = typeof aiModelPricing.$inferSelect;
+
+/** Metered usage, aggregated to a period. One row per model per period per attribution. */
+export const aiUsageRecords = pgTable("ai_usage_records", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  providerKey: varchar("provider_key", { length: 40 }).notNull(),
+  modelId: varchar("model_id", { length: 200 }).notNull(),
+  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+  periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+  inputTokens: bigint("input_tokens", { mode: 'number' }).notNull().default(0),
+  outputTokens: bigint("output_tokens", { mode: 'number' }).notNull().default(0),
+  /** Separate from input: cache reads are priced at a fraction of the input rate. */
+  cacheReadTokens: bigint("cache_read_tokens", { mode: 'number' }).notNull().default(0),
+  cacheWriteTokens: bigint("cache_write_tokens", { mode: 'number' }).notNull().default(0),
+  inferenceCalls: bigint("inference_calls", { mode: 'number' }).notNull().default(0),
+  accountId: varchar("account_id", { length: 255 }),
+  region: varchar("region", { length: 64 }),
+  application: varchar("application", { length: 160 }),
+  environment: varchar("environment", { length: 60 }),
+  source: varchar("source", { length: 40 }).notNull(),
+  sourceRef: varchar("source_ref", { length: 255 }),
+  ingestedAt: timestamp("ingested_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type AiUsageRecord = typeof aiUsageRecords.$inferSelect;
+
+/** Priced usage, pinned to the pricing row used so history cannot silently move. */
+export const aiSpendRecords = pgTable("ai_spend_records", {
+  id: bigserial("id", { mode: 'number' }).primaryKey(),
+  organizationId: organizationId(),
+  usageRecordId: bigint("usage_record_id", { mode: 'number' }).notNull(),
+  providerKey: varchar("provider_key", { length: 40 }).notNull(),
+  modelId: varchar("model_id", { length: 200 }).notNull(),
+  periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+  inputCost: numeric("input_cost", { precision: 20, scale: 10 }).notNull().default('0'),
+  outputCost: numeric("output_cost", { precision: 20, scale: 10 }).notNull().default('0'),
+  cacheCost: numeric("cache_cost", { precision: 20, scale: 10 }).notNull().default('0'),
+  callCost: numeric("call_cost", { precision: 20, scale: 10 }).notNull().default('0'),
+  totalCost: numeric("total_cost", { precision: 20, scale: 10 }).notNull().default('0'),
+  currency: varchar("currency", { length: 10 }).notNull().default('USD'),
+  pricingId: integer("pricing_id"),
+  pricingSource: varchar("pricing_source", { length: 20 }),
+  /** Set when no price covered the period. Retained as unpriced, never costed at zero. */
+  unpricedReason: text("unpriced_reason"),
+  computedAt: timestamp("computed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type AiSpendRecord = typeof aiSpendRecords.$inferSelect;

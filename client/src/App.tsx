@@ -23,6 +23,7 @@ import CostEstimator from "@/pages/cost-estimator";
 import UsersPage from "@/pages/users";
 import AuditPage from "@/pages/audit";
 import GovernancePage from "@/pages/governance";
+import AiEconomicsPage from "@/pages/ai-economics";
 import InfraAgentPage from "@/pages/infra-agent";
 import InfraLibraryPage from "@/pages/infra-library";
 import DeploymentsPage from "@/pages/deployments";
@@ -46,6 +47,7 @@ function ProtectedRouter() {
       <Route path="/" component={Dashboard} />
       <Route path="/reports" component={Reports} />
       <Route path="/ai-query" component={AiQuery} />
+      <Route path="/ai-economics" component={AiEconomicsPage} />
       <Route path="/cost-estimator" component={CostEstimator} />
       <Route path="/forecast" component={Forecast} />
       <Route path="/budgets" component={Budgets} />

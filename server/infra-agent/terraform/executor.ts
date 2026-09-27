@@ -59,6 +59,20 @@ export interface PlannedChange {
   resourceType: string;
   /** create | update | delete | replace | no-op */
   action: string;
+  /**
+   * The attribute values Terraform intends to apply, with sensitive ones
+   * redacted.
+   *
+   * This is what makes attribute-level review possible: the plan already knows
+   * `publicly_accessible = true` and `storage_encrypted = false`, and throwing
+   * it away left an approver reading a risk label instead of the facts.
+   *
+   * Held in memory for the duration of a sweep and deliberately NOT persisted —
+   * see the approval writer, which stores the findings rather than the values.
+   * A plan can contain a generated database password, and `after_sensitive`
+   * marks which fields those are.
+   */
+  after?: Record<string, unknown>;
 }
 
 export interface TfPlanResult extends TfCommandResult {
@@ -377,7 +391,12 @@ export function parsePlanJson(json: string): Omit<TfPlanResult, keyof TfCommandR
     }
 
     if (action === 'no-op') continue;
-    changes.push({ address: rc.address ?? '', resourceType: rc.type ?? '', action });
+    changes.push({
+      address: rc.address ?? '',
+      resourceType: rc.type ?? '',
+      action,
+      after: redactSensitive(rc.change?.after, rc.change?.after_sensitive),
+    });
   }
 
   const diagnostics = (parsed.diagnostics ?? []).map((d: any) => ({
@@ -394,6 +413,45 @@ export function parsePlanJson(json: string): Omit<TfPlanResult, keyof TfCommandR
     destructive: changes.filter((c) => c.action === 'delete' || c.action === 'replace'),
     diagnostics,
   };
+}
+
+/**
+ * Strips values Terraform marked sensitive.
+ *
+ * `after_sensitive` mirrors the shape of `after`: `true` where the whole value
+ * is sensitive, or a nested object marking individual keys. Terraform is the
+ * authority on which fields those are — a hand-written deny-list of key names
+ * would miss the ones a provider marks for its own reasons, and this data is
+ * about to be read by a risk inspector and shown to a human.
+ */
+export function redactSensitive(after: unknown, sensitive: unknown): Record<string, unknown> | undefined {
+  if (after === null || after === undefined || typeof after !== 'object' || Array.isArray(after)) {
+    return undefined;
+  }
+  return walk(after, sensitive) as Record<string, unknown>;
+}
+
+const REDACTED = '[sensitive]';
+
+function walk(value: unknown, sensitive: unknown): unknown {
+  // `true` at this position means the whole subtree is sensitive.
+  if (sensitive === true) return REDACTED;
+  if (value === null || typeof value !== 'object') return value;
+
+  if (Array.isArray(value)) {
+    const marks = Array.isArray(sensitive) ? sensitive : [];
+    return value.map((item, i) => walk(item, marks[i]));
+  }
+
+  const marks = (sensitive && typeof sensitive === 'object' && !Array.isArray(sensitive))
+    ? (sensitive as Record<string, unknown>)
+    : {};
+
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = walk(v, marks[k]);
+  }
+  return out;
 }
 
 export const terraformExecutor = new TerraformExecutor();
