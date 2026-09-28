@@ -15,6 +15,7 @@ import { z } from "zod";
 import { Plus, Trash2, Edit, Bell, BellOff, Mail, Webhook } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { insertAlertRuleSchema, type AlertRule } from "@shared/schema";
+import { throwIfFailed } from "@/lib/api";
 
 const alertFormSchema = insertAlertRuleSchema.extend({
   emailRecipients: z.string().min(1, "At least one email is required"),
@@ -41,7 +42,7 @@ export default function AlertsPage() {
       const response = await fetch('/api/budgets/check-alerts', {
         method: 'POST',
       });
-      if (!response.ok) throw new Error('Failed to check budget alerts');
+      await throwIfFailed(response, 'Checking budget alerts');
       return await response.json();
     },
     onSuccess: (data: any) => {
@@ -70,7 +71,7 @@ export default function AlertsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(values),
       });
-      if (!response.ok) throw new Error('Failed to save alert rule');
+      await throwIfFailed(response, 'Saving the alert rule');
       return await response.json();
     },
     onSuccess: () => {
@@ -98,7 +99,7 @@ export default function AlertsPage() {
       const response = await fetch(`/api/alerts/rules/${id}`, {
         method: 'DELETE',
       });
-      if (!response.ok) throw new Error('Failed to delete alert rule');
+      await throwIfFailed(response, 'Deleting the alert rule');
       return await response.json();
     },
     onSuccess: () => {
@@ -123,7 +124,7 @@ export default function AlertsPage() {
     queryFn: async () => {
       if (!selectedProvider) return { success: false, services: [] };
       const response = await fetch(`/api/services?provider=${selectedProvider}`);
-      if (!response.ok) throw new Error('Failed to fetch services');
+      await throwIfFailed(response, 'Loading services');
       return response.json();
     },
     enabled: !!selectedProvider && ['aws', 'gcp', 'azure'].includes(selectedProvider),

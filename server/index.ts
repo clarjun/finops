@@ -22,6 +22,7 @@ import { registerAuditRoutes } from "./audit-routes";
 import { registerCostFactRoutes } from "./ingestion/routes";
 import { registerSavingsRoutes } from "./savings/routes";
 import { registerGovernanceRoutes } from "./governance/routes";
+import { registerAiEconomicsRoutes } from "./ai-economics/routes";
 import { startIngestionScheduler } from "./ingestion/scheduler";
 import { startReportScheduler } from "./reports/scheduler";
 import { startGovernanceScheduler } from "./governance/scheduler";
@@ -136,6 +137,7 @@ app.use((req, res, next) => {
   registerCostFactRoutes(app);
   registerSavingsRoutes(app);
   registerGovernanceRoutes(app);
+  registerAiEconomicsRoutes(app);
   registerInfraAgentRoutes(app);
   // Cross-account IAM role onboarding and validation for AWS.
   registerAwsConnectionRoutes(app);

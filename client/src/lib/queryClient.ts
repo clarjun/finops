@@ -1,11 +1,9 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { throwIfFailed } from "./api";
 
-async function throwIfResNotOk(res: Response) {
-  if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
-  }
-}
+// Routed through lib/api so a failure reads as "Your session has expired" or
+// the server's own sentence, rather than `500: {"error":"..."}` with the raw
+// JSON shown to a user.
 
 export async function apiRequest<T = any>(
   method: string,
@@ -19,7 +17,7 @@ export async function apiRequest<T = any>(
     credentials: "include",
   });
 
-  await throwIfResNotOk(res);
+  await throwIfFailed(res, `${method} ${url}`);
   return await res.json();
 }
 
@@ -37,13 +35,12 @@ export const getQueryFn: <T>(options: {
       return null;
     }
 
-    const data = await res.json();
+    // Check the status BEFORE parsing. Parsing first meant a non-JSON error
+    // body — an HTML page from a proxy, an empty 502 — threw a parse error that
+    // replaced the real status, so the actual failure was never reported.
+    await throwIfFailed(res, String(queryKey[0] ?? 'The request'));
 
-    await throwIfResNotOk(res);
-    //return await res.json();
-    console.log("resssssssssssssssssss ", data);
-
-    return data;
+    return await res.json();
   };
 
 export const queryClient = new QueryClient({

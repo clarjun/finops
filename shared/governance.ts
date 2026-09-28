@@ -285,6 +285,34 @@ export interface PostureSummary {
    * green tick is the failure mode that makes posture dashboards fiction.
    */
   notAssessed: NotAssessedPolicy[];
+  /**
+   * What fixing each failing rule would be worth, best first.
+   *
+   * The answer to "which of these should I do first", which a finding count
+   * cannot give: 14 failures out of 20 examined and 14 out of 3,000 look
+   * identical on screen and affect the score completely differently.
+   *
+   * Empty for runs recorded before this was captured — the denominator cannot
+   * be reconstructed after the fact, so old runs stay honestly blank rather
+   * than being back-filled with a guess.
+   */
+  policyImpacts: PolicyImpact[];
+}
+
+/** What one rule is costing the score, and what fixing it recovers. */
+export interface PolicyImpact {
+  policyKey: string;
+  title: string;
+  domain: PolicyDomain;
+  severity: PolicySeverity;
+  /** How many things the rule examined. */
+  checked: number;
+  /** How many of them failed. */
+  violating: number;
+  /** violating / checked, 0-1. */
+  failRate: number;
+  /** Points the overall score gains if this rule reaches zero violations. */
+  potentialGain: number;
 }
 
 export interface FrameworkCoverage {

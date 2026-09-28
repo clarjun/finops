@@ -397,6 +397,12 @@ export async function evaluateGovernance(options: EvaluateOptions = {}): Promise
         score: String(score.score),
         domainScores: score.domains as any,
         notAssessed: notAssessed as any,
+        // Titles resolved here for the same reason as notAssessed above: the
+        // browser should not have to fetch the catalog to label a queue of work.
+        policyImpacts: score.impacts.map(i => ({
+          ...i,
+          title: titleOf.get(i.policyKey) ?? i.policyKey,
+        })) as any,
         costAtRisk: String(Math.round(score.costAtRisk * 100) / 100),
         finishedAt: new Date(),
       })

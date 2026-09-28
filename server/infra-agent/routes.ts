@@ -23,6 +23,10 @@ import {
 } from '@shared/schema';
 import { currentOrgId, currentUserId } from '../tenant-context';
 import { compileArchitecture, validateGraph } from './compiler';
+import { generateTerraform } from './terraform/generator';
+import { resolveStateBackend, BackendConfigError } from './terraform/resolve-backend';
+import { awsMapper } from './providers/aws';
+import { loadPlanContext, namePrefixFor } from './engine';
 import { computeStages } from './staging';
 import { buildQuestions, applyInferences } from './clarify';
 import { createRun, decideApproval } from './engine';
@@ -35,6 +39,7 @@ import { diagnose } from './remedies';
 import { classifyFailure } from './failure';
 import { getDeploymentSummary, saveAsTemplate, listTemplates, instantiateTemplate } from './summary';
 import type { Clarifications, EstimatorLayer } from './types';
+import { registerGitOpsRoutes } from './git/routes';
 
 const dayRe = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -48,6 +53,10 @@ function fail(res: Response, err: unknown, what: string) {
 }
 
 export function registerInfraAgentRoutes(app: Express) {
+
+  // GitOps delivery: raising a deployment as a pull request instead of
+  // applying it directly. Registered here so both modes share one prefix.
+  registerGitOpsRoutes(app);
 
   /* ---- Create an agent from a Cost Estimator requirement ---------------- */
 
@@ -296,6 +305,55 @@ export function registerInfraAgentRoutes(app: Express) {
 
       res.json({ runs: rows });
     } catch (err) { fail(res, err, 'list active runs'); }
+  });
+
+  /**
+   * The Terraform a reviewer is actually approving.
+   *
+   * Regenerated from the stored plan rather than read from the run's workspace.
+   * Generation is deterministic — same plan in, byte-identical config out — so
+   * this is guaranteed to match what runs, and it keeps working after the
+   * workspace directory is gone. Reading the workspace would also mean serving
+   * a file from the server's disk, which is a different and worse idea.
+   */
+  app.get('/api/infra/plans/:id/terraform', async (req, res) => {
+    try {
+      const planId = Number(req.params.id);
+      if (!Number.isInteger(planId)) return res.status(400).json({ error: 'Invalid plan id' });
+
+      const { plan, architecture } = await loadPlanContext(planId, currentOrgId());
+      if (!plan.logicalModel) {
+        return res.status(409).json({ error: 'This plan has not been compiled yet, so there is no Terraform to show.' });
+      }
+
+      let backend;
+      let backendError: string | null = null;
+      try {
+        backend = await resolveStateBackend(plan.provider ?? 'aws', planId, plan.name);
+      } catch (err) {
+        // Show the configuration anyway, with the problem named. Hiding it
+        // would leave the reviewer unable to see why nothing is generating.
+        if (err instanceof BackendConfigError) backendError = err.message;
+        else throw err;
+      }
+
+      const generated = generateTerraform({
+        architecture,
+        mapper: awsMapper,
+        region: plan.region ?? 'us-east-1',
+        namePrefix: namePrefixFor(plan.name, plan.environment ?? 'dev'),
+        backend,
+      });
+
+      res.json({
+        mainTf: generated.mainTf,
+        tfvars: generated.tfvars,
+        resourceCount: generated.resourceCount,
+        unsupported: generated.unsupported,
+        backendDescription: generated.backendDescription,
+        backendError,
+      });
+    } catch (err) { fail(res, err, 'render the Terraform'); }
   });
 
   app.get('/api/infra/runs/:id', async (req, res) => {

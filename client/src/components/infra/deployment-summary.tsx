@@ -18,6 +18,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { useStartTeardown, useDiagnosis } from "@/hooks/use-infra-agent";
+import { throwIfFailed } from "@/lib/api";
 
 export interface DeploymentSummaryData {
   runId: number;
@@ -60,7 +61,7 @@ export function DeploymentSummaryCard({ runId }: { runId: number }) {
     queryKey: ['/api/infra/runs', runId, 'summary'],
     queryFn: async () => {
       const res = await fetch(`/api/infra/runs/${runId}/summary`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to load summary');
+      await throwIfFailed(res, 'Loading the deployment summary');
       return res.json();
     },
   });

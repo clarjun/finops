@@ -73,6 +73,41 @@ export interface ScoreResult {
   /** Keys of the subset that failed outright. Kept for the run's failure count. */
   failed: string[];
   costAtRisk: number;
+  /**
+   * What fixing each policy would be worth, worst first.
+   *
+   * The finding COUNT does not answer this and never could: 14 failures out of
+   * 20 examined is a 70% failure rate that dominates the score, while the same
+   * 14 out of 3,000 is a rounding error. Both render as "14 findings". Without
+   * the denominator no one — reader or author — can tell which they are looking
+   * at, so the queue of work has to be guessed.
+   */
+  impacts: PolicyImpact[];
+}
+
+/** What one policy is doing to the score, and what fixing it would recover. */
+export interface PolicyImpact {
+  policyKey: string;
+  domain: PolicyDomain;
+  severity: PolicySeverity;
+  /** Units examined. The denominator that makes the rest meaningful. */
+  checked: number;
+  /** Units in violation, after exemptions. */
+  violating: number;
+  /** violating / checked, clamped to [0,1]. */
+  failRate: number;
+  /**
+   * Points the OVERALL score would gain if this policy were brought to zero
+   * violations, holding everything else constant.
+   *
+   * Exact rather than a heuristic ranking. With
+   *   score = 100 * (1 - Σ(wᵢ·gapᵢ) / Σwᵢ)
+   * setting gap_P to zero removes exactly w_P·gap_P from the numerator, so
+   *   gain_P = 100 · w_P · gap_P / Σw
+   * Gains are therefore additive across policies, which is what lets the UI say
+   * "fix these three and you reach 78".
+   */
+  potentialGain: number;
 }
 
 /** A policy contributes to the score only if it actually looked at something. */
@@ -121,6 +156,51 @@ function weightedScore(outcomes: PolicyOutcome[]): number {
   return Math.max(0, Math.min(100, Math.round(score * 10) / 10));
 }
 
+/**
+ * Per-policy score impact.
+ *
+ * Shares the denominator with weightedScore deliberately — computing it from a
+ * second, slightly different notion of "which policies count" is how the
+ * headline score and the sum of its parts drift apart.
+ */
+function policyImpacts(outcomes: PolicyOutcome[]): PolicyImpact[] {
+  const scorable = outcomes.filter(isScorable);
+  if (scorable.length === 0) return [];
+
+  let totalWeight = scorable.reduce((sum, o) => sum + SEVERITY_WEIGHT[o.severity], 0);
+  let useEqualWeights = false;
+
+  // Mirrors the fallback in weightedScore: when every scorable policy is
+  // informational the score is computed on equal weights, so the impacts must
+  // be too, or they would sum to something the score never moves by.
+  if (totalWeight === 0) {
+    totalWeight = scorable.length;
+    useEqualWeights = true;
+  }
+
+  return scorable
+    .map(o => {
+      const weight = useEqualWeights ? 1 : SEVERITY_WEIGHT[o.severity];
+      const failRate = gap(o);
+      return {
+        policyKey: o.policyKey,
+        domain: o.domain,
+        severity: o.severity,
+        checked: o.checked,
+        violating: o.violatingUnits,
+        failRate: Math.round(failRate * 1000) / 1000,
+        // Deliberately NOT rounded. Rounding each gain to one decimal and then
+        // summing them accumulates the error: a running total over five rows
+        // drifted far enough to promise a score the next run would not deliver.
+        // The UI rounds for display; the model keeps the exact value so the
+        // gains stay additive.
+        potentialGain: 100 * weight * failRate / totalWeight,
+      };
+    })
+    .filter(i => i.violating > 0)
+    .sort((a, b) => b.potentialGain - a.potentialGain || b.violating - a.violating);
+}
+
 export function scorePolicies(outcomes: PolicyOutcome[]): ScoreResult {
   const domains: DomainScore[] = POLICY_DOMAINS.map(domain => {
     const inDomain = outcomes.filter(o => o.domain === domain);
@@ -150,5 +230,6 @@ export function scorePolicies(outcomes: PolicyOutcome[]): ScoreResult {
       })),
     failed: outcomes.filter(o => o.error).map(o => o.policyKey),
     costAtRisk: outcomes.reduce((sum, o) => sum + o.costAtRisk, 0),
+    impacts: policyImpacts(outcomes),
   };
 }

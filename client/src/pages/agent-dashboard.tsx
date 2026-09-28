@@ -18,6 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { throwIfFailed } from "@/lib/api";
 
 export default function AgentDashboard() {
   const { toast } = useToast();
@@ -37,7 +38,7 @@ export default function AgentDashboard() {
     queryFn: async () => {
       if (!expandedPlanId) return [];
       const response = await fetch(`/api/agent/actions?planId=${expandedPlanId}`);
-      if (!response.ok) throw new Error("Failed to fetch plan actions");
+      await throwIfFailed(response, 'Loading the plan actions');
       return response.json();
     },
     enabled: expandedPlanId !== null,

@@ -27,13 +27,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   useViolations,
   useAcknowledgeViolation,
   useGrantExemption,
+  usePolicyCatalog,
   type ViolationFilters,
 } from "@/hooks/use-governance";
 import { SeverityBadge, EnforcementBadge, money, relativeTime } from "./shared";
-import { ChevronDown, ChevronRight, Check, ShieldOff, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Check, ShieldOff, X, HelpCircle } from "lucide-react";
 
 // ── Exemption dialog ──────────────────────────────────────────────────────────
 
@@ -161,10 +165,13 @@ function ExemptDialog({
 
 function FindingRow({
   violation,
+  rationale,
   canWrite,
   canExempt,
 }: {
   violation: ViolationView;
+  /** Why the rule exists, from the policy catalog. The "why should I care" half. */
+  rationale?: string;
   canWrite: boolean;
   canExempt: boolean;
 }) {
@@ -192,7 +199,7 @@ function FindingRow({
           type="button"
           onClick={() => setExpanded(v => !v)}
           className="mt-0.5 text-muted-foreground hover:text-foreground shrink-0"
-          aria-label={expanded ? 'Collapse' : 'Expand'}
+          aria-label={expanded ? 'Hide the explanation' : 'Explain this finding'}
         >
           {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
         </button>
@@ -223,11 +230,53 @@ function FindingRow({
             )}
           </div>
 
+          {/* An explicit control, not just the chevron. The explanation is the
+              most useful thing on the row and a bare arrow does not advertise
+              that it is there. */}
+          {!expanded && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+            >
+              <HelpCircle className="h-3.5 w-3.5" />
+              What is this, and what should I do?
+            </button>
+          )}
+
           {expanded && (
             <div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3">
               <div>
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">How to fix</p>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  1 · What we found
+                </p>
+                <p className="text-sm mt-1">{violation.detail}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Found by the rule “{violation.policyTitle}”.
+                </p>
+              </div>
+
+              {/* The half that was missing. "Why this matters" is what turns a
+                  row of jargon into something a reader can decide about; without
+                  it every finding looks equally arbitrary. */}
+              {rationale && (
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    2 · Why this matters
+                  </p>
+                  <p className="text-sm mt-1">{rationale}</p>
+                </div>
+              )}
+
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {rationale ? '3' : '2'} · How to fix it
+                </p>
                 <p className="text-sm mt-1">{violation.remediation}</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Fix the resource and this finding closes on its own at the next evaluation —
+                  there is nothing here to mark as done.
+                </p>
               </div>
 
               {violation.resourceId && (
@@ -263,20 +312,41 @@ function FindingRow({
         </div>
 
         {violation.status !== 'exempt' && (
-          <div className="flex shrink-0 gap-1">
-            {canWrite && violation.status === 'open' && (
-              <Button variant="ghost" size="sm" onClick={ack} disabled={acknowledge.isPending}>
-                <Check className="h-4 w-4 mr-1.5" />
-                Acknowledge
-              </Button>
-            )}
-            {canExempt && (
-              <Button variant="ghost" size="sm" onClick={() => setExempting(true)}>
-                <ShieldOff className="h-4 w-4 mr-1.5" />
-                Exempt
-              </Button>
-            )}
-          </div>
+          // Both verbs are ours, not the reader's, and both are easy to mistake
+          // for "fix". Neither changes anything in the cloud — the tooltips say
+          // so rather than leaving someone to find out by clicking.
+          <TooltipProvider delayDuration={200}>
+            <div className="flex shrink-0 gap-1">
+              {canWrite && violation.status === 'open' && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" onClick={ack} disabled={acknowledge.isPending}>
+                      <Check className="h-4 w-4 mr-1.5" />
+                      Acknowledge
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs text-sm leading-relaxed">
+                    Records that someone has seen this and is dealing with it. It does not fix
+                    anything and it still counts against your score.
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {canExempt && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button variant="ghost" size="sm" onClick={() => setExempting(true)}>
+                      <ShieldOff className="h-4 w-4 mr-1.5" />
+                      Exempt
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom" className="max-w-xs text-sm leading-relaxed">
+                    Accept this one on purpose, with a reason and an expiry date. It stops counting
+                    against your score but stays visible under Exemptions.
+                  </TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+          </TooltipProvider>
         )}
       </div>
 
@@ -310,6 +380,14 @@ export function Findings({
 }) {
   const { data, isLoading } = useViolations(filters);
 
+  // The catalog carries each rule's rationale — the "why does this matter"
+  // sentence. The violations endpoint does not return it, and joining here
+  // costs nothing because the catalog is already cached for the Policies tab.
+  const { data: catalog } = usePolicyCatalog();
+  const rationaleFor = new Map(
+    (catalog?.policies ?? []).map(p => [p.descriptor.key, p.descriptor.rationale]),
+  );
+
   const violations = data?.violations ?? [];
 
   const set = (key: keyof ViolationFilters, value: string) =>
@@ -325,8 +403,9 @@ export function Findings({
           <div>
             <CardTitle>Findings</CardTitle>
             <CardDescription>
-              Worst first, then by the spend at stake. A finding keeps the date it was first seen,
-              so its age is real.
+              One row per problem, worst first, then by the spend at stake. Open any row to see
+              what it means, why it matters and how to fix it. Fixing the resource closes the row
+              automatically at the next evaluation.
             </CardDescription>
           </div>
 
@@ -397,7 +476,13 @@ export function Findings({
           <>
             <div className="divide-y">
               {violations.map(v => (
-                <FindingRow key={v.id} violation={v} canWrite={canWrite} canExempt={canExempt} />
+                <FindingRow
+                  key={v.id}
+                  violation={v}
+                  rationale={rationaleFor.get(v.policyKey)}
+                  canWrite={canWrite}
+                  canExempt={canExempt}
+                />
               ))}
             </div>
             {data?.truncated && (

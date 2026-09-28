@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AreaChart, Area, ResponsiveContainer } from "recharts";
 import { Server, Lightbulb, Clock } from "lucide-react";
+import { throwIfFailed } from "@/lib/api";
 
 interface AccountSummary {
   id: number;
@@ -46,7 +47,7 @@ export function AwsAccountsSection({ startDate, endDate }: { startDate: string; 
     queryFn: async () => {
       const params = new URLSearchParams({ startDate, endDate });
       const res = await fetch(`/api/aws/account-summaries?${params.toString()}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch AWS account summaries");
+      await throwIfFailed(res, 'Loading AWS account summaries');
       return res.json();
     },
   });

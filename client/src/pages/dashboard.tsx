@@ -28,6 +28,7 @@ import { TagAllocationPanel } from "@/components/tag-allocation-panel";
 import type { CostBasis } from "@/hooks/use-cost-store";
 import { useToast } from "@/hooks/use-toast";
 import type { ProcessedCostData, AnomalyDetectionResult } from "@shared/schema";
+import { throwIfFailed } from "@/lib/api";
 
 type CloudProvider = 'all' | 'aws' | 'gcp' | 'azure';
 
@@ -142,7 +143,7 @@ export default function Dashboard() {
       }
 
       const live = await fetch(`/api/cost-data?${params.toString()}`, { credentials: 'include' });
-      if (!live.ok) throw new Error('Failed to fetch cost data');
+      await throwIfFailed(live, 'Loading cost data');
       return { ...(await live.json()), source: 'live' } as CostDataResponse;
     },
   });
@@ -163,7 +164,7 @@ export default function Dashboard() {
       
       const url = `/api/anomalies?${params.toString()}`;
       const response = await fetch(url, { credentials: 'include' });
-      if (!response.ok) throw new Error('Failed to fetch anomalies');
+      await throwIfFailed(response, 'Loading anomalies');
       return await response.json();
     },
     enabled: !!costData,
@@ -236,7 +237,7 @@ export default function Dashboard() {
       
       const url = `/api/optimization/recommendations?${params.toString()}`;
       const response = await fetch(url, { credentials: 'include' });
-      if (!response.ok) throw new Error('Failed to fetch recommendations');
+      await throwIfFailed(response, 'Loading recommendations');
       return await response.json();
     },
   });
@@ -329,7 +330,7 @@ export default function Dashboard() {
     try {
       const providerParam = selectedProvider === "all" ? "" : `?provider=${selectedProvider}`;
       const response = await fetch(`/api/export/${exportType}${providerParam}`);
-      if (!response.ok) throw new Error("Export failed");
+      await throwIfFailed(response, 'The export');
       
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);

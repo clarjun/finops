@@ -92,11 +92,20 @@ Availability: High availability required`;
         body: JSON.stringify({ requirements }),
       });
 
-      if (!response.ok) {
-        throw new Error("Failed to generate estimate");
-      }
+      // Read the body before deciding what to say. The server already explains
+      // itself — "You have no credits remaining", "Requirements are required" —
+      // and replacing that with a generic string turns a one-line fix into a
+      // debugging session.
+      const data = await response.json().catch(() => null);
 
-      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          data?.error ||
+          (response.status === 401
+            ? "Your session has expired. Reload the page and sign in again."
+            : `Failed to generate estimate (${response.status})`),
+        );
+      }
       setEstimate(data.estimate);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate estimate");

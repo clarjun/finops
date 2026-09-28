@@ -18,6 +18,7 @@ import { ProviderSelector, type CloudProvider } from "@/components/provider-sele
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { insertBudgetSchema, type Budget as SchemaBudget } from "@shared/schema";
+import { throwIfFailed } from "@/lib/api";
 
 // Budget type with properly typed alertThresholds
 type Budget = Omit<SchemaBudget, 'alertThresholds'> & {
@@ -76,7 +77,7 @@ export default function BudgetsPage() {
       queryKey: ['/api/budgets', budget.id, 'spending'],
       queryFn: async () => {
         const response = await fetch(`/api/budgets/${budget.id}/spending`);
-        if (!response.ok) throw new Error('Failed to fetch spending');
+        await throwIfFailed(response, 'Loading spending');
         return response.json() as Promise<{ success: boolean; currentSpending: number; percentage: number }>;
       },
       enabled: !!budget.id,
@@ -411,7 +412,7 @@ function BudgetForm({ budget, onClose }: { budget: Budget | null; onClose: () =>
     queryFn: async () => {
       if (!selectedProvider) return { success: false, services: [] };
       const response = await fetch(`/api/services?provider=${selectedProvider}`);
-      if (!response.ok) throw new Error('Failed to fetch services');
+      await throwIfFailed(response, 'Loading services');
       return response.json();
     },
     enabled: !!selectedProvider && ['aws', 'gcp', 'azure'].includes(selectedProvider),

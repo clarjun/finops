@@ -26,10 +26,11 @@ import { currentOrgId, currentUserId, currentUsername } from '../tenant-context'
 import { recordAudit } from '../audit';
 import { appendEvent } from './events';
 import { computeStages, stageTargets, type Stage } from './staging';
+import { inspectPlan, summarizeFindings, type PlanFinding } from './terraform/plan-risk';
 import { compileArchitecture } from './compiler';
 import { generateTerraform } from './terraform/generator';
 import { awsMapper } from './providers/aws';
-import { terraformExecutor } from './terraform/executor';
+import { terraformExecutor, type TfPlanResult, type PlannedChange } from './terraform/executor';
 import { resolveTerraformCredentials } from './tools/credentials';
 import { runTool, authorizingRole, ToolDenied, type ApprovalEvidence } from './tools/invoke';
 import { extractStepsFromRun } from './knowledge/step-library';
@@ -48,8 +49,11 @@ interface PlanResult {
   toAdd: number;
   toChange: number;
   toDestroy: number;
-  changes: Array<{ address: string; action: string }>;
-  destructive: Array<{ address: string; action: string }>;
+  // The full change, including the planned attribute values the risk inspector
+  // reads. Those values are in memory only — see where they are stripped before
+  // anything is written to the database.
+  changes: PlannedChange[];
+  destructive: PlannedChange[];
 }
 
 /**
@@ -362,7 +366,14 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     }
 
     await db.update(infraRuns).set({
-      planSummary: planned.changes as never,
+      // Stripped of attribute values before it is stored. A plan can contain a
+      // generated database password, and the run summary is read back into the
+      // UI — the addresses and actions are the whole point of a summary anyway.
+      planSummary: planned.changes.map((c) => ({
+        address: c.address,
+        resourceType: c.resourceType,
+        action: c.action,
+      })) as never,
       resourcesToAdd: planned.toAdd,
       resourcesToChange: planned.toChange,
       resourcesToDestroy: planned.toDestroy,
@@ -393,7 +404,7 @@ export async function advance(runId: number): Promise<AdvanceResult> {
     let gateApproval: Awaited<ReturnType<typeof pendingOrNewApproval>> | null = null;
 
     if (stage.requiresApproval || planned.destructive.length > 0) {
-      const approval = await pendingOrNewApproval(runId, stage, planned.destructive.length, planned.toAdd);
+      const approval = await pendingOrNewApproval(runId, stage, planned.destructive.length, planned.toAdd, planned);
       gateApproval = approval;
 
       if (approval.status === 'pending') {
@@ -567,7 +578,13 @@ function nextStage(stages: Stage[], status: Map<string, string>): Stage | null {
   return null;
 }
 
-async function pendingOrNewApproval(runId: number, stage: Stage, destructiveCount: number, toAdd: number) {
+async function pendingOrNewApproval(
+  runId: number,
+  stage: Stage,
+  destructiveCount: number,
+  toAdd: number,
+  planned: Pick<TfPlanResult, 'changes'>,
+) {
   const organizationId = currentOrgId();
 
   const [existing] = await db.select().from(infraApprovals)
@@ -580,6 +597,20 @@ async function pendingOrNewApproval(runId: number, stage: Stage, destructiveCoun
 
   if (existing) return existing;
 
+  // Read the plan for the things that actually go wrong — a database that will
+  // be internet-facing, storage that will be unencrypted, a replacement that
+  // destroys data. The plan already contained all of it; nothing looked.
+  const findings: PlanFinding[] = inspectPlan(planned.changes);
+
+  // Addresses and actions are stored; attribute VALUES are not. They were
+  // needed to reach these conclusions and a plan can carry a generated
+  // password, so they stay in memory and the conclusions are what persists.
+  const plannedChanges = planned.changes.map((c) => ({
+    address: c.address,
+    resourceType: c.resourceType,
+    action: c.action,
+  }));
+
   const [created] = await db.insert(infraApprovals).values({
     organizationId,
     runId,
@@ -589,10 +620,13 @@ async function pendingOrNewApproval(runId: number, stage: Stage, destructiveCoun
     details:
       `${toAdd} resource(s) will be created.` +
       (destructiveCount > 0 ? ` ${destructiveCount} existing resource(s) would be destroyed or replaced.` : '') +
-      (stage.riskReasons.length > 0 ? ` Risk: ${stage.riskReasons.join(', ')}.` : ''),
+      (stage.riskReasons.length > 0 ? ` Risk: ${stage.riskReasons.join(', ')}.` : '') +
+      (findings.length > 0 ? ` Plan review: ${summarizeFindings(findings)}.` : ''),
     riskLevel: stage.riskLevel,
     riskReasons: stage.riskReasons as never,
     proposedAction: { stage: stage.index, nodeKeys: stage.nodeKeys } as never,
+    plannedChanges: plannedChanges as never,
+    planFindings: findings as never,
     estimatedCostImpact: String(stage.estimatedMonthlyCost),
     status: 'pending',
   }).returning();
@@ -968,7 +1002,7 @@ async function loadRun(runId: number, organizationId: number) {
   return row ?? null;
 }
 
-async function loadPlanContext(planId: number, organizationId: number): Promise<{
+export async function loadPlanContext(planId: number, organizationId: number): Promise<{
   plan: typeof infraPlans.$inferSelect;
   architecture: LogicalArchitecture;
   nodes: LamNode[];
@@ -993,7 +1027,7 @@ async function loadPlanContext(planId: number, organizationId: number): Promise<
   return { plan, architecture, nodes: architecture.nodes };
 }
 
-function namePrefixFor(name: string, environment: string): string {
+export function namePrefixFor(name: string, environment: string): string {
   const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 20) || 'app';
   return `${slug}-${environment.slice(0, 4)}`;
 }

@@ -30,6 +30,7 @@ import {
   type ViolationStatus,
   type EnforcementMode,
   type PostureSummary,
+  type PolicyImpact,
   type PolicyCatalogEntry,
   type ViolationView,
   type ExemptionView,
@@ -58,6 +59,24 @@ const DOMAINS = new Map(POLICIES.map(p => [p.descriptor.key, p.descriptor.domain
  * they are widened with an honest placeholder instead and the panel still
  * renders rather than crashing on a shape it did not expect.
  */
+/**
+ * Reads the per-policy impacts off a run.
+ *
+ * Defensive because the column is nullable by design: every run recorded before
+ * migration 0026 has no impacts, and `checked` cannot be reconstructed from the
+ * findings alone. Those runs return an empty list so the UI can say "not
+ * available for this run" rather than showing a fabricated priority order.
+ */
+function readPolicyImpacts(raw: unknown): PolicyImpact[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (r): r is PolicyImpact =>
+      !!r && typeof r === 'object' &&
+      typeof (r as any).policyKey === 'string' &&
+      typeof (r as any).potentialGain === 'number',
+  );
+}
+
 function readNotAssessed(raw: unknown): NotAssessedPolicy[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((entry): NotAssessedPolicy | null => {
@@ -155,6 +174,7 @@ export function registerGovernanceRoutes(app: Express) {
         lastRunStatus: lastRun?.status ?? null,
         lastRunError: lastRun?.error ?? null,
         notAssessed: readNotAssessed(lastRun?.notAssessed),
+        policyImpacts: readPolicyImpacts(lastRun?.policyImpacts),
       };
 
       res.json(summary);

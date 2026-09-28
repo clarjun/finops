@@ -3,7 +3,8 @@ import {
   DescribeInstancesCommand, 
   DescribeVolumesCommand,
   DescribeSnapshotsCommand,
-  DescribeAddressesCommand
+  DescribeAddressesCommand,
+  DescribeRegionsCommand,
 } from "@aws-sdk/client-ec2";
 import { 
   LambdaClient, 
@@ -74,11 +75,107 @@ export async function isAWSResourceInventoryConfigured(): Promise<boolean> {
   }
 }
 
-const ec2 = () => awsReadClient(EC2Client, { region: AWS_REGION });
-const lambda = () => awsReadClient(LambdaClient, { region: AWS_REGION });
-const rds = () => awsReadClient(RDSClient, { region: AWS_REGION });
-const s3 = () => awsReadClient(S3Client, { region: AWS_REGION });
-const cwLogs = () => awsReadClient(CloudWatchLogsClient, { region: AWS_REGION });
+const ec2 = (region: string = AWS_REGION) => awsReadClient(EC2Client, { region });
+const lambda = (region: string = AWS_REGION) => awsReadClient(LambdaClient, { region });
+const rds = (region: string = AWS_REGION) => awsReadClient(RDSClient, { region });
+const s3 = (region: string = AWS_REGION) => awsReadClient(S3Client, { region });
+const cwLogs = (region: string = AWS_REGION) => awsReadClient(CloudWatchLogsClient, { region });
+
+// ── Regions ──────────────────────────────────────────────────────────────────
+//
+// Everything here used to run against ONE region — a module constant read from
+// AWS_REGION, defaulting to us-east-1. Every caller inherited it silently, so
+// the inventory, and therefore every governance policy built on the inventory,
+// described a single region while reporting itself as the state of the account.
+//
+// On the account that exposed this, that meant: 18 enabled regions, spend in
+// 19, and 12 EBS volumes (10 of them unencrypted), 10 EC2 instances and an RDS
+// instance open to the whole internet that no check could ever see. The score
+// was not wrong about what it measured; it was measuring a fifth of the estate
+// and saying nothing about the rest.
+
+/** Discovered once per process. Regions do not change during a run. */
+let regionCache: { at: number; regions: string[] } | null = null;
+const REGION_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Regions this account has enabled.
+ *
+ * DescribeRegions returns only regions the account can actually use, which is
+ * what we want: scanning a disabled region wastes a call and returns an
+ * AuthFailure that looks like a permissions problem in the logs.
+ *
+ * Falls back to the single configured region. A failure here must degrade to
+ * the old single-region behaviour rather than to an empty inventory, because an
+ * empty inventory reads as "you have no resources" — the exact false green this
+ * whole change exists to remove.
+ */
+export async function enabledRegions(): Promise<string[]> {
+  if (regionCache && Date.now() - regionCache.at < REGION_TTL_MS) return regionCache.regions;
+
+  try {
+    const client = await ec2(AWS_REGION);
+    const res = await runProviderQuery('aws', 'inventory:regions', async () =>
+      client.send(new DescribeRegionsCommand({})));
+
+    const regions = (res.Regions ?? [])
+      .map(r => r.RegionName)
+      .filter((r): r is string => !!r)
+      .sort();
+
+    if (regions.length === 0) throw new Error('DescribeRegions returned nothing');
+
+    regionCache = { at: Date.now(), regions };
+    console.log(`[AWS Inventory] Scanning ${regions.length} enabled regions`);
+    return regions;
+  } catch (err: any) {
+    console.warn(
+      `[AWS Inventory] Could not list regions (${err?.message ?? err}); ` +
+      `falling back to ${AWS_REGION} only. Coverage will be incomplete.`,
+    );
+    return [AWS_REGION];
+  }
+}
+
+/** Regions scanned at once. Enough to stay quick, low enough not to be throttled. */
+const REGION_CONCURRENCY = 6;
+
+/**
+ * Runs a per-region fetch across every enabled region and flattens the result.
+ *
+ * One region failing must not lose the others: a single opted-in-but-unreachable
+ * region would otherwise wipe out an entire resource type. The error is recorded
+ * and the rest proceed. Only a total failure rethrows, so the caller can still
+ * tell "nothing found" apart from "nothing worked".
+ */
+async function acrossRegions<T>(
+  label: string,
+  fetch: (region: string) => Promise<T[]>,
+): Promise<T[]> {
+  const regions = await enabledRegions();
+  const out: T[] = [];
+  const failures: string[] = [];
+
+  for (let i = 0; i < regions.length; i += REGION_CONCURRENCY) {
+    const batch = regions.slice(i, i + REGION_CONCURRENCY);
+    const settled = await Promise.allSettled(batch.map(r => fetch(r)));
+
+    settled.forEach((result, idx) => {
+      if (result.status === 'fulfilled') out.push(...result.value);
+      else failures.push(`${batch[idx]}: ${result.reason?.message ?? result.reason}`);
+    });
+  }
+
+  if (failures.length === regions.length) {
+    throw new Error(`Every region failed for ${label}. ${failures[0]}`);
+  }
+  if (failures.length > 0) {
+    console.warn(`[AWS Inventory] ${label}: ${failures.length}/${regions.length} regions failed — ${failures.join('; ')}`);
+  }
+
+  console.log(`[AWS Inventory] Fetched ${out.length} ${label} across ${regions.length - failures.length} region(s)`);
+  return out;
+}
 
 export interface EC2Instance {
   instanceId: string;
@@ -89,6 +186,8 @@ export interface EC2Instance {
   vCpus?: number;
   memory?: number;
   tags?: Record<string, string>;
+  /** Which region it was found in. */
+  region?: string;
 }
 
 export interface LambdaFunction {
@@ -99,6 +198,8 @@ export interface LambdaFunction {
   timeout: number;
   lastModified?: string;
   codeSize?: number;
+  /** Which region it was found in. */
+  region?: string;
 }
 
 export interface RDSInstance {
@@ -119,6 +220,8 @@ export interface RDSInstance {
   storageEncrypted?: boolean;
   publiclyAccessible?: boolean;
   availabilityZone?: string;
+  /** Which region it was found in. */
+  region?: string;
 }
 
 export interface S3Bucket {
@@ -141,6 +244,8 @@ export interface EBSVolume {
   /** Already present in DescribeVolumes; previously discarded. */
   encrypted?: boolean;
   availabilityZone?: string;
+  /** Which region it was found in. */
+  region?: string;
 }
 
 export interface CloudWatchLogGroup {
@@ -148,6 +253,8 @@ export interface CloudWatchLogGroup {
   retentionInDays?: number;
   storedBytes?: number;
   creationTime?: number;
+  /** Which region it was found in. */
+  region?: string;
 }
 
 export interface AWSResourceInventory {
@@ -165,7 +272,7 @@ export interface AWSResourceInventory {
  * Fetch EC2 instances with pagination
  */
 export async function fetchEC2Instances(): Promise<EC2Instance[]> {
-  try {
+  return acrossRegions('EC2 instances', async (region) => {
     const instances: EC2Instance[] = [];
     let nextToken: string | undefined;
     
@@ -173,7 +280,7 @@ export async function fetchEC2Instances(): Promise<EC2Instance[]> {
       const command = new DescribeInstancesCommand({
         NextToken: nextToken,
       });
-      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
+      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2(region)).send(command));
       
       for (const reservation of response.Reservations || []) {
         for (const instance of reservation.Instances || []) {
@@ -191,6 +298,7 @@ export async function fetchEC2Instances(): Promise<EC2Instance[]> {
             launchTime: instance.LaunchTime,
             platform: instance.Platform,
             tags,
+            region,
           });
         }
       }
@@ -198,19 +306,15 @@ export async function fetchEC2Instances(): Promise<EC2Instance[]> {
       nextToken = response.NextToken;
     } while (nextToken);
     
-    console.log(`[AWS Inventory] Fetched ${instances.length} EC2 instances`);
     return instances;
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching EC2 instances:', error);
-    throw new Error(`Failed to fetch EC2 instances: ${error}`);
-  }
+  });
 }
 
 /**
  * Fetch Lambda functions with pagination
  */
 export async function fetchLambdaFunctions(): Promise<LambdaFunction[]> {
-  try {
+  return acrossRegions('Lambda functions', async (region) => {
     const functions: LambdaFunction[] = [];
     let nextMarker: string | undefined;
     
@@ -218,7 +322,7 @@ export async function fetchLambdaFunctions(): Promise<LambdaFunction[]> {
       const command = new ListFunctionsCommand({
         Marker: nextMarker,
       });
-      const response = await runProviderQuery('aws', 'inventory:lambda', async () => (await lambda()).send(command));
+      const response = await runProviderQuery('aws', 'inventory:lambda', async () => (await lambda(region)).send(command));
       
       for (const fn of response.Functions || []) {
         functions.push({
@@ -235,19 +339,15 @@ export async function fetchLambdaFunctions(): Promise<LambdaFunction[]> {
       nextMarker = response.NextMarker;
     } while (nextMarker);
     
-    console.log(`[AWS Inventory] Fetched ${functions.length} Lambda functions`);
     return functions;
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching Lambda functions:', error);
-    throw new Error(`Failed to fetch Lambda functions: ${error}`);
-  }
+  });
 }
 
 /**
  * Fetch RDS instances with pagination
  */
 export async function fetchRDSInstances(): Promise<RDSInstance[]> {
-  try {
+  return acrossRegions('RDS instances', async (region) => {
     const instances: RDSInstance[] = [];
     let nextMarker: string | undefined;
     
@@ -255,7 +355,7 @@ export async function fetchRDSInstances(): Promise<RDSInstance[]> {
       const command = new DescribeDBInstancesCommand({
         Marker: nextMarker,
       });
-      const response = await runProviderQuery('aws', 'inventory:rds', async () => (await rds()).send(command));
+      const response = await runProviderQuery('aws', 'inventory:rds', async () => (await rds(region)).send(command));
       
       for (const db of response.DBInstances || []) {
         instances.push({
@@ -271,18 +371,15 @@ export async function fetchRDSInstances(): Promise<RDSInstance[]> {
           storageEncrypted: db.StorageEncrypted,
           publiclyAccessible: db.PubliclyAccessible,
           availabilityZone: db.AvailabilityZone,
+          region,
         });
       }
       
       nextMarker = response.Marker;
     } while (nextMarker);
     
-    console.log(`[AWS Inventory] Fetched ${instances.length} RDS instances`);
     return instances;
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching RDS instances:', error);
-    throw new Error(`Failed to fetch RDS instances: ${error}`);
-  }
+  });
 }
 
 /**
@@ -310,7 +407,7 @@ export async function fetchS3Buckets(): Promise<S3Bucket[]> {
  * Fetch EBS volumes with pagination
  */
 export async function fetchEBSVolumes(): Promise<EBSVolume[]> {
-  try {
+  return acrossRegions('EBS volumes', async (region) => {
     const volumes: EBSVolume[] = [];
     let nextToken: string | undefined;
     
@@ -318,7 +415,7 @@ export async function fetchEBSVolumes(): Promise<EBSVolume[]> {
       const command = new DescribeVolumesCommand({
         NextToken: nextToken,
       });
-      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
+      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2(region)).send(command));
       
       for (const vol of response.Volumes || []) {
         volumes.push({
@@ -332,25 +429,22 @@ export async function fetchEBSVolumes(): Promise<EBSVolume[]> {
           createTime: vol.CreateTime,
           encrypted: vol.Encrypted,
           availabilityZone: vol.AvailabilityZone,
+          region,
         });
       }
       
       nextToken = response.NextToken;
     } while (nextToken);
     
-    console.log(`[AWS Inventory] Fetched ${volumes.length} EBS volumes`);
     return volumes;
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching EBS volumes:', error);
-    throw new Error(`Failed to fetch EBS volumes: ${error}`);
-  }
+  });
 }
 
 /**
  * Fetch CloudWatch Log Groups with pagination
  */
 export async function fetchCloudWatchLogGroups(): Promise<CloudWatchLogGroup[]> {
-  try {
+  return acrossRegions('CloudWatch log groups', async (region) => {
     const logGroups: CloudWatchLogGroup[] = [];
     let nextToken: string | undefined;
     
@@ -358,7 +452,7 @@ export async function fetchCloudWatchLogGroups(): Promise<CloudWatchLogGroup[]> 
       const command = new DescribeLogGroupsCommand({
         nextToken,
       });
-      const response = await runProviderQuery('aws', 'inventory:cwLogs', async () => (await cwLogs()).send(command));
+      const response = await runProviderQuery('aws', 'inventory:cwLogs', async () => (await cwLogs(region)).send(command));
       
       for (const lg of response.logGroups || []) {
         logGroups.push({
@@ -372,19 +466,15 @@ export async function fetchCloudWatchLogGroups(): Promise<CloudWatchLogGroup[]> 
       nextToken = response.nextToken;
     } while (nextToken);
     
-    console.log(`[AWS Inventory] Fetched ${logGroups.length} CloudWatch log groups`);
     return logGroups;
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching CloudWatch log groups:', error);
-    throw new Error(`Failed to fetch CloudWatch log groups: ${error}`);
-  }
+  });
 }
 
 /**
  * Fetch EBS Snapshots with pagination
  */
 export async function fetchEBSSnapshots(): Promise<any[]> {
-  try {
+  return acrossRegions('EBS snapshots', async (region) => {
     const snapshots: any[] = [];
     let nextToken: string | undefined;
     
@@ -393,34 +483,26 @@ export async function fetchEBSSnapshots(): Promise<any[]> {
         OwnerIds: ['self'],
         NextToken: nextToken,
       });
-      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
+      const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2(region)).send(command));
       
       snapshots.push(...(response.Snapshots || []));
       nextToken = response.NextToken;
     } while (nextToken);
     
-    console.log(`[AWS Inventory] Fetched ${snapshots.length} EBS snapshots`);
     return snapshots;
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching EBS snapshots:', error);
-    throw new Error(`Failed to fetch EBS snapshots: ${error}`);
-  }
+  });
 }
 
 /**
  * Fetch Elastic IPs (no pagination needed - DescribeAddresses returns all)
  */
 export async function fetchElasticIPs(): Promise<any[]> {
-  try {
+  return acrossRegions('Elastic IPs', async (region) => {
     const command = new DescribeAddressesCommand({});
-    const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2()).send(command));
+    const response = await runProviderQuery('aws', 'inventory:ec2', async () => (await ec2(region)).send(command));
     
-    console.log(`[AWS Inventory] Fetched ${response.Addresses?.length || 0} Elastic IPs`);
-    return response.Addresses || [];
-  } catch (error) {
-    console.error('[AWS Inventory] Error fetching Elastic IPs:', error);
-    throw new Error(`Failed to fetch Elastic IPs: ${error}`);
-  }
+    return (response.Addresses || []).map(a => ({ ...a, region }));
+  });
 }
 
 /**

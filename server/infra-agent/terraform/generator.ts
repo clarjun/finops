@@ -11,6 +11,7 @@
  * to be the same plan that ran.
  */
 import { renderBlocks, type HclBlock } from './hcl';
+import { backendBlock, describeBackend, type BackendConfig } from './backend';
 import type { ProviderMapper, MapperContext, MappingResult } from '../providers/types';
 import type { LogicalArchitecture } from '../types';
 
@@ -26,6 +27,8 @@ export interface GeneratedConfig {
   /** Logical types the mapper could not build. Shown to the user. */
   unsupported: MappingResult['unsupported'];
   resourceCount: number;
+  /** Human-readable state location, for the approval card and the PR body. */
+  backendDescription: string | null;
 }
 
 export interface GenerateOptions {
@@ -33,10 +36,16 @@ export interface GenerateOptions {
   mapper: ProviderMapper;
   region: string;
   namePrefix: string;
+  /**
+   * Where Terraform keeps its state. Omitted means local state, which is only
+   * correct for a sandbox run — see ./backend.ts for why that orphans
+   * infrastructure in a container environment.
+   */
+  backend?: BackendConfig;
 }
 
 export function generateTerraform(opts: GenerateOptions): GeneratedConfig {
-  const { architecture, mapper, region, namePrefix } = opts;
+  const { architecture, mapper, region, namePrefix, backend } = opts;
 
   const ctx: MapperContext = {
     architecture,
@@ -62,6 +71,14 @@ export function generateTerraform(opts: GenerateOptions): GeneratedConfig {
       },
     }));
 
+  // The backend belongs INSIDE the mapper's `terraform` block, not beside it:
+  // Terraform allows exactly one such block, and a second one is a parse error.
+  // Injecting rather than appending is what keeps the provider mappers unaware
+  // of state storage, which is not their concern.
+  const preamble = backend
+    ? injectBackend(result.preamble, backend)
+    : result.preamble;
+
   const resourceBlocks = result.resources.flatMap((r) => r.blocks);
 
   // Outputs let the engine read back what was actually created, rather than
@@ -85,7 +102,7 @@ export function generateTerraform(opts: GenerateOptions): GeneratedConfig {
 
   const mainTf = [
     header,
-    renderBlocks(result.preamble),
+    renderBlocks(preamble),
     renderBlocks(variableBlocks),
     renderBlocks(resourceBlocks),
     renderBlocks(outputBlocks),
@@ -103,9 +120,40 @@ export function generateTerraform(opts: GenerateOptions): GeneratedConfig {
   return {
     mainTf,
     tfvars: { region, name_prefix: namePrefix },
+    backendDescription: backend ? describeBackend(backend) : null,
     addressByNode,
     nodeByAddress,
     unsupported: result.unsupported,
     resourceCount: resourceBlocks.length,
   };
+}
+
+/**
+ * Places the backend block inside the existing `terraform` block.
+ *
+ * If a mapper ever emits no `terraform` block, one is created rather than
+ * silently dropping the backend — losing it is the failure this whole module
+ * exists to prevent, so it must never happen quietly.
+ */
+function injectBackend(preamble: HclBlock[], backend: BackendConfig): HclBlock[] {
+  const block = backendBlock(backend);
+  if (!block) return preamble;   // local state: nothing to declare
+
+  const index = preamble.findIndex((b) => b.type === 'terraform');
+  if (index === -1) {
+    return [{ type: 'terraform', body: { _blocks: [block] } }, ...preamble];
+  }
+
+  const target = preamble[index];
+  const merged: HclBlock = {
+    ...target,
+    body: {
+      ...target.body,
+      // Backend first: it is the thing a reviewer should read before anything
+      // else in the file, because it says where the record of reality lives.
+      _blocks: [block, ...(target.body._blocks ?? [])],
+    },
+  };
+
+  return preamble.map((b, i) => (i === index ? merged : b));
 }

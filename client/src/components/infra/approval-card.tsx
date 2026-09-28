@@ -18,6 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useDecideApproval } from "@/hooks/use-infra-agent";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
+import { PlanReview, type PlanFindingView, type PlannedChangeView } from "./plan-review";
 
 export interface PendingApproval {
   ref: string;
@@ -27,6 +28,12 @@ export interface PendingApproval {
   riskLevel: string;
   riskReasons: string[];
   estimatedCostImpact: string | null;
+  /** Attribute-level risks read out of the plan. */
+  planFindings?: PlanFindingView[];
+  /** Per-resource actions Terraform will take. */
+  plannedChanges?: PlannedChangeView[];
+  /** Lets the card offer the generated Terraform for reading. */
+  planId?: number | null;
 }
 
 /** Plain-language explanation of why a step was held. */
@@ -47,6 +54,8 @@ const RISK_BADGE: Record<string, 'default' | 'secondary' | 'destructive' | 'outl
 
 export function ApprovalCard({ approval }: { approval: PendingApproval }) {
   const { toast } = useToast();
+  const findings = approval.planFindings ?? [];
+  const critical = findings.filter((f) => f.severity === 'critical').length;
   const { can } = useAuth();
   const decide = useDecideApproval();
   const [reason, setReason] = useState('');
@@ -72,10 +81,15 @@ export function ApprovalCard({ approval }: { approval: PendingApproval }) {
   };
 
   return (
-    <Card className="border-yellow-500/60" data-testid={`approval-${approval.ref}`}>
+    <Card
+      // A critical finding outranks the stage's own risk label: the stage may
+      // be "medium" while the plan quietly makes a database internet-facing.
+      className={critical > 0 ? 'border-red-500/70' : 'border-yellow-500/60'}
+      data-testid={`approval-${approval.ref}`}
+    >
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-base">
-          <ShieldAlert className="h-5 w-5 text-yellow-600" />
+          <ShieldAlert className={`h-5 w-5 ${critical > 0 ? 'text-red-600' : 'text-yellow-600'}`} />
           Human approval required
           <Badge variant={RISK_BADGE[approval.riskLevel] ?? 'secondary'} className="ml-auto uppercase text-[10px]">
             {approval.riskLevel}
@@ -103,6 +117,14 @@ export function ApprovalCard({ approval }: { approval: PendingApproval }) {
             </ul>
           </div>
         )}
+
+        {/* The evidence. Above the cost line on purpose: an approver decides on
+            what the deployment does before what it costs. */}
+        <PlanReview
+          findings={findings}
+          changes={approval.plannedChanges ?? []}
+          planId={approval.planId ?? null}
+        />
 
         {approval.estimatedCostImpact && Number(approval.estimatedCostImpact) > 0 && (
           <p className="text-sm">
