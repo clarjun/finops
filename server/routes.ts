@@ -440,7 +440,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       } else {
         console.log(`AI query - no specific provider detected, using multi-cloud data from query: "${query}"`);
       }
-      
+
+      // An explicit selection from the UI's cloud selector wins over the
+      // keyword guess. "all" (or omitted) leaves the keyword detection above in
+      // place; a specific cloud scopes the whole answer to that provider.
+      const requestedProvider = req.body?.provider;
+      if (requestedProvider === 'aws' || requestedProvider === 'gcp' || requestedProvider === 'azure') {
+        detectedProvider = requestedProvider;
+        providerName = requestedProvider === 'aws' ? 'AWS' : requestedProvider === 'gcp' ? 'GCP' : 'Azure';
+        console.log(`AI query provider set by UI selector: ${requestedProvider}`);
+      }
+
       const endDate2 = new Date();
       const startDate2 = new Date(endDate2.getFullYear(), endDate2.getMonth(), 1);
       const { fetchLiveCosts: fetchLiveCosts2 } = await import('./utils/live-cost-fetcher');

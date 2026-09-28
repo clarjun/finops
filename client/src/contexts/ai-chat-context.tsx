@@ -16,10 +16,13 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { AiQueryResponse, AiTurn } from "@shared/schema";
 
+export type CloudScope = "all" | "aws" | "azure" | "gcp";
+
 export interface AiChatEntry {
   query: string;
   answer: string;
   success: boolean;
+  provider: CloudScope; // which cloud scope this question was asked against
 }
 
 interface AiChatContextValue {
@@ -27,6 +30,8 @@ interface AiChatContextValue {
   setInput: (value: string) => void;
   loading: boolean;
   responses: AiChatEntry[];
+  provider: CloudScope;
+  setProvider: (provider: CloudScope) => void;
   submitQuery: () => Promise<void>;
 }
 
@@ -37,12 +42,18 @@ export function AiChatProvider({ children }: { children: ReactNode }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [responses, setResponses] = useState<AiChatEntry[]>([]);
+  const [provider, setProvider] = useState<CloudScope>("all");
 
   const submitQuery = useCallback(async () => {
     const currentQuery = input.trim();
     if (!currentQuery || loading) return;
 
     setLoading(true);
+
+    // Capture the scope now, so the history entry reflects the provider this
+    // question was actually asked against — even if the user changes the
+    // selector while the answer is still generating.
+    const askedProvider = provider;
 
     // Send the last few exchanges so follow-ups ("yes", "break that down") have
     // context. `responses` is newest-first, so reverse to oldest-first — the
@@ -59,10 +70,11 @@ export function AiChatProvider({ children }: { children: ReactNode }) {
       const result = await apiRequest<AiQueryResponse>("POST", "/api/analyze", {
         query: currentQuery,
         history,
+        provider,
       });
       const answerText = result?.answer || "No answer received from AI";
       setResponses((prev) => [
-        { query: currentQuery, answer: answerText, success: result?.success ?? false },
+        { query: currentQuery, answer: answerText, success: result?.success ?? false, provider: askedProvider },
         ...prev,
       ]);
       // Clear the input only on success, so a failed query stays put for a retry.
@@ -74,16 +86,16 @@ export function AiChatProvider({ children }: { children: ReactNode }) {
         variant: "destructive",
       });
       setResponses((prev) => [
-        { query: currentQuery, answer: "Sorry, I couldn't process your query at this time.", success: false },
+        { query: currentQuery, answer: "Sorry, I couldn't process your query at this time.", success: false, provider: askedProvider },
         ...prev,
       ]);
     } finally {
       setLoading(false);
     }
-  }, [input, loading, responses, toast]);
+  }, [input, loading, responses, provider, toast]);
 
   return (
-    <AiChatContext.Provider value={{ input, setInput, loading, responses, submitQuery }}>
+    <AiChatContext.Provider value={{ input, setInput, loading, responses, provider, setProvider, submitQuery }}>
       {children}
     </AiChatContext.Provider>
   );

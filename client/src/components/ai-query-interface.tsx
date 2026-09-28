@@ -1,10 +1,11 @@
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Send, Sparkles, Loader2 } from "lucide-react";
+import { Send, Sparkles, Loader2, Cloud, CloudCog, Database } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { useAiChat } from "@/contexts/ai-chat-context";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAiChat, type CloudScope } from "@/contexts/ai-chat-context";
 
 const EXAMPLE_QUERIES = [
   "What is my top cost driver?",
@@ -14,10 +15,19 @@ const EXAMPLE_QUERIES = [
   "What's the trend this month?",
 ];
 
+// Label + icon per cloud scope, so each answer in the history shows which
+// provider it was asked against. Mirrors the selector's icons and colors.
+const PROVIDER_META: Record<CloudScope, { label: string; icon: typeof Cloud; iconClass: string }> = {
+  all: { label: "All Clouds", icon: CloudCog, iconClass: "text-purple-600 dark:text-purple-400" },
+  aws: { label: "AWS", icon: Database, iconClass: "text-orange-600 dark:text-orange-400" },
+  gcp: { label: "GCP", icon: CloudCog, iconClass: "text-green-600 dark:text-green-400" },
+  azure: { label: "Azure", icon: Cloud, iconClass: "text-primary" },
+};
+
 export function AiQueryInterface() {
   // Chat state lives in AiChatProvider (above the router) so an in-flight query
   // and its answer survive navigating to another page and back.
-  const { input: query, setInput: setQuery, loading, responses, submitQuery } = useAiChat();
+  const { input: query, setInput: setQuery, loading, responses, provider, setProvider, submitQuery } = useAiChat();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,7 +55,30 @@ export function AiQueryInterface() {
               </div>
             </div>
 
-            <form onSubmit={handleSubmit} className="mt-6">
+            {/* Scope the AI's answer to one cloud (or all), mirroring the
+                provider selector on the Reports/Dashboard page. */}
+            <Tabs value={provider} onValueChange={(value) => setProvider(value as CloudScope)} className="mt-6">
+              <TabsList className="grid w-full grid-cols-4" data-testid="tabs-ai-provider-selector">
+                <TabsTrigger value="all" data-testid="tab-ai-all" className="gap-2">
+                  <CloudCog className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                  All Clouds
+                </TabsTrigger>
+                <TabsTrigger value="aws" data-testid="tab-ai-aws" className="gap-2">
+                  <Database className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                  AWS
+                </TabsTrigger>
+                <TabsTrigger value="gcp" data-testid="tab-ai-gcp" className="gap-2">
+                  <CloudCog className="h-4 w-4 text-green-600 dark:text-green-400" />
+                  GCP
+                </TabsTrigger>
+                <TabsTrigger value="azure" data-testid="tab-ai-azure" className="gap-2">
+                  <Cloud className="h-4 w-4 text-primary" />
+                  Azure
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            <form onSubmit={handleSubmit} className="mt-4">
               <div className="flex gap-2">
                 <Input
                   value={query}
@@ -95,7 +128,19 @@ export function AiQueryInterface() {
             <CardContent className="p-6">
               <div className="space-y-3">
                 <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Your question:</p>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <p className="text-sm font-medium text-muted-foreground">Your question:</p>
+                    {(() => {
+                      const meta = PROVIDER_META[response.provider];
+                      const Icon = meta.icon;
+                      return (
+                        <Badge variant="secondary" className="gap-1" data-testid={`badge-provider-${index}`}>
+                          <Icon className={`h-3 w-3 ${meta.iconClass}`} />
+                          {meta.label}
+                        </Badge>
+                      );
+                    })()}
+                  </div>
                   <p className="font-medium" data-testid={`text-query-${index}`}>{response.query}</p>
                 </div>
                 <div>

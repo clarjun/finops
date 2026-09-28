@@ -90,6 +90,10 @@ export const aiQueryRequestSchema = z.object({
   query: z.string().min(1, "Query cannot be empty"),
   costData: z.any().optional(), // The processed cost data to analyze
   history: z.array(aiTurnSchema).max(20).optional(), // prior turns for context
+  // Explicit cloud scope from the UI selector. "all" (or omitted) keeps the
+  // keyword-based detection; a specific cloud overrides it and scopes the
+  // answer to that provider only.
+  provider: z.enum(["all", "aws", "azure", "gcp"]).optional(),
 });
 
 export type AiQueryRequest = z.infer<typeof aiQueryRequestSchema>;

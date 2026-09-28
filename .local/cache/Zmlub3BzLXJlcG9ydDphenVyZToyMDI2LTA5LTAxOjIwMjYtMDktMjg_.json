@@ -1,0 +1,85 @@
+{
+  "key": "finops-report:azure:2026-09-01:2026-09-28",
+  "data": {
+    "provider": "azure",
+    "generatedAt": "2026-09-28T08:25:12.710Z",
+    "dateRange": {
+      "start": "2026-09-01",
+      "end": "2026-09-28"
+    },
+    "spendOverview": {
+      "totalSpendMTD": 0,
+      "forecastMonthEnd": 0,
+      "daysIntoMonth": 28,
+      "daysInMonth": 30,
+      "budgetUnavailableReason": "Budget tracking not yet implemented for AZURE"
+    },
+    "topCostDrivers": [],
+    "expensiveResources": [],
+    "costTrend": [
+      {
+        "month": "Apr 2026",
+        "cost": 0
+      },
+      {
+        "month": "May 2026",
+        "cost": 0
+      },
+      {
+        "month": "Jun 2026",
+        "cost": 0
+      },
+      {
+        "month": "Jul 2026",
+        "cost": 0
+      },
+      {
+        "month": "Aug 2026",
+        "cost": 0
+      },
+      {
+        "month": "Sep 2026",
+        "cost": 0
+      }
+    ],
+    "anomalies": [],
+    "wasteDetection": {
+      "idleInstances": 0,
+      "unattachedDisks": 0,
+      "lowCpuVMs": 0,
+      "potentialSaving": 0,
+      "unavailableReason": "Waste detection is not implemented for AZURE yet. Idle and underutilized resources for this provider are not assessed — this is not a finding of zero waste.",
+      "details": {
+        "idleResources": [],
+        "underutilizedResources": []
+      }
+    },
+    "utilizationData": [],
+    "optimizationOpportunities": [
+      {
+        "category": "Reserved Instances",
+        "description": "70% of compute is On-Demand. Purchase Reserved Instances or Savings Plans",
+        "monthlySavings": 0,
+        "effort": "low",
+        "impact": "high",
+        "resources": 0
+      }
+    ],
+    "departmentAllocation": [],
+    "heatmapData": {
+      "services": [],
+      "departments": [],
+      "data": []
+    },
+    "aiSpendAnalysis": {
+      "totalAISpend": 0,
+      "aiServices": [],
+      "aiPercentageOfTotal": 0,
+      "topAIService": "None",
+      "monthOverMonthChange": 0
+    },
+    "degradedSections": []
+  },
+  "timestamp": 1790583912710,
+  "expiresAt": 1790587512710
+}
