@@ -8,6 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AppSidebar } from "@/components/app-sidebar";
 import { DateRangeProvider } from "@/contexts/date-range-context";
+import { AiChatProvider } from "@/contexts/ai-chat-context";
 import { useAuth, useLogout, ROLE_LABELS } from "@/hooks/use-auth";
 import Dashboard from "@/pages/dashboard";
 import Reports from "@/pages/reports";
@@ -92,7 +93,9 @@ function App() {
       <ThemeProvider defaultTheme="dark">
         <TooltipProvider>
           <DateRangeProvider>
-            <AuthWrapper style={style} />
+            <AiChatProvider>
+              <AuthWrapper style={style} />
+            </AiChatProvider>
           </DateRangeProvider>
           <Toaster />
         </TooltipProvider>

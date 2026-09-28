@@ -62,11 +62,14 @@ export function analyzeQuery(query: string): QueryIntent {
   let action = 'analyze';
   const filters: QueryIntent['filters'] = {};
   
-  // Check for specific actions first (orphaned, idle) before generic list/show
-  if (queryLower.match(/\b(orphan|unattached|detached|not attached)\b/)) {
+  // Check for specific actions first (orphaned, idle) before generic list/show.
+  // Match inflected forms users actually type: "orphaned"/"orphans",
+  // "wasted"/"wasteful"/"wasting". A bare \borphan\b never matched "orphaned",
+  // so the canonical "show me orphaned volumes" query fell through to list.
+  if (queryLower.match(/\b(orphan\w*|unattached|detached|not attached)\b/)) {
     action = 'find-orphaned';
     filters.attached = false;
-  } else if (queryLower.match(/\b(idle|underutilized|low utilization|not used|inactive|waste|wasting)\b/)) {
+  } else if (queryLower.match(/\b(idle|underutilized|low utilization|not used|inactive|wast\w*)\b/)) {
     action = 'find-idle';
     filters.utilized = false;
   } else if (queryLower.match(/\bunused\b/)) {
@@ -97,7 +100,7 @@ export function analyzeQuery(query: string): QueryIntent {
     resourceTypes.length > 0 || 
     action === 'find-orphaned' || 
     action === 'find-idle' ||
-    queryLower.match(/\b(orphan|unattached|idle|underutilized|unused|waste)\b/) !== null;
+    queryLower.match(/\b(orphan\w*|unattached|idle|underutilized|unused|wast\w*)\b/) !== null;
   
   return {
     resourceTypes: resourceTypes.length > 0 ? resourceTypes : ['general'],
