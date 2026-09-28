@@ -1,15 +1,10 @@
-import { useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Send, Sparkles, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import type { AiTurn } from "@shared/schema";
-
-interface AiQueryInterfaceProps {
-  onQuery: (query: string, history: AiTurn[]) => Promise<{ answer: string; data?: any; success: boolean }>;
-}
+import { useAiChat } from "@/contexts/ai-chat-context";
 
 const EXAMPLE_QUERIES = [
   "What is my top cost driver?",
@@ -19,48 +14,14 @@ const EXAMPLE_QUERIES = [
   "What's the trend this month?",
 ];
 
-export function AiQueryInterface({ onQuery }: AiQueryInterfaceProps) {
-  const [query, setQuery] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [responses, setResponses] = useState<Array<{ query: string; answer: string; success: boolean }>>([]);
+export function AiQueryInterface() {
+  // Chat state lives in AiChatProvider (above the router) so an in-flight query
+  // and its answer survive navigating to another page and back.
+  const { input: query, setInput: setQuery, loading, responses, submitQuery } = useAiChat();
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!query.trim() || loading) return;
-
-    // Keep the question visible in the (disabled) input while the slow answer
-    // generates, so the user can see what they asked. It's cleared only once
-    // the response arrives.
-    const currentQuery = query;
-    setLoading(true);
-
-    // Send the last few exchanges so follow-ups ("yes", "break that down")
-    // have context. `responses` is newest-first, so reverse to oldest-first —
-    // the order the model reads the thread in.
-    const history: AiTurn[] = responses
-      .slice(0, 4)
-      .reverse()
-      .flatMap((r) => [
-        { role: "user" as const, content: r.query },
-        { role: "assistant" as const, content: r.answer },
-      ]);
-
-    try {
-      const result = await onQuery(currentQuery, history);
-      const answerText = result?.answer || "No answer received from AI";
-      setResponses((prev) => [
-        { query: currentQuery, answer: answerText, success: result?.success ?? false },
-        ...prev,
-      ]);
-      setQuery("");
-    } catch (error) {
-      setResponses((prev) => [
-        { query: currentQuery, answer: "An error occurred while processing your query.", success: false },
-        ...prev,
-      ]);
-    } finally {
-      setLoading(false);
-    }
+    void submitQuery();
   };
 
   const handleExampleClick = (exampleQuery: string) => {
