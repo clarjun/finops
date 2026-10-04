@@ -2,7 +2,7 @@
 
 An AI-powered Azure cost analysis dashboard with interactive visualizations, natural language querying, ML-based anomaly detection, and cost forecasting.
 
-# F1
+# F1 test-2
 ## ✨ Features
 
 - **Interactive Dashboard** - Real-time cost visualizations with service breakdowns and daily trends
