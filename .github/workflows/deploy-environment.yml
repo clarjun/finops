@@ -17,16 +17,27 @@
 # resolve exclusively inside a job that declares `environment:`, which is why
 # cd.yml passes `secrets: inherit` rather than forwarding them by hand.
 #
-# ── The interlock, and why it exists ────────────────────────────────────────
+# ── Why an environment must prove itself ────────────────────────────────────
 #
-# When an environment does NOT define a secret, GitHub silently falls back to
-# the repository-level one. For CONTAINER_APP_NAME that fallback is production's
-# app — so a half-configured `dev` environment would deploy dev's image over
-# production. That is the single worst thing this pipeline could do, and it
-# would look like a successful deployment.
+# When an environment does NOT define a secret, GitHub does not leave it empty —
+# it falls back to the REPOSITORY-level value, which is production's. So a
+# half-configured `dev` silently resolves to production's app and production's
+# database.
 #
-# So the caller passes production's name in as `production_app_name`, and any
-# non-production environment resolving to that same name refuses to deploy.
+# An earlier version of this file compared the resolved app name against
+# production's and refused on a match. That was not enough, and it failed in
+# exactly the way a negative check fails: it guarded the app name but not the
+# DATABASE_URL, so a preview ran `db:migrate` against production's database and
+# applied 22 migrations before erroring. The deploy was correctly blocked; the
+# migration had already happened.
+#
+# The check is now POSITIVE. Each environment declares its own name in the
+# ENVIRONMENT_NAME variable, and nothing runs unless that matches the
+# environment being deployed. An unconfigured environment inherits the wrong
+# name — or none — and is skipped before it can touch anything.
+#
+# Production is exempt from the requirement for backwards compatibility: it IS
+# the repository-level configuration, so inheriting it is correct there.
 
 name: Deploy to an environment
 
@@ -41,17 +52,15 @@ on:
         description: 'Fully qualified image reference to deploy'
         required: true
         type: string
-      production_app_name:
+      run_migrations:
         description: >-
-          Production's Container App name, from the PRODUCTION_APP_NAME
-          repository variable. Used only to detect an environment that has not
-          defined its own CONTAINER_APP_NAME and has therefore inherited
-          production's. A variable rather than a secret because the `secrets`
-          context is not available in a reusable workflow's `with` block, and
-          an Azure resource name is not secret.
+          Whether to apply database migrations before deploying. FALSE for
+          pull request previews: a preview must never migrate a shared
+          database, and the environment it lands on may not have one of its
+          own. Only the promotion pipeline migrates.
         required: false
-        type: string
-        default: ''
+        type: boolean
+        default: true
       min_replicas:
         required: false
         type: number
@@ -98,65 +107,42 @@ jobs:
         env:
           APP_NAME: ${{ secrets.CONTAINER_APP_NAME }}
           RG: ${{ secrets.RESOURCE_GROUP }}
-          PROD_APP_NAME: ${{ inputs.production_app_name }}
+          DB_URL: ${{ secrets.DATABASE_URL }}
+          DECLARED: ${{ vars.ENVIRONMENT_NAME }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
+          skip() {
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "$1"
+            exit 0
+          }
+
+          # Production is the repository-level configuration, so inheriting it
+          # is correct there and no declaration is required.
+          if [ "$ENVIRONMENT" != "production" ]; then
+            if [ "$DECLARED" != "$ENVIRONMENT" ]; then
+              skip "::warning::Skipping '$ENVIRONMENT'. Its ENVIRONMENT_NAME variable is \
+          '${DECLARED:-unset}', not '$ENVIRONMENT' — so this environment has not been set up and \
+          every secret it reads would fall back to the repository-level value, which is \
+          PRODUCTION'S. Create the '$ENVIRONMENT' environment, set the ENVIRONMENT_NAME variable \
+          to '$ENVIRONMENT', and give it its own CONTAINER_APP_NAME and DATABASE_URL."
+            fi
+
+            # Declared, but still inheriting the database. Refusing here is the
+            # check that was missing when a preview migrated production.
+            if [ -z "$DB_URL" ]; then
+              skip "::warning::Skipping '$ENVIRONMENT': it declares itself correctly but has no \
+          DATABASE_URL of its own."
+            fi
+          fi
+
           if [ -z "$APP_NAME" ] || [ -z "$RG" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::$ENVIRONMENT is not configured (CONTAINER_APP_NAME or \
-          RESOURCE_GROUP is unset), so it was skipped. Expected until you create it."
-            exit 0
-          fi
-
-          # The interlock. A non-production environment that resolved to
-          # production's app name did not define its own secret and has
-          # inherited the repository-level one. Deploying would overwrite
-          # production while reporting success.
-          if [ "$ENVIRONMENT" != "production" ] && [ -n "$PROD_APP_NAME" ] \
-             && [ "$APP_NAME" = "$PROD_APP_NAME" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::error::REFUSING TO DEPLOY. The '$ENVIRONMENT' environment resolved \
-          CONTAINER_APP_NAME to '$APP_NAME', which is the SAME app production uses. \
-          That means '$ENVIRONMENT' has no CONTAINER_APP_NAME of its own and inherited \
-          the repository-level secret. Define CONTAINER_APP_NAME on the '$ENVIRONMENT' \
-          environment before deploying to it."
-            # Skipped, NOT failed. Failing here would halt the promotion before
-            # production — breaking a deployment that works today, purely
-            # because dev has not been created yet. The annotation above shows
-            # red in the UI; the pipeline carries on to the environments that
-            # ARE configured.
-            exit 0
-          fi
-
-          # Unarmed interlock is worth saying out loud. Silence here would read
-          # as "checked and fine" when nothing was checked.
-          if [ "$ENVIRONMENT" != "production" ] && [ -z "$PROD_APP_NAME" ]; then
-            echo "::warning::The PRODUCTION_APP_NAME repository variable is not set, \
-          so the check that '$ENVIRONMENT' is not pointing at production's app could not run."
+            skip "::warning::Skipping '$ENVIRONMENT': CONTAINER_APP_NAME or RESOURCE_GROUP is unset."
           fi
 
           echo "configured=true" >> "$GITHUB_OUTPUT"
-          echo "Deploying to $APP_NAME in $RG"
+          echo "Deploying to $APP_NAME in $RG ($ENVIRONMENT)"
 
-      # ── Azure authentication ──────────────────────────────────────────────
-      #
-      # Two paths, chosen by what is configured. OIDC is preferred and the
-      # stored secret is the fallback, so this can be adopted without a flag day
-      # and rolled back by clearing one secret.
-      #
-      # Why OIDC is worth the setup:
-      #
-      #   AZURE_CREDENTIALS is a service principal's client secret. It is a
-      #   long-lived key sitting in GitHub that grants standing access to the
-      #   subscription. It does not expire on its own, a leak is permanent until
-      #   somebody notices and rotates it, and rotating it means editing secrets
-      #   in every repository that holds a copy.
-      #
-      #   Federation stores NOTHING. The runner proves which repository, branch
-      #   and environment it is running as, Entra ID checks that against a
-      #   federated credential you defined, and issues a token good for this one
-      #   job. There is no secret to leak, and the trust is scoped to a specific
-      #   repo and environment rather than to whoever holds the key.
       - name: Choose an authentication method
         id: auth
         if: steps.gate.outputs.configured == 'true'
@@ -223,8 +209,17 @@ jobs:
         if: steps.gate.outputs.configured == 'true'
         env:
           DB_URL: ${{ secrets.DATABASE_URL }}
+          ALLOWED: ${{ inputs.run_migrations }}
         run: |
-          if [ -z "$DB_URL" ]; then
+          # Two conditions, both required. The caller must permit migrations at
+          # all — a pull request preview does not — and there must be a database
+          # to migrate. The gate above has already established that a
+          # non-production environment owns its DATABASE_URL rather than
+          # inheriting production's.
+          if [ "$ALLOWED" != "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Migrations are disabled for this deployment (preview)."
+          elif [ -z "$DB_URL" ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             echo "::warning::No DATABASE_URL for ${{ inputs.environment }}; migrations were NOT applied."
           else
