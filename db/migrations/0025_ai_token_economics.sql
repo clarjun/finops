@@ -24,6 +24,27 @@
 -- discounts, private pricing and rounding. Both numbers are useful; presenting
 -- either as the other is not.
 
+-- ── Re-runnability against a database that predates this file ───────────────
+--
+-- Every CREATE TABLE below is followed by ALTER TABLE ... ADD COLUMN IF NOT
+-- EXISTS for each of its columns. That looks redundant, and it is not.
+--
+-- `CREATE TABLE IF NOT EXISTS` is silent when the table already exists — it
+-- does not check that the existing table has the right SHAPE. On a database
+-- where these tables had been created by `drizzle-kit push` from an earlier
+-- version of the schema, the CREATE was skipped, and the first index that
+-- referenced a newer column failed with:
+--
+--     column "provider_key" does not exist
+--
+-- leaving the migration half-applied. The reconciling ALTERs make the file
+-- bring an existing table up to the expected shape rather than assuming it
+-- created it.
+--
+-- NOT NULL is dropped from the reconciling form where there is no DEFAULT: it
+-- cannot be added to a table that already has rows. The constraint still
+-- applies to a table this file creates from scratch.
+
 -- ── Providers ────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS ai_providers (
@@ -40,6 +61,15 @@ CREATE TABLE IF NOT EXISTS ai_providers (
   is_active     BOOLEAN NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Reconcile ai_providers if it already existed.
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS key VARCHAR(40);
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS display_name VARCHAR(120);
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS billing_mode VARCHAR(20);
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS usage_source VARCHAR(120);
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS docs_url TEXT;
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 INSERT INTO ai_providers (key, display_name, billing_mode, usage_source, docs_url) VALUES
   ('bedrock',      'AWS Bedrock',      'cloud',  'CloudWatch AWS/Bedrock metrics (Invocations, InputTokenCount, OutputTokenCount by ModelId)', 'https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring-runtime-metrics.html'),
@@ -74,6 +104,17 @@ CREATE TABLE IF NOT EXISTS ai_models (
   created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- Reconcile ai_models if it already existed.
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS organization_id INTEGER;
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS provider_key VARCHAR(40);
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS model_id VARCHAR(200);
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS display_name VARCHAR(200);
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS family VARCHAR(120);
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS modality VARCHAR(30)  NOT NULL DEFAULT 'text';
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS is_active BOOLEAN      NOT NULL DEFAULT TRUE;
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW();
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW();
 
 -- Two partial indexes rather than one: NULL organization_id is the global
 -- catalog, and a UNIQUE over a nullable column would let duplicate global rows
@@ -131,6 +172,25 @@ CREATE TABLE IF NOT EXISTS ai_model_pricing (
   updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- Reconcile ai_model_pricing if it already existed.
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS organization_id INTEGER;
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS provider_key VARCHAR(40);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS model_id VARCHAR(200);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS input_per_million NUMERIC(14,6);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS output_per_million NUMERIC(14,6);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS cache_read_per_million NUMERIC(14,6);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS cache_write_per_million NUMERIC(14,6);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS per_call_cost NUMERIC(14,8);
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS currency VARCHAR(10)  NOT NULL DEFAULT 'USD';
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS effective_from DATE;
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS effective_to DATE;
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS source VARCHAR(20)  NOT NULL DEFAULT 'catalog';
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS source_url TEXT;
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS notes TEXT;
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS created_by INTEGER;
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW();
+ALTER TABLE ai_model_pricing ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW();
+
 CREATE INDEX IF NOT EXISTS ai_model_pricing_lookup_idx
   ON ai_model_pricing (provider_key, model_id, effective_from DESC);
 CREATE INDEX IF NOT EXISTS ai_model_pricing_org_idx
@@ -186,6 +246,25 @@ CREATE TABLE IF NOT EXISTS ai_usage_records (
   ingested_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
+-- Reconcile ai_usage_records if it already existed.
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS organization_id INTEGER      NOT NULL DEFAULT 1;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS provider_key VARCHAR(40);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS model_id VARCHAR(200);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS period_end TIMESTAMPTZ;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS input_tokens BIGINT       NOT NULL DEFAULT 0;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS output_tokens BIGINT       NOT NULL DEFAULT 0;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS cache_read_tokens BIGINT     NOT NULL DEFAULT 0;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS cache_write_tokens BIGINT     NOT NULL DEFAULT 0;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS inference_calls BIGINT       NOT NULL DEFAULT 0;
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS account_id VARCHAR(255);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS region VARCHAR(64);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS application VARCHAR(160);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS environment VARCHAR(60);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS source VARCHAR(40);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS source_ref VARCHAR(255);
+ALTER TABLE ai_usage_records ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMPTZ  NOT NULL DEFAULT NOW();
+
 -- Re-ingesting a window must correct rows, not duplicate them. Every adapter
 -- re-reads recent periods because providers restate: CloudWatch backfills and
 -- usage APIs settle.
@@ -231,6 +310,23 @@ CREATE TABLE IF NOT EXISTS ai_spend_records (
 
   computed_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- Reconcile ai_spend_records if it already existed.
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS organization_id INTEGER      NOT NULL DEFAULT 1;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS usage_record_id BIGINT;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS provider_key VARCHAR(40);
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS model_id VARCHAR(200);
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS period_start TIMESTAMPTZ;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS input_cost NUMERIC(20,10) NOT NULL DEFAULT 0;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS output_cost NUMERIC(20,10) NOT NULL DEFAULT 0;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS cache_cost NUMERIC(20,10) NOT NULL DEFAULT 0;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS call_cost NUMERIC(20,10) NOT NULL DEFAULT 0;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS total_cost NUMERIC(20,10) NOT NULL DEFAULT 0;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS currency VARCHAR(10)  NOT NULL DEFAULT 'USD';
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS pricing_id INTEGER;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS pricing_source VARCHAR(20);
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS unpriced_reason TEXT;
+ALTER TABLE ai_spend_records ADD COLUMN IF NOT EXISTS computed_at TIMESTAMPTZ  NOT NULL DEFAULT NOW();
 
 -- One spend row per usage row. Re-pricing updates in place.
 CREATE UNIQUE INDEX IF NOT EXISTS ai_spend_records_usage_idx

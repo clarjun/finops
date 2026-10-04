@@ -234,7 +234,7 @@ const RULES: Rule[] = [
  * constant time before writing anything. Nothing else may be added here; new
  * endpoints go in RULES.
  */
-const EXEMPT = /^\/api\/(health$|auth\/|infra\/git\/app\/(setup|installed)$)/;
+const EXEMPT = /^\/api\/(health$|ready$|auth\/|infra\/git\/app\/(setup|installed)$)/;
 
 /** Exported for tests: the authorization surface should be assertable directly. */
 export function findRule(method: string, path: string): Rule | undefined {

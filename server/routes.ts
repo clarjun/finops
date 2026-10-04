@@ -461,7 +461,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         : [detectedProvider as CloudProvider];
 
       const analyzeRecords = await fetchLiveCosts2(startDate2, endDate2, analyzeProviders);
-      let costData = processMultiCloudCosts2(analyzeRecords as any);
+      const costData = processMultiCloudCosts2(analyzeRecords as any);
       console.log(`[AI Analyze] ${analyzeRecords.length} records for ${detectedProvider}`);
 
       // Get anomaly data for comprehensive analysis
@@ -2474,7 +2474,7 @@ When answering:
       const { goal, provider, includeContext } = validation.data;
 
       // Gather context if requested
-      let context: any = { goal, provider };
+      const context: any = { goal, provider };
 
       if (includeContext) {
         const providerFilter = provider || 'all';

@@ -136,7 +136,7 @@ export function analyzeRDSService(
     ? (wasteCost / totalRDSCost) * 100
     : 0;
 
-  let details = `${idleDatabases.length} idle databases with avg CPU < 5% and < 2 connections over ${idleDatabases[0]?.period || '30 days'}.`;
+  const details = `${idleDatabases.length} idle databases with avg CPU < 5% and < 2 connections over ${idleDatabases[0]?.period || '30 days'}.`;
 
   let recommendation = '';
   if (idlePercentage > 40) {

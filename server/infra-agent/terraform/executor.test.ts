@@ -96,3 +96,32 @@ describe('host mount paths', () => {
     expect(toHostMountPath('.')).toMatch(/^([A-Za-z]:\/|\/)/);
   });
 });
+
+describe('host mount paths are platform-independent', () => {
+  // The regression CI caught on its first run. These assertions hold on Windows
+  // and on Linux; before the fix the first one passed only on Windows, because
+  // resolve() treats a drive-lettered path as relative everywhere else and
+  // prepended the working directory.
+  it('treats a drive-lettered path as absolute on any platform', () => {
+    expect(toHostMountPath('C:\\Users\\x\\y')).toBe('C:/Users/x/y');
+    expect(toHostMountPath('D:/already/forward')).toBe('D:/already/forward');
+  });
+
+  it('never prepends the working directory to a drive-lettered path', () => {
+    const out = toHostMountPath('C:\\tmp\\run-1');
+    expect(out.startsWith('C:/')).toBe(true);
+    expect(out).not.toContain(process.cwd().replace(/\\/g, '/'));
+  });
+
+  it('still resolves a genuinely relative path', () => {
+    const out = toHostMountPath('some/relative/dir');
+    expect(out).toContain('some/relative/dir');
+    expect(out.startsWith('.')).toBe(false);
+  });
+
+  it('emits no backslashes, whatever it was given', () => {
+    for (const p of ['C:\\a\\b', 'relative\\dir', '/posix/path']) {
+      expect(toHostMountPath(p)).not.toContain('\\');
+    }
+  });
+});

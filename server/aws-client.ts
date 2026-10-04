@@ -3,7 +3,7 @@ import { BudgetsClient, DescribeBudgetsCommand } from "@aws-sdk/client-budgets";
 import { getProviderCredentials, getActiveCloudAccounts } from "./cloud-config-manager";
 
 let costExplorerClient: CostExplorerClient | null = null;
-let budgetsClient: BudgetsClient | null = null;
+const budgetsClient: BudgetsClient | null = null;
 let currentCredentials: any = null;
 
 export async function initializeAWSClient() {
