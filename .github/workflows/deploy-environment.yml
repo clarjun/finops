@@ -48,10 +48,20 @@ on:
         description: 'dev | staging | production'
         required: true
         type: string
-      image:
-        description: 'Fully qualified image reference to deploy'
+      image_tag:
+        description: >-
+          The tag to deploy, normally the commit sha. Only the TAG crosses the
+          job boundary: the registry host is a secret, and GitHub redacts any
+          job output containing one — which silently turned a full image
+          reference into `***` and had Azure reject the deployment. The full
+          reference is assembled below, inside this job.
         required: true
         type: string
+      image_name:
+        description: 'Repository name within the registry'
+        required: false
+        type: string
+        default: 'finops-dashboard'
       run_migrations:
         description: >-
           Whether to apply database migrations before deploying. FALSE for
@@ -164,6 +174,14 @@ jobs:
           (OIDC) nor AZURE_CREDENTIALS."
             exit 1
           fi
+
+      - name: Assemble the image reference
+        id: image
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          # Built here rather than passed in, so the registry host never leaves
+          # this job and is never subject to output redaction.
+          echo "ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ inputs.image_name }}:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to Azure (OIDC)
         if: steps.auth.outputs.method == 'oidc'
@@ -278,7 +296,7 @@ jobs:
       - name: Create or update the Container App
         if: steps.gate.outputs.configured == 'true'
         run: |
-          IMAGE="${{ inputs.image }}"
+          IMAGE="${{ steps.image.outputs.ref }}"
           APP="${{ secrets.CONTAINER_APP_NAME }}"
           echo "Deploying $IMAGE to $APP (${{ inputs.environment }})"
 
@@ -377,7 +395,7 @@ jobs:
         if: failure() && steps.gate.outputs.configured == 'true' && steps.previous.outputs.image != ''
         run: |
           PREVIOUS="${{ steps.previous.outputs.image }}"
-          echo "::warning::${{ inputs.environment }} failed its smoke test. Rolling back to $PREVIOUS"
+          echo "::warning::${{ inputs.environment }} did not come up. Rolling back to $PREVIOUS"
 
           az containerapp update \
             --name ${{ secrets.CONTAINER_APP_NAME }} \
@@ -385,13 +403,27 @@ jobs:
             --image "$PREVIOUS" \
             --only-show-errors
 
+          # Resolved here, not read from the earlier step. That step is SKIPPED
+          # whenever the deployment failed before reaching it, so the rollback
+          # probed an empty URL, failed every time, and reported "the previous
+          # image is not healthy either" regardless of the actual state.
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || true)
+
+          if [ -z "$FQDN" ]; then
+            echo "::error::Rolled back to $PREVIOUS, but the app has no ingress hostname to verify against. Check it by hand."
+            exit 1
+          fi
+
           sleep 20
           for attempt in $(seq 1 20); do
-            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "${{ steps.url.outputs.url }}/api/ready" || echo 000)
-            [ "$CODE" = "200" ] && { echo "Rollback healthy."; exit 0; }
+            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$FQDN/api/ready" || echo 000)
+            [ "$CODE" = "200" ] && { echo "Rollback healthy at https://$FQDN"; exit 0; }
             sleep 10
           done
-          echo "::error::Rolled back, but the previous image is not healthy either. Manual intervention needed."
+          echo "::error::Rolled back, but https://$FQDN is still not ready. Manual intervention needed."
           exit 1
 
       - name: Summarise
@@ -405,12 +437,12 @@ jobs:
               echo ""
               echo "| | |"
               echo "|---|---|"
-              echo "| Image | \`${{ inputs.image }}\` |"
+              echo "| Image | \`${{ steps.image.outputs.ref }}\` |"
               echo "| URL | ${{ steps.url.outputs.url }} |"
             else
               echo "### ${{ inputs.environment }} — FAILED"
               echo ""
-              echo "Attempted \`${{ inputs.image }}\`."
+              echo "Attempted \`${{ steps.image.outputs.ref }}\`."
               echo "Previous image was \`${{ steps.previous.outputs.image }}\`."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
