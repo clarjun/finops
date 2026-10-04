@@ -177,3 +177,28 @@ describe('route policy: governance', () => {
     expect(requiredPermission('GET', '/api/governance/exemptions')).toBe('governance:read');
   });
 });
+
+describe('health and readiness probes', () => {
+  // These are reached by an orchestrator and by the deployment smoke test,
+  // neither of which carries a session. They must be exempt in BOTH the route
+  // policy and the auth guard — two separate lists, and a route allowlisted in
+  // only one is still refused by the other. That exact mismatch made the GitHub
+  // setup callback return 401 to GitHub's own redirect.
+  it('requires no permission for liveness or readiness', () => {
+    expect(requiredPermission('GET', '/api/health')).toBeNull();
+    expect(requiredPermission('GET', '/api/ready')).toBeNull();
+  });
+
+  it('does not extend the exemption to neighbouring paths', () => {
+    // requiredPermission returns null for BOTH an exempt path and a path with
+    // no rule at all, so it cannot tell them apart. findRule can: an exempt
+    // probe needs no rule, and neither does an unlisted path — but an unlisted
+    // path is refused by routePolicy's fail-closed branch rather than served.
+    //
+    // What matters here is that these neighbours are not swallowed by some
+    // broader rule that would grant them access.
+    for (const path of ['/api/health/secrets', '/api/readyz-admin', '/api/ready/all']) {
+      expect(findRule('GET', path), path).toBeUndefined();   // → denied, not allowed
+    }
+  });
+});

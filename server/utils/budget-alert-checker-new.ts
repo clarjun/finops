@@ -28,20 +28,25 @@ function getDateRangeForPeriod(period: string): { startDate: Date; endDate: Date
     case 'daily':
       startDate.setHours(0, 0, 0, 0);
       break;
-    case 'weekly':
+    // Braced: case clauses share one scope, so a bare const here is visible
+    // to every sibling case in its temporal dead zone. Reading it from another
+    // branch throws at runtime rather than failing to compile.
+    case 'weekly': {
       const dayOfWeek = endDate.getDay();
       startDate.setDate(endDate.getDate() - dayOfWeek);
       startDate.setHours(0, 0, 0, 0);
       break;
+    }
     case 'monthly':
       startDate.setDate(1);
       startDate.setHours(0, 0, 0, 0);
       break;
-    case 'quarterly':
+    case 'quarterly': {
       const quarter = Math.floor(endDate.getMonth() / 3);
       startDate.setMonth(quarter * 3, 1);
       startDate.setHours(0, 0, 0, 0);
       break;
+    }
     case 'yearly':
       startDate.setMonth(0, 1);
       startDate.setHours(0, 0, 0, 0);

@@ -1,0 +1,223 @@
+# Continuous Deployment — one branch per environment.
+#
+#   feature/*  ──PR──▶  dev      branch  ──▶  DEV environment
+#                        │ PR (promote)
+#                        ▼
+#                       staging  branch  ──▶  STAGING environment
+#                        │ PR (promote)
+#                        ▼
+#                       main     branch  ──▶  PRODUCTION   (approval)
+#
+# Promotion is a pull request from one branch to the next, so every promotion is
+# a reviewable diff: you can see exactly what is about to reach production.
+#
+# ── The property this model trades away, stated plainly ─────────────────────
+#
+# What runs in dev is commit X. Merging dev into staging creates a NEW commit —
+# the merge — and staging runs that. So each environment runs a commit that
+# never existed in the one before it. Usually immaterial; occasionally it is
+# where "but it worked in dev" comes from.
+#
+# The alternative (build once on main, promote the same image through all three)
+# avoids that but gives up the reviewable promotion diff. This repository has
+# chosen the diff.
+#
+# Mitigation, and it matters: each environment must be kept up to date with the
+# one ahead of it. A hotfix that lands on `main` alone makes production diverge
+# from staging, and staging stops being a rehearsal. Merge main back down after
+# any hotfix.
+
+name: CD
+
+on:
+  push:
+    branches: [dev, staging, main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (default: this commit)'
+        required: false
+
+# One deployment at a time PER BRANCH. Two pushes to dev may queue behind each
+# other, but a dev deployment must never wait on a production one — they touch
+# different apps and different databases.
+concurrency:
+  group: cd-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE_NAME: finops-dashboard
+  NODE_VERSION: '20'
+
+jobs:
+  # ── Which environment does this branch deploy to? ──────────────────────────
+  target:
+    name: Resolve target environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.map.outputs.environment }}
+      min_replicas: ${{ steps.map.outputs.min_replicas }}
+      max_replicas: ${{ steps.map.outputs.max_replicas }}
+    steps:
+      - name: Map branch to environment
+        id: map
+        run: |
+          case "${{ github.ref_name }}" in
+            main)    ENV=production; MIN=1; MAX=3 ;;
+            staging) ENV=staging;    MIN=1; MAX=3 ;;
+            dev)     ENV=dev;        MIN=0; MAX=1 ;;
+            *)
+              # Unreachable given the trigger, but a wrong answer here would
+              # deploy the wrong branch to production, so it refuses instead.
+              echo "::error::Branch '${{ github.ref_name }}' has no environment mapping."
+              exit 1 ;;
+          esac
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          echo "min_replicas=$MIN" >> "$GITHUB_OUTPUT"
+          echo "max_replicas=$MAX" >> "$GITHUB_OUTPUT"
+          echo "${{ github.ref_name }} -> $ENV (replicas $MIN..$MAX)"
+
+  # ── Independent re-verification ────────────────────────────────────────────
+  verify:
+    name: Verify before deploying
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Type check
+        run: npm run check
+      - name: Lint
+        run: npm run lint
+      # Repeated from CI on purpose. It costs about a minute and removes the
+      # assumption that CI ran at all — a direct push, a protection rule someone
+      # disabled, a re-run of an old workflow.
+      - name: Tests
+        run: npm test
+
+  # ── Build this branch's image ──────────────────────────────────────────────
+  docker:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    needs: [target, verify]
+    timeout-minutes: 30
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the tag
+        id: meta
+        run: |
+          TAG="${{ github.event.inputs.image_tag || github.sha }}"
+          echo "image=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Choose an authentication method
+        id: auth
+        env:
+          OIDC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          if [ -n "$OIDC_CLIENT_ID" ]; then echo "method=oidc" >> "$GITHUB_OUTPUT";
+          else echo "method=secret" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Log in to Azure (OIDC)
+        if: steps.auth.outputs.method == 'oidc'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to the registry (OIDC)
+        if: steps.auth.outputs.method == 'oidc'
+        run: |
+          ACR_NAME="${{ secrets.ACR_NAME }}"
+          [ -z "$ACR_NAME" ] && ACR_NAME=$(echo "${{ secrets.ACR_LOGIN_SERVER }}" | cut -d. -f1)
+          az acr login --name "$ACR_NAME"
+
+      - name: Log in to the registry (admin credentials)
+        if: steps.auth.outputs.method == 'secret'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          # The commit sha ties a running container back to the exact source
+          # that produced it, which makes a rollback a lookup rather than a
+          # guess. The branch tag is a convenience for "what is in dev now?".
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Publish scan
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: trivy.sarif
+          category: container-image
+
+  # ── Deploy to this branch's environment ────────────────────────────────────
+  #
+  # One call, not three. The environment comes from the branch, and
+  # deploy-environment.yml applies that environment's own secrets, migrates its
+  # own database, smoke-tests it and rolls back on failure.
+  #
+  # A required reviewer on the `production` GitHub Environment is what makes
+  # main's deployment wait for approval. That is GitHub's gate, not this file's.
+  deploy:
+    name: Deploy
+    needs: [target, docker]
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: ${{ needs.target.outputs.environment }}
+      image: ${{ needs.docker.outputs.image }}
+      min_replicas: ${{ fromJSON(needs.target.outputs.min_replicas) }}
+      max_replicas: ${{ fromJSON(needs.target.outputs.max_replicas) }}
+      # Each branch migrates its own environment's database before its own code
+      # runs against it. dev sees a schema change first, main last.
+      run_migrations: true
+    secrets: inherit
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [target, docker, deploy]
+    if: always()
+    steps:
+      - run: |
+          {
+            echo "## ${{ github.ref_name }} -> ${{ needs.target.outputs.environment }}"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Image | \`${{ needs.docker.outputs.image }}\` |"
+            echo "| Result | ${{ needs.deploy.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

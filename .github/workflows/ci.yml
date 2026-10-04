@@ -1,0 +1,201 @@
+# Continuous Integration — proves a change is safe to merge.
+#
+# Runs on every pull request into dev, staging or main. Each of those branches
+# deploys an environment, so every promotion between them is gated by the same
+# checks: a change is verified on the way into dev, again on the way into
+# staging, and again on the way into main.
+#
+# Split from deployment deliberately. CI answers "is this code correct?"; CD
+# answers "can this validated code reach its environment?". Mixing them means a
+# deployment concern — a missing Azure secret, a registry outage — can fail a
+# pull request that has nothing wrong with it.
+#
+# The gap this closes: the previous single workflow ran `npm run check` and
+# `npm run build` but never `npm test`. 840 tests existed and none of them
+# gated a merge — a change could break every test and still ship.
+
+name: CI
+
+on:
+  pull_request:
+    # Every branch that deploys an environment. A promotion PR (dev -> staging,
+    # staging -> main) is checked exactly as a feature PR into dev is.
+    branches: [dev, staging, main]
+  push:
+    branches: [dev, staging, main]
+
+# A pull request that gets three pushes in a minute should run CI once, on the
+# last one. Pushes to main are never cancelled: each commit on main must have
+# its own recorded result, because CD keys off it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege. Jobs that need more ask for it themselves.
+# Least privilege. Jobs that need more ask for it themselves.
+permissions:
+  contents: read
+
+env:
+  # Matches the Dockerfile's node:20-alpine. A different major in CI than in
+  # production means CI can pass on code the container cannot run.
+  NODE_VERSION: '20'
+
+jobs:
+  # ── Correctness ────────────────────────────────────────────────────────────
+  quality:
+    name: Type check, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      # `ci`, not `install`: it installs exactly what package-lock.json pins and
+      # fails if the lock file disagrees, so CI cannot silently test a different
+      # dependency tree than the one that was reviewed.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      # Errors fail the build; warnings do not. The rule set is deliberately
+      # small — every rule in it catches a defect rather than a style choice —
+      # so an error here is a real problem and blocking on it is honest. The
+      # 121 warnings are unused imports and dead locals, worth seeing and not
+      # worth stopping a release for.
+      - name: Lint
+        run: npm run lint
+
+      # The step that was missing. Verified to pass with no environment at all,
+      # so it needs no secrets and cannot leak any.
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Kept so the deploy can be traced back to the exact artifact CI approved.
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+
+  # ── Dependency and secret scanning ─────────────────────────────────────────
+  security:
+    name: Dependency & secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: a secret scan that only sees the tip commit misses a
+          # credential that was committed and then removed — which is exactly
+          # the case worth catching, because it is still in the history.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # REPORTING, NOT BLOCKING — on purpose, for now.
+      #
+      # The tree currently carries 3 critical and 21 high advisories in
+      # production dependencies. Failing the build on those would paint CI red
+      # on its first run, and a gate that is always red is a gate everyone
+      # learns to ignore. So the counts are published to the run summary where
+      # they are visible on every merge, and the threshold below is flipped to
+      # blocking once the backlog is worked down.
+      - name: Audit dependencies
+        id: audit
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          node -e "
+            const a = require('./audit.json').metadata.vulnerabilities;
+            const line = Object.entries(a).filter(([,v]) => v > 0)
+              .map(([k,v]) => k + ': ' + v).join(' · ') || 'none';
+            console.log('Production dependency advisories — ' + line);
+            require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+              '### Dependency advisories (production)\n\n' + line + '\n');
+            // TODO: once critical and high are at zero, fail here instead:
+            //   if (a.critical > 0 || a.high > 0) process.exit(1);
+          "
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: npm-audit-${{ github.sha }}
+          path: audit.json
+          retention-days: 30
+
+      # Blocking, unlike the advisory scan above. A committed credential is a
+      # present-tense incident rather than a backlog item, and this repository
+      # is PUBLIC — anything committed here is disclosed the moment it lands.
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Static analysis ────────────────────────────────────────────────────────
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write   # required to publish findings to the Security tab
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          # security-and-quality adds maintainability rules on top of the
+          # security pack. Worth it here: the codebase is large and the extra
+          # findings land in the Security tab rather than failing the build.
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:javascript-typescript
+
+  # ── One status to protect the branch with ──────────────────────────────────
+  #
+  # Branch protection names required checks individually, which means adding a
+  # job later silently leaves it unenforced. This gate depends on all of them,
+  # so protecting `CI / ci-passed` is enough and stays correct as jobs are added.
+  ci-passed:
+    name: ci-passed
+    runs-on: ubuntu-latest
+    needs: [quality, security, codeql]
+    if: always()
+    steps:
+      - name: Verify every job succeeded
+        run: |
+          echo "quality=${{ needs.quality.result }}"
+          echo "security=${{ needs.security.result }}"
+          echo "codeql=${{ needs.codeql.result }}"
+          if [ "${{ needs.quality.result }}" != "success" ] \
+          || [ "${{ needs.security.result }}" != "success" ] \
+          || [ "${{ needs.codeql.result }}" != "success" ]; then
+            echo "::error::One or more CI jobs did not succeed."
+            exit 1
+          fi
+          echo "All CI jobs passed."
