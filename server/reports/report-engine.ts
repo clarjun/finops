@@ -48,7 +48,7 @@ export async function generateFinOpsReport(
   const periodStartStr = periodStart.toISOString().split('T')[0];
   const periodEndStr = now.toISOString().split('T')[0];
   
-  let currentMonthData = historicalData.filter(d => {
+  const currentMonthData = historicalData.filter(d => {
     // d.date is already a string in format "YYYY-MM-DD"
     const dateStr = typeof d.date === 'string' ? d.date : new Date(d.date).toISOString().split('T')[0];
     return dateStr >= periodStartStr && dateStr <= periodEndStr;
