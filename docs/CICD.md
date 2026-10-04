@@ -152,7 +152,23 @@ whatever protection rules exist. Nothing in the YAML can fake it.
 > app name refuses to deploy, with a red annotation. It **skips** rather than
 > failing, so an unconfigured dev does not block the promotion to production.
 
-### 3c. Repository-level secrets
+### 3c. Repository-level variables
+
+**Settings → Secrets and variables → Actions → Variables**
+
+```
+PRODUCTION_APP_NAME   production's Container App name
+```
+
+A variable, not a secret, for two reasons: the `secrets` context is not
+available in a reusable workflow's `with:` block — passing one there makes the
+workflow unparseable — and an Azure resource name is not secret.
+
+It arms the interlock. Without it, a `dev` environment missing its own
+`CONTAINER_APP_NAME` could deploy over production, and the workflow says so in
+a warning rather than checking silently.
+
+### 3d. Repository-level secrets
 
 These stay at repository level, shared by all environments:
 
@@ -164,7 +180,7 @@ OPENAI_API_KEY
 RESEND_API_KEY
 ```
 
-### 3d. OIDC — removing the long-lived Azure key
+### 3e. OIDC — removing the long-lived Azure key
 
 Currently authentication uses `AZURE_CREDENTIALS`: a service principal client
 secret that grants standing access to the subscription, never expires on its

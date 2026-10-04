@@ -177,9 +177,10 @@ jobs:
     with:
       environment: dev
       image: ${{ needs.docker.outputs.image }}
-      # Read at the repository level here, where no environment is declared, so
-      # this is production's app. The callee refuses to deploy dev on top of it.
-      production_app_name: ${{ secrets.CONTAINER_APP_NAME }}
+      # A repository VARIABLE, not a secret: the `secrets` context is not
+      # available in `with`, and an Azure resource name is not secret anyway.
+      # The callee refuses to deploy dev on top of whatever this names.
+      production_app_name: ${{ vars.PRODUCTION_APP_NAME }}
       # Dev does not need to survive a node going away, and scale-to-zero is the
       # cheapest configuration that still proves the image boots and reaches its
       # database.
@@ -204,7 +205,7 @@ jobs:
     with:
       environment: staging
       image: ${{ needs.docker.outputs.image }}
-      production_app_name: ${{ secrets.CONTAINER_APP_NAME }}
+      production_app_name: ${{ vars.PRODUCTION_APP_NAME }}
       # Matches production's shape, because a staging environment configured
       # differently from production rehearses a system that does not exist.
       min_replicas: 1

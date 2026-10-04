@@ -311,8 +311,9 @@ jobs:
       image: ${{ needs.preview-build.outputs.image }}
       # The same interlock as the promotion pipeline: if `dev` has not defined
       # its own CONTAINER_APP_NAME it inherits production's, and a preview would
-      # overwrite production. It refuses rather than deploying.
-      production_app_name: ${{ secrets.CONTAINER_APP_NAME }}
+      # overwrite production. Set the PRODUCTION_APP_NAME repository variable to
+      # arm this; without it the check cannot run and says so.
+      production_app_name: ${{ vars.PRODUCTION_APP_NAME }}
       min_replicas: 0
       max_replicas: 1
     secrets: inherit

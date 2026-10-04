@@ -43,9 +43,12 @@ on:
         type: string
       production_app_name:
         description: >-
-          Production's Container App name, read at the repository level by the
-          caller. Used only to detect an environment that has not defined its
-          own CONTAINER_APP_NAME and has therefore inherited production's.
+          Production's Container App name, from the PRODUCTION_APP_NAME
+          repository variable. Used only to detect an environment that has not
+          defined its own CONTAINER_APP_NAME and has therefore inherited
+          production's. A variable rather than a secret because the `secrets`
+          context is not available in a reusable workflow's `with` block, and
+          an Azure resource name is not secret.
         required: false
         type: string
         default: ''
@@ -123,6 +126,13 @@ jobs:
             # red in the UI; the pipeline carries on to the environments that
             # ARE configured.
             exit 0
+          fi
+
+          # Unarmed interlock is worth saying out loud. Silence here would read
+          # as "checked and fine" when nothing was checked.
+          if [ "$ENVIRONMENT" != "production" ] && [ -z "$PROD_APP_NAME" ]; then
+            echo "::warning::The PRODUCTION_APP_NAME repository variable is not set, \
+          so the check that '$ENVIRONMENT' is not pointing at production's app could not run."
           fi
 
           echo "configured=true" >> "$GITHUB_OUTPUT"
