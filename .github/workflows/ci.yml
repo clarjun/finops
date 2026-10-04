@@ -1,10 +1,14 @@
 # Continuous Integration — proves a change is safe to merge.
 #
-# Split from deployment deliberately. CI answers "is this code correct?" and
-# runs on every pull request; CD answers "can this validated code reach
-# production?" and runs only after main moves. Mixing them means a deployment
-# concern (a missing Azure secret, a registry outage) can fail a pull request
-# that has nothing wrong with it.
+# Runs on every pull request into dev, staging or main. Each of those branches
+# deploys an environment, so every promotion between them is gated by the same
+# checks: a change is verified on the way into dev, again on the way into
+# staging, and again on the way into main.
+#
+# Split from deployment deliberately. CI answers "is this code correct?"; CD
+# answers "can this validated code reach its environment?". Mixing them means a
+# deployment concern — a missing Azure secret, a registry outage — can fail a
+# pull request that has nothing wrong with it.
 #
 # The gap this closes: the previous single workflow ran `npm run check` and
 # `npm run build` but never `npm test`. 840 tests existed and none of them
@@ -14,9 +18,11 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # Every branch that deploys an environment. A promotion PR (dev -> staging,
+    # staging -> main) is checked exactly as a feature PR into dev is.
+    branches: [dev, staging, main]
   push:
-    branches: [main]
+    branches: [dev, staging, main]
 
 # A pull request that gets three pushes in a minute should run CI once, on the
 # last one. Pushes to main are never cancelled: each commit on main must have
@@ -26,12 +32,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege. Jobs that need more ask for it themselves.
+# Least privilege. Jobs that need more ask for it themselves.
 permissions:
   contents: read
-  # The preview below comments the deployed URL on the pull request, and
-  # authenticates to Azure by federation rather than a stored key.
-  pull-requests: write
-  id-token: write
 
 env:
   # Matches the Dockerfile's node:20-alpine. A different major in CI than in
@@ -196,178 +199,3 @@ jobs:
             exit 1
           fi
           echo "All CI jobs passed."
-
-  # ── Preview: let a reviewer USE the change, not just read it ───────────────
-  #
-  # Everything above proves the code is correct. None of it lets anyone try the
-  # feature. These three jobs deploy the pull request to the shared dev
-  # environment and comment the URL, so a reviewer clicks a link and uses the
-  # thing before approving it.
-  #
-  # Deliberately gated on `ci-passed`: a change that fails its tests should not
-  # occupy dev, and a reviewer should never be handed a URL to a build that is
-  # known broken.
-  #
-  # Shared, not per-pull-request. Two open pull requests overwrite each other —
-  # whoever pushed last owns dev. That is the accepted cost of one environment
-  # instead of one per branch; the comment always states which commit is live so
-  # it is visible when you are looking at someone else's change.
-  #
-  # NOTE on forks: `pull_request` from a fork receives no secrets, so the deploy
-  # gates itself off and skips. That is the correct behaviour — a fork must not
-  # be able to push an image or touch the subscription — and it is why this uses
-  # `pull_request` rather than `pull_request_target`, which would run fork code
-  # with write access.
-
-  preview-build:
-    name: Build preview image
-    runs-on: ubuntu-latest
-    needs: ci-passed
-    if: github.event_name == 'pull_request'
-    timeout-minutes: 30
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-      configured: ${{ steps.gate.outputs.configured }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check the registry is configured
-        id: gate
-        env:
-          REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
-        run: |
-          if [ -z "$REGISTRY" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No ACR_LOGIN_SERVER (or this is a fork, which gets no \
-          secrets), so no preview was deployed. Review the diff and the test results."
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Resolve the tag
-        id: meta
-        if: steps.gate.outputs.configured == 'true'
-        run: |
-          # Tagged by pull request AND commit: the PR number makes it findable,
-          # the short sha makes each push its own immutable image rather than
-          # silently replacing the one a reviewer is currently looking at.
-          TAG="pr-${{ github.event.pull_request.number }}-$(git rev-parse --short HEAD)"
-          echo "image=${{ secrets.ACR_LOGIN_SERVER }}/finops-dashboard:$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Choose an authentication method
-        id: auth
-        if: steps.gate.outputs.configured == 'true'
-        env:
-          OIDC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-        run: |
-          if [ -n "$OIDC_CLIENT_ID" ]; then echo "method=oidc" >> "$GITHUB_OUTPUT";
-          else echo "method=secret" >> "$GITHUB_OUTPUT"; fi
-
-      - name: Log in to Azure (OIDC)
-        if: steps.gate.outputs.configured == 'true' && steps.auth.outputs.method == 'oidc'
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Log in to the registry (OIDC)
-        if: steps.gate.outputs.configured == 'true' && steps.auth.outputs.method == 'oidc'
-        run: |
-          ACR_NAME="${{ secrets.ACR_NAME }}"
-          [ -z "$ACR_NAME" ] && ACR_NAME=$(echo "${{ secrets.ACR_LOGIN_SERVER }}" | cut -d. -f1)
-          az acr login --name "$ACR_NAME"
-
-      - name: Log in to the registry (admin credentials)
-        if: steps.gate.outputs.configured == 'true' && steps.auth.outputs.method == 'secret'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_LOGIN_SERVER }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
-      - uses: docker/setup-buildx-action@v3
-        if: steps.gate.outputs.configured == 'true'
-
-      - name: Build and push
-        if: steps.gate.outputs.configured == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          # No `latest` here. A preview must never become the tag anything else
-          # might resolve.
-          tags: ${{ steps.meta.outputs.image }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  preview-deploy:
-    name: Deploy preview to dev
-    needs: preview-build
-    if: needs.preview-build.outputs.configured == 'true'
-    uses: ./.github/workflows/deploy-environment.yml
-    with:
-      environment: dev
-      image: ${{ needs.preview-build.outputs.image }}
-      # A pull request must never migrate a shared database. It deploys the
-      # image only; schema changes reach a database through the promotion
-      # pipeline, after merge.
-      run_migrations: false
-      min_replicas: 0
-      max_replicas: 1
-    secrets: inherit
-
-  preview-comment:
-    name: Comment the preview URL
-    runs-on: ubuntu-latest
-    needs: [preview-build, preview-deploy]
-    if: always() && github.event_name == 'pull_request'
-    steps:
-      - name: Post or update the comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const built = '${{ needs.preview-build.outputs.configured }}' === 'true';
-            const result = '${{ needs.preview-deploy.result }}';
-            const url = '${{ needs.preview-deploy.outputs.url }}';
-            const image = '${{ needs.preview-build.outputs.image }}';
-            const sha = context.payload.pull_request.head.sha.slice(0, 7);
-
-            let body;
-            if (!built) {
-              body = `### Preview not deployed\n\nNo registry is configured for this run `
-                   + `(forks receive no secrets). Review the diff and the test results.`;
-            } else if (result === 'success' && url) {
-              body = `### Preview deployed\n\n`
-                   + `**${url}**\n\n`
-                   + `Running \`${sha}\` — use it before approving.\n\n`
-                   + `| | |\n|---|---|\n| Image | \`${image}\` |\n| Environment | dev (shared) |\n\n`
-                   + `> Dev is shared across open pull requests, so another PR deploying `
-                   + `after this one will replace what is running here.`;
-            } else if (result === 'skipped') {
-              body = `### Preview skipped\n\nThe \`dev\` environment is not configured yet. `
-                   + `See [docs/CICD.md](../blob/main/docs/CICD.md) for the setup.`;
-            } else {
-              body = `### Preview failed\n\n\`${sha}\` built but did not become healthy in dev. `
-                   + `It was rolled back. See the workflow run for the smoke-test output.`;
-            }
-
-            // One comment per pull request, rewritten on each push. Appending a
-            // new one every time buries the review conversation under a stack of
-            // near-identical bot messages.
-            const marker = '<!-- cloudwise-preview -->';
-            const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-
-            const existing = (await github.rest.issues.listComments({ owner, repo, issue_number }))
-              .data.find(c => c.body?.includes(marker));
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner, repo, comment_id: existing.id, body: `${marker}\n${body}`,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner, repo, issue_number, body: `${marker}\n${body}`,
-              });
-            }

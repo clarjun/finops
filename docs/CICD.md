@@ -1,25 +1,45 @@
 # CI/CD — how it works and how to finish setting it up
 
-Three workflows. CI proves a change is safe to merge; CD promotes one build
-through dev, staging and production.
+One branch per environment. Promotion is a pull request from one branch to the
+next, so every promotion is a reviewable diff.
 
 ```
-Pull request ──▶ CI ──▶ deploy to DEV ──▶ review ──▶ merge ──▶ CD
-                 │      (preview URL             │            │
-   typecheck ────┤       commented on the PR)    │   staging ─┤
-   lint          │                               │   [approval]
-   842 tests     │                               │   production
-   npm audit     │                               │
-   gitleaks      │                               │
-   CodeQL        │                               │
+feature/*
+   | PR  -> CI
+   v
+  dev      branch  ----> DEV environment
+   | PR (promote) -> CI
+   v
+  staging  branch  ----> STAGING environment
+   | PR (promote) -> CI
+   v
+  main     branch  ----> PRODUCTION   [approval]
 ```
 
-A pull request is deployed to **dev** so a reviewer can use the change, not just
-read it. Staging and production are reached only after merge — a pull request
-must never reach production, because then the review would be happening after
-the code was already live.
+CI runs on every pull request into any of the three. CD runs on every push to
+them, deploying that branch to its own environment with its own database.
 
----
+### The property this model trades away
+
+What runs in dev is commit X. Merging dev into staging creates a NEW commit —
+the merge — and staging runs that. Each environment therefore runs a commit
+that never existed in the one before it. Usually immaterial; occasionally it is
+where "but it worked in dev" comes from.
+
+The alternative — build once, promote the same image through all three — avoids
+that, but gives up the reviewable promotion diff. This repository has chosen the
+diff.
+
+**Keep the branches in step.** A hotfix that lands on `main` alone makes
+production diverge from staging, and staging stops being a rehearsal. Merge
+`main` back down into `staging` and `dev` after any hotfix.
+
+### Why there is no pull request preview
+
+The `dev` branch is where a change is tried. A pull request preview would deploy
+to the same dev environment the dev branch owns, and the two would overwrite
+each other — an open PR replacing what dev is actually running, which is worse
+than no preview. Merge to `dev` and look at dev.
 
 ## 1. CI — `.github/workflows/ci.yml`
 
@@ -116,7 +136,17 @@ data fails — exactly the deployment worth rolling back.
 
 ## 3. Setup still required
 
-### 3a. Branch protection — do this first
+### 3a. Branches
+
+```bash
+git checkout -b dev main     && git push -u origin dev
+git checkout -b staging main && git push -u origin staging
+```
+
+`dev` and `staging` are long-lived. Feature branches target `dev`; promotion is
+a PR `dev -> staging`, then `staging -> main`.
+
+### 3b. Branch protection — do this first
 
 Nothing above is enforced until `main` is protected. Without it, anyone can push
 straight past CI.
@@ -125,10 +155,11 @@ straight past CI.
 
 - Require a pull request before merging — **1 approval**
 - Require status checks to pass — select **`ci-passed`**
+- Apply the same rule to `dev` and `staging`, so a promotion cannot skip CI
 - Require branches to be up to date before merging
 - Do not allow force pushes or deletions
 
-### 3b. Environments
+### 3c. Environments
 
 **Settings → Environments** — create `dev`, `staging`, `production`.
 
@@ -152,23 +183,11 @@ whatever protection rules exist. Nothing in the YAML can fake it.
 > app name refuses to deploy, with a red annotation. It **skips** rather than
 > failing, so an unconfigured dev does not block the promotion to production.
 
-### 3c. Repository-level variables
+### 3d. Repository-level variables
 
-**Settings → Secrets and variables → Actions → Variables**
+None required. `ENVIRONMENT_NAME` is set per environment, not here — see above.
 
-```
-PRODUCTION_APP_NAME   production's Container App name
-```
-
-A variable, not a secret, for two reasons: the `secrets` context is not
-available in a reusable workflow's `with:` block — passing one there makes the
-workflow unparseable — and an Azure resource name is not secret.
-
-It arms the interlock. Without it, a `dev` environment missing its own
-`CONTAINER_APP_NAME` could deploy over production, and the workflow says so in
-a warning rather than checking silently.
-
-### 3d. Repository-level secrets
+### 3e. Repository-level secrets
 
 These stay at repository level, shared by all environments:
 
@@ -180,7 +199,7 @@ OPENAI_API_KEY
 RESEND_API_KEY
 ```
 
-### 3e. OIDC — removing the long-lived Azure key
+### 3f. OIDC — removing the long-lived Azure key
 
 Currently authentication uses `AZURE_CREDENTIALS`: a service principal client
 secret that grants standing access to the subscription, never expires on its

@@ -1,44 +1,52 @@
-# Continuous Deployment — promotes one build through dev, staging, production.
+# Continuous Deployment — one branch per environment.
 #
-#   verify  → tests run again, so a deploy can never outrun CI
-#   docker  → ONE image is built, and that same image reaches all three
-#   dev     → deploy, migrate, smoke
-#   staging → same, only if dev passed
-#   prod    → same, only if staging passed, and only after a human approves
+#   feature/*  ──PR──▶  dev      branch  ──▶  DEV environment
+#                        │ PR (promote)
+#                        ▼
+#                       staging  branch  ──▶  STAGING environment
+#                        │ PR (promote)
+#                        ▼
+#                       main     branch  ──▶  PRODUCTION   (approval)
 #
-# The thing that makes this a promotion rather than three deployments: the image
-# is built once, in `docker`, and the same reference is passed down. If each
-# environment rebuilt from source they would be three different artifacts, and
-# testing one would say nothing about the others — which is how "it worked in
-# staging" becomes a sentence people say bitterly.
+# Promotion is a pull request from one branch to the next, so every promotion is
+# a reviewable diff: you can see exactly what is about to reach production.
 #
-# Each environment skips itself until its secrets exist, so adding this changes
-# nothing about the production deployment that works today.
+# ── The property this model trades away, stated plainly ─────────────────────
+#
+# What runs in dev is commit X. Merging dev into staging creates a NEW commit —
+# the merge — and staging runs that. So each environment runs a commit that
+# never existed in the one before it. Usually immaterial; occasionally it is
+# where "but it worked in dev" comes from.
+#
+# The alternative (build once on main, promote the same image through all three)
+# avoids that but gives up the reviewable promotion diff. This repository has
+# chosen the diff.
+#
+# Mitigation, and it matters: each environment must be kept up to date with the
+# one ahead of it. A hotfix that lands on `main` alone makes production diverge
+# from staging, and staging stops being a rehearsal. Merge main back down after
+# any hotfix.
 
 name: CD
 
 on:
   push:
-    branches: [main]
+    branches: [dev, staging, main]
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Image tag to promote (default: this commit)'
-        required: false
-      only:
-        description: 'Deploy just one environment: dev | staging | production'
+        description: 'Image tag to deploy (default: this commit)'
         required: false
 
-# One promotion at a time, never cancelled midway. Two concurrent
-# `containerapp update` calls race each other, and a cancelled migration leaves
-# a schema in a state nobody recorded.
+# One deployment at a time PER BRANCH. Two pushes to dev may queue behind each
+# other, but a dev deployment must never wait on a production one — they touch
+# different apps and different databases.
 concurrency:
-  group: cd-promotion
+  group: cd-${{ github.ref_name }}
   cancel-in-progress: false
 
 permissions:
   contents: read
-  # For the OIDC path in the docker job; see the login steps there.
   id-token: write
 
 env:
@@ -46,6 +54,33 @@ env:
   NODE_VERSION: '20'
 
 jobs:
+  # ── Which environment does this branch deploy to? ──────────────────────────
+  target:
+    name: Resolve target environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.map.outputs.environment }}
+      min_replicas: ${{ steps.map.outputs.min_replicas }}
+      max_replicas: ${{ steps.map.outputs.max_replicas }}
+    steps:
+      - name: Map branch to environment
+        id: map
+        run: |
+          case "${{ github.ref_name }}" in
+            main)    ENV=production; MIN=1; MAX=3 ;;
+            staging) ENV=staging;    MIN=1; MAX=3 ;;
+            dev)     ENV=dev;        MIN=0; MAX=1 ;;
+            *)
+              # Unreachable given the trigger, but a wrong answer here would
+              # deploy the wrong branch to production, so it refuses instead.
+              echo "::error::Branch '${{ github.ref_name }}' has no environment mapping."
+              exit 1 ;;
+          esac
+          echo "environment=$ENV" >> "$GITHUB_OUTPUT"
+          echo "min_replicas=$MIN" >> "$GITHUB_OUTPUT"
+          echo "max_replicas=$MAX" >> "$GITHUB_OUTPUT"
+          echo "${{ github.ref_name }} -> $ENV (replicas $MIN..$MAX)"
+
   # ── Independent re-verification ────────────────────────────────────────────
   verify:
     name: Verify before deploying
@@ -62,17 +97,17 @@ jobs:
         run: npm run check
       - name: Lint
         run: npm run lint
-      # Deliberately repeated from CI. It costs about a minute and removes the
-      # assumption that CI ran at all — a direct push to main, a protection rule
-      # someone disabled, a re-run of an old workflow.
+      # Repeated from CI on purpose. It costs about a minute and removes the
+      # assumption that CI ran at all — a direct push, a protection rule someone
+      # disabled, a re-run of an old workflow.
       - name: Tests
         run: npm test
 
-  # ── Build the one artifact that gets promoted ──────────────────────────────
+  # ── Build this branch's image ──────────────────────────────────────────────
   docker:
     name: Build & push image
     runs-on: ubuntu-latest
-    needs: verify
+    needs: [target, verify]
     timeout-minutes: 30
     outputs:
       image: ${{ steps.meta.outputs.image }}
@@ -85,22 +120,13 @@ jobs:
           TAG="${{ github.event.inputs.image_tag || github.sha }}"
           echo "image=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$TAG" >> "$GITHUB_OUTPUT"
 
-      # ── Registry authentication ───────────────────────────────────────────
-      #
-      # Same two paths as the deployment. `az acr login` exchanges the Azure CLI
-      # session for a short-lived registry token, so the OIDC path never handles
-      # an admin password — which also means ACR's admin account can be disabled
-      # once the fallback is retired.
       - name: Choose an authentication method
         id: auth
         env:
           OIDC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
-          if [ -n "$OIDC_CLIENT_ID" ]; then
-            echo "method=oidc" >> "$GITHUB_OUTPUT"
-          else
-            echo "method=secret" >> "$GITHUB_OUTPUT"
-          fi
+          if [ -n "$OIDC_CLIENT_ID" ]; then echo "method=oidc" >> "$GITHUB_OUTPUT";
+          else echo "method=secret" >> "$GITHUB_OUTPUT"; fi
 
       - name: Log in to Azure (OIDC)
         if: steps.auth.outputs.method == 'oidc'
@@ -113,12 +139,8 @@ jobs:
       - name: Log in to the registry (OIDC)
         if: steps.auth.outputs.method == 'oidc'
         run: |
-          # The registry NAME, not the login server: `az acr login` wants
-          # "myregistry", the login server is "myregistry.azurecr.io".
           ACR_NAME="${{ secrets.ACR_NAME }}"
-          if [ -z "$ACR_NAME" ]; then
-            ACR_NAME=$(echo "${{ secrets.ACR_LOGIN_SERVER }}" | cut -d. -f1)
-          fi
+          [ -z "$ACR_NAME" ] && ACR_NAME=$(echo "${{ secrets.ACR_LOGIN_SERVER }}" | cut -d. -f1)
           az acr login --name "$ACR_NAME"
 
       - name: Log in to the registry (admin credentials)
@@ -136,19 +158,15 @@ jobs:
         with:
           context: .
           push: true
-          # The commit sha is the identifier that matters: it ties a running
-          # container back to the exact source that produced it, which makes a
-          # rollback a lookup rather than a guess. `latest` is a convenience —
-          # nothing deploys from it.
+          # The commit sha ties a running container back to the exact source
+          # that produced it, which makes a rollback a lookup rather than a
+          # guess. The branch tag is a convenience for "what is in dev now?".
           tags: |
-            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
             ${{ steps.meta.outputs.image }}
+            ${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Scans the image we are about to run, not just the dependency tree.
-      # Reports rather than blocks, matching how CI handles the existing
-      # advisory backlog.
       - name: Scan image
         uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
@@ -165,100 +183,41 @@ jobs:
           sarif_file: trivy.sarif
           category: container-image
 
-  # ── Dev: first contact with a real environment ─────────────────────────────
-  dev:
-    name: Dev
-    needs: docker
-    if: >-
-      github.event.inputs.only == ''
-      || github.event.inputs.only == null
-      || github.event.inputs.only == 'dev'
-    uses: ./.github/workflows/deploy-environment.yml
-    with:
-      environment: dev
-      image: ${{ needs.docker.outputs.image }}
-      # Dev does not need to survive a node going away, and scale-to-zero is the
-      # cheapest configuration that still proves the image boots and reaches its
-      # database.
-      min_replicas: 0
-      max_replicas: 1
-    secrets: inherit
-
-  # ── Staging: the rehearsal ─────────────────────────────────────────────────
-  staging:
-    name: Staging
-    needs: [docker, dev]
-    # `always()` because dev SKIPS ITSELF when unconfigured, and a skipped
-    # dependency skips its dependents by default — which would quietly stop the
-    # promotion before it reached anything. A dev FAILURE still stops it.
-    if: >-
-      always()
-      && needs.docker.result == 'success'
-      && needs.dev.result != 'failure'
-      && needs.dev.result != 'cancelled'
-      && (github.event.inputs.only == '' || github.event.inputs.only == null || github.event.inputs.only == 'staging')
-    uses: ./.github/workflows/deploy-environment.yml
-    with:
-      environment: staging
-      image: ${{ needs.docker.outputs.image }}
-      # Matches production's shape, because a staging environment configured
-      # differently from production rehearses a system that does not exist.
-      min_replicas: 1
-      max_replicas: 3
-    secrets: inherit
-
-  # ── Production: behind an approval ─────────────────────────────────────────
+  # ── Deploy to this branch's environment ────────────────────────────────────
   #
-  # The approval itself is a GitHub Environment protection rule on `production`,
-  # not something this file can assert. deploy-environment.yml declares
-  # `environment:`, which is what makes GitHub pause for a required reviewer.
-  production:
-    name: Production
-    needs: [docker, dev, staging]
-    if: >-
-      always()
-      && needs.docker.result == 'success'
-      && needs.dev.result != 'failure'
-      && needs.staging.result != 'failure'
-      && needs.dev.result != 'cancelled'
-      && needs.staging.result != 'cancelled'
-      && (github.event.inputs.only == '' || github.event.inputs.only == null || github.event.inputs.only == 'production')
+  # One call, not three. The environment comes from the branch, and
+  # deploy-environment.yml applies that environment's own secrets, migrates its
+  # own database, smoke-tests it and rolls back on failure.
+  #
+  # A required reviewer on the `production` GitHub Environment is what makes
+  # main's deployment wait for approval. That is GitHub's gate, not this file's.
+  deploy:
+    name: Deploy
+    needs: [target, docker]
     uses: ./.github/workflows/deploy-environment.yml
     with:
-      environment: production
+      environment: ${{ needs.target.outputs.environment }}
       image: ${{ needs.docker.outputs.image }}
-      # No interlock for production: the repository-level CONTAINER_APP_NAME is
-      # exactly what it should use, which keeps today's deployment unchanged.
-      min_replicas: 1
-      max_replicas: 3
+      min_replicas: ${{ fromJSON(needs.target.outputs.min_replicas) }}
+      max_replicas: ${{ fromJSON(needs.target.outputs.max_replicas) }}
+      # Each branch migrates its own environment's database before its own code
+      # runs against it. dev sees a schema change first, main last.
+      run_migrations: true
     secrets: inherit
 
-  # ── What happened, in one place ────────────────────────────────────────────
   summary:
-    name: Promotion summary
+    name: Summary
     runs-on: ubuntu-latest
-    needs: [docker, dev, staging, production]
+    needs: [target, docker, deploy]
     if: always()
     steps:
-      - name: Write the summary
-        run: |
-          status() {
-            case "$1" in
-              success)   echo "deployed" ;;
-              skipped)   echo "skipped (not configured)" ;;
-              failure)   echo "**FAILED**" ;;
-              cancelled) echo "cancelled" ;;
-              *)         echo "$1" ;;
-            esac
-          }
+      - run: |
           {
-            echo "## Promotion of \`${{ github.sha }}\`"
+            echo "## ${{ github.ref_name }} -> ${{ needs.target.outputs.environment }}"
             echo ""
-            echo "Image: \`${{ needs.docker.outputs.image }}\`"
-            echo ""
-            echo "| Environment | Result |"
+            echo "| | |"
             echo "|---|---|"
-            echo "| Dev | $(status '${{ needs.dev.result }}') |"
-            echo "| Staging | $(status '${{ needs.staging.result }}') |"
-            echo "| Production | $(status '${{ needs.production.result }}') |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Image | \`${{ needs.docker.outputs.image }}\` |"
+            echo "| Result | ${{ needs.deploy.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
