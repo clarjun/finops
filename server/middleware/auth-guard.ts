@@ -11,6 +11,7 @@
  */
 import type { Express, Request, Response, NextFunction } from "express";
 import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import { db } from "../db";
 import { users, organizations } from "@shared/schema";
 import { runWithTenant } from "../tenant-context";
@@ -37,6 +38,7 @@ declare module 'express-session' {
  */
 const PUBLIC_PATHS: Array<RegExp> = [
   /^\/api\/health$/,
+  /^\/api\/ready$/,
   /^\/api\/auth\/login$/,
   /^\/api\/auth\/logout$/,
   /^\/api\/auth\/me$/,   // returns 401 itself, so the client can probe cheaply
@@ -164,6 +166,42 @@ export function requirePlatformAdmin(req: Request, res: Response, next: NextFunc
  * middleware only applies to routes added after it.
  */
 export function installAuthGuard(app: Express) {
+  // ── Liveness ───────────────────────────────────────────────────────────────
+  //
+  // "Is this process running?" — nothing more. It must not touch the database:
+  // an orchestrator uses liveness to decide whether to RESTART a container, and
+  // a liveness probe that fails when the database is briefly unreachable turns
+  // a database blip into a restart loop that makes the outage worse.
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+
+  // ── Readiness ──────────────────────────────────────────────────────────────
+  //
+  // "Can this process actually serve a request?" — which means its dependencies
+  // have to answer. Separate from liveness because the right response differs:
+  // not ready means take me out of the load balancer, not kill me.
+  //
+  // This is what a deployment smoke test should check. A 200 from /api/health
+  // only proves node started; the container can be happily serving while every
+  // request that needs data fails, which is precisely the deployment you want
+  // to roll back.
+  app.get('/api/ready', async (_req, res) => {
+    const started = Date.now();
+    try {
+      // Cheapest possible round trip that proves the pool can hand out a
+      // working connection. Anything heavier turns the probe into load.
+      await db.execute(sql`SELECT 1`);
+      res.json({ status: 'ready', database: 'ok', checkedInMs: Date.now() - started });
+    } catch (err: any) {
+      // 503, not 500: this is "not ready yet", which is a normal state during a
+      // rollout and a retryable one for whatever is probing.
+      //
+      // The message is deliberately not echoed back. A connection failure from
+      // node-postgres can carry the host, port and user from the connection
+      // string, and this endpoint is unauthenticated.
+      console.error('[Readiness] Database check failed:', err?.message ?? err);
+      res.status(503).json({ status: 'not_ready', database: 'unreachable' });
+    }
+  });
+
   app.use(authGuard);
 }

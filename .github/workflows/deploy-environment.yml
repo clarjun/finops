@@ -1,0 +1,448 @@
+# One environment's deployment, called three times by cd.yml.
+#
+# A reusable workflow rather than three copies of the same 150 lines. The Azure
+# steps are fiddly — provider registration, create-or-update, URL resolution —
+# and three copies means a fix applied to production and forgotten in staging,
+# which is how staging stops resembling production and stops being a useful
+# rehearsal.
+#
+# ── How an environment is addressed ─────────────────────────────────────────
+#
+# Every secret here is read by its ORDINARY name — CONTAINER_APP_NAME,
+# DATABASE_URL, SESSION_SECRET — and GitHub resolves each to the value defined
+# on the environment this job declares. Define them once per environment and the
+# same reference picks up the right value.
+#
+# That only works here, and not in the caller: environment-scoped secrets
+# resolve exclusively inside a job that declares `environment:`, which is why
+# cd.yml passes `secrets: inherit` rather than forwarding them by hand.
+#
+# ── Why an environment must prove itself ────────────────────────────────────
+#
+# When an environment does NOT define a secret, GitHub does not leave it empty —
+# it falls back to the REPOSITORY-level value, which is production's. So a
+# half-configured `dev` silently resolves to production's app and production's
+# database.
+#
+# An earlier version of this file compared the resolved app name against
+# production's and refused on a match. That was not enough, and it failed in
+# exactly the way a negative check fails: it guarded the app name but not the
+# DATABASE_URL, so a preview ran `db:migrate` against production's database and
+# applied 22 migrations before erroring. The deploy was correctly blocked; the
+# migration had already happened.
+#
+# The check is now POSITIVE. Each environment declares its own name in the
+# ENVIRONMENT_NAME variable, and nothing runs unless that matches the
+# environment being deployed. An unconfigured environment inherits the wrong
+# name — or none — and is skipped before it can touch anything.
+#
+# Production is exempt from the requirement for backwards compatibility: it IS
+# the repository-level configuration, so inheriting it is correct there.
+
+name: Deploy to an environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'dev | staging | production'
+        required: true
+        type: string
+      image_tag:
+        description: >-
+          The tag to deploy, normally the commit sha. Only the TAG crosses the
+          job boundary: the registry host is a secret, and GitHub redacts any
+          job output containing one — which silently turned a full image
+          reference into `***` and had Azure reject the deployment. The full
+          reference is assembled below, inside this job.
+        required: true
+        type: string
+      image_name:
+        description: 'Repository name within the registry'
+        required: false
+        type: string
+        default: 'finops-dashboard'
+      run_migrations:
+        description: >-
+          Whether to apply database migrations before deploying. FALSE for
+          pull request previews: a preview must never migrate a shared
+          database, and the environment it lands on may not have one of its
+          own. Only the promotion pipeline migrates.
+        required: false
+        type: boolean
+        default: true
+      min_replicas:
+        required: false
+        type: number
+        default: 1
+      max_replicas:
+        required: false
+        type: number
+        default: 3
+    outputs:
+      url:
+        description: 'Public URL of the deployed environment'
+        value: ${{ jobs.deploy.outputs.url }}
+      deployed:
+        description: 'false when the environment is not configured and was skipped'
+        value: ${{ jobs.deploy.outputs.deployed }}
+
+permissions:
+  contents: read
+  # Required for workload identity federation: without it the runner cannot
+  # request the OIDC token Azure exchanges for a session. Harmless when the
+  # secret-based fallback is in use — an unused token is never minted.
+  id-token: write
+
+jobs:
+  deploy:
+    name: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    # Declaring the environment is what makes GitHub resolve environment-scoped
+    # secrets AND apply that environment's protection rules. A required reviewer
+    # configured on `production` pauses the run here until someone approves —
+    # the approval gate is GitHub's, not something this file can fake.
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ steps.url.outputs.url }}
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+      deployed: ${{ steps.gate.outputs.configured }}
+
+    steps:
+      # ── Is this environment set up at all? ────────────────────────────────
+      - name: Check the environment is configured
+        id: gate
+        env:
+          APP_NAME: ${{ secrets.CONTAINER_APP_NAME }}
+          RG: ${{ secrets.RESOURCE_GROUP }}
+          DB_URL: ${{ secrets.DATABASE_URL }}
+          DECLARED: ${{ vars.ENVIRONMENT_NAME }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          skip() {
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "$1"
+            exit 0
+          }
+
+          # Production is the repository-level configuration, so inheriting it
+          # is correct there and no declaration is required.
+          if [ "$ENVIRONMENT" != "production" ]; then
+            if [ "$DECLARED" != "$ENVIRONMENT" ]; then
+              skip "::warning::Skipping '$ENVIRONMENT'. Its ENVIRONMENT_NAME variable is \
+          '${DECLARED:-unset}', not '$ENVIRONMENT' — so this environment has not been set up and \
+          every secret it reads would fall back to the repository-level value, which is \
+          PRODUCTION'S. Create the '$ENVIRONMENT' environment, set the ENVIRONMENT_NAME variable \
+          to '$ENVIRONMENT', and give it its own CONTAINER_APP_NAME and DATABASE_URL."
+            fi
+
+            # Declared, but still inheriting the database. Refusing here is the
+            # check that was missing when a preview migrated production.
+            if [ -z "$DB_URL" ]; then
+              skip "::warning::Skipping '$ENVIRONMENT': it declares itself correctly but has no \
+          DATABASE_URL of its own."
+            fi
+          fi
+
+          if [ -z "$APP_NAME" ] || [ -z "$RG" ]; then
+            skip "::warning::Skipping '$ENVIRONMENT': CONTAINER_APP_NAME or RESOURCE_GROUP is unset."
+          fi
+
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+          echo "Deploying to $APP_NAME in $RG ($ENVIRONMENT)"
+
+      - name: Choose an authentication method
+        id: auth
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          OIDC_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          LEGACY_CREDS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          if [ -n "$OIDC_CLIENT_ID" ]; then
+            echo "method=oidc" >> "$GITHUB_OUTPUT"
+            echo "Authenticating with workload identity federation (no stored secret)."
+          elif [ -n "$LEGACY_CREDS" ]; then
+            echo "method=secret" >> "$GITHUB_OUTPUT"
+            echo "::warning::Authenticating with the stored AZURE_CREDENTIALS service \
+          principal secret. Set AZURE_CLIENT_ID, AZURE_TENANT_ID and \
+          AZURE_SUBSCRIPTION_ID to switch to OIDC and remove the long-lived key."
+          else
+            echo "method=none" >> "$GITHUB_OUTPUT"
+            echo "::error::No Azure credentials configured — neither AZURE_CLIENT_ID \
+          (OIDC) nor AZURE_CREDENTIALS."
+            exit 1
+          fi
+
+      - name: Assemble the image reference
+        id: image
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          # Built here rather than passed in, so the registry host never leaves
+          # this job and is never subject to output redaction.
+          echo "ref=${{ secrets.ACR_LOGIN_SERVER }}/${{ inputs.image_name }}:${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Azure (OIDC)
+        if: steps.auth.outputs.method == 'oidc'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure (stored service principal)
+        if: steps.auth.outputs.method == 'secret'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Install containerapp CLI extension
+        if: steps.gate.outputs.configured == 'true'
+        run: az extension add --name containerapp --upgrade -y
+
+      # ── Schema before code, per environment ───────────────────────────────
+      #
+      # Each environment migrates its OWN database, because DATABASE_URL is an
+      # environment secret. Running production's migrations against production
+      # only after they have already run against dev and staging is the entire
+      # point of having the three.
+      - name: Check out (for migrations)
+        if: steps.gate.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: steps.gate.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.gate.outputs.configured == 'true'
+        run: npm ci
+
+      - name: Migration gate
+        id: migrations
+        if: steps.gate.outputs.configured == 'true'
+        env:
+          DB_URL: ${{ secrets.DATABASE_URL }}
+          ALLOWED: ${{ inputs.run_migrations }}
+        run: |
+          # Two conditions, both required. The caller must permit migrations at
+          # all — a pull request preview does not — and there must be a database
+          # to migrate. The gate above has already established that a
+          # non-production environment owns its DATABASE_URL rather than
+          # inheriting production's.
+          if [ "$ALLOWED" != "true" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Migrations are disabled for this deployment (preview)."
+          elif [ -z "$DB_URL" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No DATABASE_URL for ${{ inputs.environment }}; migrations were NOT applied."
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: List pending migrations
+        if: steps.migrations.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run db:migrate -- --dry
+
+      - name: Apply migrations
+        if: steps.migrations.outputs.run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run db:migrate
+
+      # ── What is running now, so a rollback has somewhere to go ────────────
+      - name: Record the current image
+        id: previous
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          CURRENT=$(az containerapp show \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --query "properties.template.containers[0].image" -o tsv 2>/dev/null || true)
+          echo "image=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Currently running: ${CURRENT:-<nothing — first deployment>}"
+
+      - name: Ensure the Container Apps environment exists
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          az monitor log-analytics workspace create \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --workspace-name finops-logs \
+            --tags creator=arjun.rathod@cirruslabs.io \
+            --only-show-errors || true
+
+          WORKSPACE_ID=$(az monitor log-analytics workspace show \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --workspace-name finops-logs --query customerId -o tsv)
+          WORKSPACE_KEY=$(az monitor log-analytics workspace get-shared-keys \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --workspace-name finops-logs --query primarySharedKey -o tsv)
+
+          az containerapp env create \
+            --name finops-env \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --location eastus \
+            --logs-workspace-id "$WORKSPACE_ID" \
+            --logs-workspace-key "$WORKSPACE_KEY" \
+            --tags creator=arjun.rathod@cirruslabs.io \
+            --only-show-errors || true
+
+      - name: Create or update the Container App
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          IMAGE="${{ steps.image.outputs.ref }}"
+          APP="${{ secrets.CONTAINER_APP_NAME }}"
+          echo "Deploying $IMAGE to $APP (${{ inputs.environment }})"
+
+          ENV_VARS=(
+            "DATABASE_URL=${{ secrets.DATABASE_URL }}"
+            "SESSION_SECRET=${{ secrets.SESSION_SECRET }}"
+            "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
+            "RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}"
+            "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}"
+            "NODE_ENV=production"
+            "APP_ENVIRONMENT=${{ inputs.environment }}"
+            "PORT=5173"
+          )
+
+          if az containerapp show --name "$APP" \
+               --resource-group ${{ secrets.RESOURCE_GROUP }} --only-show-errors &>/dev/null; then
+            az containerapp update \
+              --name "$APP" \
+              --resource-group ${{ secrets.RESOURCE_GROUP }} \
+              --image "$IMAGE" \
+              --set-env-vars "${ENV_VARS[@]}" \
+              --only-show-errors
+          else
+            # Registry credentials are passed only on the secret path. Under
+            # OIDC there is no registry password to hand over, so the app is
+            # created with a system-assigned identity and granted AcrPull
+            # below — which is the same "no stored key" property, applied to
+            # the pull as well as the push.
+            REGISTRY_ARGS=()
+            if [ "${{ steps.auth.outputs.method }}" = "secret" ]; then
+              REGISTRY_ARGS=(
+                --registry-server ${{ secrets.ACR_LOGIN_SERVER }}
+                --registry-username ${{ secrets.ACR_USERNAME }}
+                --registry-password ${{ secrets.ACR_PASSWORD }}
+              )
+            else
+              REGISTRY_ARGS=(--system-assigned)
+            fi
+
+            az containerapp create \
+              --name "$APP" \
+              --resource-group ${{ secrets.RESOURCE_GROUP }} \
+              --environment finops-env \
+              --image "$IMAGE" \
+              "${REGISTRY_ARGS[@]}" \
+              --target-port 5173 \
+              --ingress external \
+              --min-replicas ${{ inputs.min_replicas }} \
+              --max-replicas ${{ inputs.max_replicas }} \
+              --env-vars "${ENV_VARS[@]}" \
+              --tags creator=arjun.rathod@cirruslabs.io environment=${{ inputs.environment }} \
+              --only-show-errors
+          fi
+
+      - name: Resolve the public URL
+        id: url
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      # ── Prove it, do not assume it ────────────────────────────────────────
+      - name: Smoke test
+        id: smoke
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          URL="${{ steps.url.outputs.url }}"
+          echo "Probing $URL/api/ready"
+
+          # /api/ready, not /api/health: health only proves node started, and a
+          # container can serve that happily while every request needing data
+          # fails. Readiness proves the database answers.
+          #
+          # Container Apps keeps the previous revision serving while the new one
+          # starts, so an immediate 200 may be the OLD version replying.
+          sleep 20
+
+          for attempt in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/body -m 10 -w '%{http_code}' "$URL/api/ready" || echo 000)
+            if [ "$CODE" = "200" ]; then
+              echo "ready after ${attempt} attempt(s): $(cat /tmp/body)"
+              exit 0
+            fi
+            echo "  attempt $attempt: HTTP $CODE"
+            sleep 10
+          done
+
+          echo "::error::${{ inputs.environment }} never became ready. Last body: $(cat /tmp/body 2>/dev/null)"
+          exit 1
+
+      # ── Put it back ───────────────────────────────────────────────────────
+      - name: Roll back
+        if: failure() && steps.gate.outputs.configured == 'true' && steps.previous.outputs.image != ''
+        run: |
+          PREVIOUS="${{ steps.previous.outputs.image }}"
+          echo "::warning::${{ inputs.environment }} did not come up. Rolling back to $PREVIOUS"
+
+          az containerapp update \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --image "$PREVIOUS" \
+            --only-show-errors
+
+          # Resolved here, not read from the earlier step. That step is SKIPPED
+          # whenever the deployment failed before reaching it, so the rollback
+          # probed an empty URL, failed every time, and reported "the previous
+          # image is not healthy either" regardless of the actual state.
+          FQDN=$(az containerapp show \
+            --name ${{ secrets.CONTAINER_APP_NAME }} \
+            --resource-group ${{ secrets.RESOURCE_GROUP }} \
+            --query properties.configuration.ingress.fqdn -o tsv 2>/dev/null || true)
+
+          if [ -z "$FQDN" ]; then
+            echo "::error::Rolled back to $PREVIOUS, but the app has no ingress hostname to verify against. Check it by hand."
+            exit 1
+          fi
+
+          sleep 20
+          for attempt in $(seq 1 20); do
+            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$FQDN/api/ready" || echo 000)
+            [ "$CODE" = "200" ] && { echo "Rollback healthy at https://$FQDN"; exit 0; }
+            sleep 10
+          done
+          echo "::error::Rolled back, but https://$FQDN is still not ready. Manual intervention needed."
+          exit 1
+
+      - name: Summarise
+        if: always()
+        run: |
+          {
+            if [ "${{ steps.gate.outputs.configured }}" != "true" ]; then
+              echo "### ${{ inputs.environment }} — skipped (not configured)"
+            elif [ "${{ job.status }}" = "success" ]; then
+              echo "### ${{ inputs.environment }} — deployed"
+              echo ""
+              echo "| | |"
+              echo "|---|---|"
+              echo "| Image | \`${{ steps.image.outputs.ref }}\` |"
+              echo "| URL | ${{ steps.url.outputs.url }} |"
+            else
+              echo "### ${{ inputs.environment }} — FAILED"
+              echo ""
+              echo "Attempted \`${{ steps.image.outputs.ref }}\`."
+              echo "Previous image was \`${{ steps.previous.outputs.image }}\`."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

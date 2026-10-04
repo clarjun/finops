@@ -97,7 +97,15 @@ export interface ExecOptions {
  * paths that the Docker daemon cannot mount, so convert before passing.
  */
 export function toHostMountPath(p: string): string {
-  const abs = resolve(p);
+  // A drive-lettered path is already absolute, whatever platform we run on.
+  // resolve() only knows that on Windows; on Linux it treats C:\x\y as RELATIVE
+  // and prepends the working directory, giving /home/runner/work/.../C:/x/y.
+  //
+  // Harmless in production, where every path is POSIX — but it made the result
+  // depend on the developer's operating system, which is exactly the kind of
+  // thing that passes locally and fails in CI. It did.
+  const abs = /^[A-Za-z]:[\\/]/.test(p) ? p : resolve(p);
+
   // C:\x\y -> C:/x/y. Docker Desktop accepts forward slashes on Windows.
   return abs.replace(/\\/g, '/');
 }
