@@ -32,6 +32,12 @@ RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
 
+# migrate.ts resolves its SQL as <dir of the module>/../db/migrations, which
+# from /app/dist/migrate.js is /app/db/migrations. The files have to be in the
+# image because migrations run as a Container Apps Job inside the VNet -- the
+# database has no public endpoint a CI runner could reach.
+COPY db/migrations ./db/migrations
+
 # Expose the app port
 EXPOSE 5173
 

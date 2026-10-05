@@ -229,21 +229,6 @@ jobs:
       # environment secret. Running production's migrations against production
       # only after they have already run against dev and staging is the entire
       # point of having the three.
-      - name: Check out (for migrations)
-        if: steps.gate.outputs.configured == 'true'
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        if: steps.gate.outputs.configured == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Install dependencies
-        if: steps.gate.outputs.configured == 'true'
-        run: npm ci
-
       - name: Migration gate
         id: migrations
         if: steps.gate.outputs.configured == 'true'
@@ -266,18 +251,6 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: List pending migrations
-        if: steps.migrations.outputs.run == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run db:migrate -- --dry
-
-      - name: Apply migrations
-        if: steps.migrations.outputs.run == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run db:migrate
-
       # ── What is running now, so a rollback has somewhere to go ────────────
       - name: Record the current image
         id: previous
@@ -290,30 +263,95 @@ jobs:
           echo "image=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "Currently running: ${CURRENT:-<nothing — first deployment>}"
 
-      - name: Ensure the Container Apps environment exists
+      - name: Resolve the Container Apps environment
+        id: cae
         if: steps.gate.outputs.configured == 'true'
         run: |
-          az monitor log-analytics workspace create \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --workspace-name finops-logs \
-            --tags creator=arjun.rathod@cirruslabs.io \
-            --only-show-errors || true
+          RG="${{ secrets.RESOURCE_GROUP }}"
 
-          WORKSPACE_ID=$(az monitor log-analytics workspace show \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --workspace-name finops-logs --query customerId -o tsv)
-          WORKSPACE_KEY=$(az monitor log-analytics workspace get-shared-keys \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --workspace-name finops-logs --query primarySharedKey -o tsv)
+          # Discovered from the resource group, not hardcoded. The name, region
+          # and log workspace used to be literals naming resources in a
+          # DIFFERENT resource group, so pointing RESOURCE_GROUP somewhere else
+          # left the app trying to join an environment in another region.
+          NAME=$(az containerapp env list -g "$RG" --query "[0].name" -o tsv 2>/dev/null)
 
-          az containerapp env create \
-            --name finops-env \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --location eastus \
-            --logs-workspace-id "$WORKSPACE_ID" \
-            --logs-workspace-key "$WORKSPACE_KEY" \
-            --tags creator=arjun.rathod@cirruslabs.io \
-            --only-show-errors || true
+          if [ -z "$NAME" ]; then
+            LOC=$(az group show -n "$RG" --query location -o tsv)
+            NAME="$RG-env"
+            echo "No Container Apps environment in $RG; creating $NAME in $LOC"
+            az containerapp env create --name "$NAME" --resource-group "$RG" \
+              --location "$LOC" --tags creator=arjun.rathod@cirruslabs.io \
+              --only-show-errors
+          fi
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Container Apps environment: $NAME"
+
+      - name: Apply migrations (inside the VNet)
+        if: steps.migrations.outputs.run == 'true'
+        run: |
+          RG="${{ secrets.RESOURCE_GROUP }}"
+          JOB="${{ secrets.CONTAINER_APP_NAME }}-migrate"
+          IMAGE="${{ steps.image.outputs.ref }}"
+
+          # A Container Apps Job on the same environment as the app, so it runs
+          # inside the VNet and can reach a database with no public endpoint.
+          # This is why migrations are not run from the runner.
+          #
+          # Deleted and recreated rather than updated: it is a manual-trigger
+          # job holding no state, and recreating guarantees the image, args and
+          # secret are this deployment's rather than a previous run's.
+          az containerapp job delete -n "$JOB" -g "$RG" --yes --only-show-errors >/dev/null 2>&1 || true
+
+          REGISTRY_ARGS=()
+          if [ "${{ steps.auth.outputs.method }}" = "secret" ]; then
+            REGISTRY_ARGS=(
+              --registry-server ${{ secrets.ACR_LOGIN_SERVER }}
+              --registry-username ${{ secrets.ACR_USERNAME }}
+              --registry-password ${{ secrets.ACR_PASSWORD }}
+            )
+          else
+            REGISTRY_ARGS=(--mi-system-assigned --registry-identity system)
+          fi
+
+          az containerapp job create \
+            --name "$JOB" \
+            --resource-group "$RG" \
+            --environment "${{ steps.cae.outputs.name }}" \
+            --trigger-type Manual \
+            --replica-timeout 1800 \
+            --replica-retry-limit 0 \
+            --parallelism 1 \
+            --replica-completion-count 1 \
+            --image "$IMAGE" \
+            --cpu 0.5 --memory 1Gi \
+            --command node --args "dist/migrate.js" \
+            "${REGISTRY_ARGS[@]}" \
+            --secrets "database-url=${{ secrets.DATABASE_URL }}" \
+            --env-vars "DATABASE_URL=secretref:database-url" \
+            --tags creator=arjun.rathod@cirruslabs.io environment=${{ inputs.environment }} \
+            --only-show-errors
+
+          az containerapp job start -n "$JOB" -g "$RG" --only-show-errors >/dev/null
+
+          echo "Waiting for the migration job to finish..."
+          for attempt in $(seq 1 60); do
+            STATUS=$(az containerapp job execution list -n "$JOB" -g "$RG" \
+              --query "sort_by([], &properties.startTime)[-1].properties.status" -o tsv 2>/dev/null)
+            echo "  attempt $attempt: ${STATUS:-pending}"
+            case "$STATUS" in
+              Succeeded) echo "Migrations applied."; exit 0 ;;
+              Failed|Degraded)
+                echo "::error::The migration job failed. Its output follows."
+                az containerapp job logs show -n "$JOB" -g "$RG" --container "$JOB" --tail 100 2>/dev/null || true
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          echo "::error::The migration job did not finish within 10 minutes."
+          az containerapp job logs show -n "$JOB" -g "$RG" --container "$JOB" --tail 100 2>/dev/null || true
+          exit 1
 
       - name: Create or update the Container App
         if: steps.gate.outputs.configured == 'true'
@@ -361,7 +399,7 @@ jobs:
             az containerapp create \
               --name "$APP" \
               --resource-group ${{ secrets.RESOURCE_GROUP }} \
-              --environment finops-env \
+              --environment "${{ steps.cae.outputs.name }}" \
               --image "$IMAGE" \
               "${REGISTRY_ARGS[@]}" \
               --target-port 5173 \
