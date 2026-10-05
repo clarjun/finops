@@ -316,14 +316,38 @@ jobs:
             exit 1
           fi
 
-          NAME=$(az containerapp env list -g "$RG" --query "[0].name" -o tsv)
+          # An explicit name wins. finops-rg now holds more than one Container
+          # Apps environment -- the original, and a VNet-integrated one that can
+          # reach the private database -- and taking [0] from a list would pick
+          # between them by luck. The wrong choice produces an app that starts
+          # cleanly and then cannot reach its database, which is a far more
+          # expensive failure than refusing here.
+          NAME="${{ vars.CONTAINERAPPS_ENVIRONMENT }}"
 
-          if [ -z "$NAME" ]; then
-            NAME="$RG-env"
-            echo "No Container Apps environment in $RG; creating $NAME in $LOC"
-            az containerapp env create --name "$NAME" --resource-group "$RG" \
-              --location "$LOC" --tags creator=arjun.rathod@cirruslabs.io \
-              --only-show-errors
+          if [ -n "$NAME" ]; then
+            echo "Using CONTAINERAPPS_ENVIRONMENT: $NAME"
+          else
+            COUNT=$(az containerapp env list -g "$RG" --query "length([])" -o tsv)
+
+            if [ "$COUNT" = "0" ]; then
+              NAME="$RG-env"
+              echo "No Container Apps environment in $RG; creating $NAME in $LOC"
+              az containerapp env create --name "$NAME" --resource-group "$RG" \
+                --location "$LOC" --tags creator=arjun.rathod@cirruslabs.io \
+                --only-show-errors
+            elif [ "$COUNT" = "1" ]; then
+              NAME=$(az containerapp env list -g "$RG" --query "[0].name" -o tsv)
+              echo "One environment in $RG, using it: $NAME"
+            else
+              echo "::error::$RG holds $COUNT Container Apps environments, so the target is ambiguous."
+              az containerapp env list -g "$RG" \
+                --query "[].{name:name,location:location,vnet:properties.vnetConfiguration.infrastructureSubnetId}" \
+                -o table || true
+              echo ""
+              echo "Set a CONTAINERAPPS_ENVIRONMENT variable naming the one to deploy into."
+              echo "Pick the VNet-integrated one if the database has no public endpoint."
+              exit 1
+            fi
           fi
 
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
