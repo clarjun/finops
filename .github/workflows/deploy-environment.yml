@@ -297,10 +297,28 @@ jobs:
           # and log workspace used to be literals naming resources in a
           # DIFFERENT resource group, so pointing RESOURCE_GROUP somewhere else
           # left the app trying to join an environment in another region.
-          NAME=$(az containerapp env list -g "$RG" --query "[0].name" -o tsv 2>/dev/null)
+          # Access is probed first, and stderr is NOT discarded. When the
+          # deployment identity has no role on $RG, `env list` returns an empty
+          # result that is indistinguishable from "this resource group has no
+          # environment yet" -- so the step went on to CREATE one and failed
+          # with a second, more confusing authorization error instead of naming
+          # the real problem, which is a missing role assignment.
+          if ! LOC=$(az group show -n "$RG" --query location -o tsv 2>&1); then
+            echo "::error::The deployment identity cannot read resource group '$RG'."
+            echo "$LOC"
+            echo ""
+            echo "This is almost always a missing role assignment rather than a wrong name."
+            echo "Grant the CI service principal Contributor on that resource group:"
+            echo ""
+            echo "  az role assignment create --assignee <ci-service-principal-app-id> \\"
+            echo "    --role Contributor \\"
+            echo "    --scope /subscriptions/<subscription-id>/resourceGroups/$RG"
+            exit 1
+          fi
+
+          NAME=$(az containerapp env list -g "$RG" --query "[0].name" -o tsv)
 
           if [ -z "$NAME" ]; then
-            LOC=$(az group show -n "$RG" --query location -o tsv)
             NAME="$RG-env"
             echo "No Container Apps environment in $RG; creating $NAME in $LOC"
             az containerapp env create --name "$NAME" --resource-group "$RG" \
