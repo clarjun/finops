@@ -121,17 +121,39 @@ jobs:
           DECLARED: ${{ vars.ENVIRONMENT_NAME }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          skip() {
+          # Fails the job rather than passing it. Refusing to deploy is a
+          # legitimate outcome; reporting it as a successful deployment is not,
+          # and that is what made dev and staging look like they were rehearsing
+          # production when neither had ever run a single container.
+          refuse() {
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "$1"
-            exit 0
+            {
+              echo "## $ENVIRONMENT was NOT deployed"
+              echo ""
+              echo "This environment is not set up, so nothing was deployed and nothing"
+              echo "was migrated. The deployment did not partially happen."
+              echo ""
+              echo "Create it under **Settings -> Environments -> $ENVIRONMENT** with:"
+              echo ""
+              echo "| Kind | Name | Value |"
+              echo "|---|---|---|"
+              echo "| Variable | \`ENVIRONMENT_NAME\` | \`$ENVIRONMENT\` |"
+              echo "| Secret | \`CONTAINER_APP_NAME\` | that environment's own Container App |"
+              echo "| Secret | \`RESOURCE_GROUP\` | its resource group |"
+              echo "| Secret | \`DATABASE_URL\` | **its own** database, never production's |"
+              echo ""
+              echo "Each must be the environment's OWN value. A missing environment secret"
+              echo "silently falls back to the repository-level one, which is production's."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           }
 
           # Production is the repository-level configuration, so inheriting it
           # is correct there and no declaration is required.
           if [ "$ENVIRONMENT" != "production" ]; then
             if [ "$DECLARED" != "$ENVIRONMENT" ]; then
-              skip "::warning::Skipping '$ENVIRONMENT'. Its ENVIRONMENT_NAME variable is \
+              refuse "::error::Skipping '$ENVIRONMENT'. Its ENVIRONMENT_NAME variable is \
           '${DECLARED:-unset}', not '$ENVIRONMENT' — so this environment has not been set up and \
           every secret it reads would fall back to the repository-level value, which is \
           PRODUCTION'S. Create the '$ENVIRONMENT' environment, set the ENVIRONMENT_NAME variable \
@@ -141,13 +163,13 @@ jobs:
             # Declared, but still inheriting the database. Refusing here is the
             # check that was missing when a preview migrated production.
             if [ -z "$DB_URL" ]; then
-              skip "::warning::Skipping '$ENVIRONMENT': it declares itself correctly but has no \
+              refuse "::error::Skipping '$ENVIRONMENT': it declares itself correctly but has no \
           DATABASE_URL of its own."
             fi
           fi
 
           if [ -z "$APP_NAME" ] || [ -z "$RG" ]; then
-            skip "::warning::Skipping '$ENVIRONMENT': CONTAINER_APP_NAME or RESOURCE_GROUP is unset."
+            refuse "::error::Skipping '$ENVIRONMENT': CONTAINER_APP_NAME or RESOURCE_GROUP is unset."
           fi
 
           echo "configured=true" >> "$GITHUB_OUTPUT"
@@ -477,7 +499,9 @@ jobs:
         run: |
           {
             if [ "${{ steps.gate.outputs.configured }}" != "true" ]; then
-              echo "### ${{ inputs.environment }} — skipped (not configured)"
+              # Nothing to add: the gate already wrote the full explanation and
+              # failed the job. Calling it "skipped" here understated it.
+              :
             elif [ "${{ job.status }}" = "success" ]; then
               echo "### ${{ inputs.environment }} — deployed"
               echo ""
