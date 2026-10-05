@@ -36,7 +36,7 @@ COPY --from=builder /app/dist ./dist
 # from /app/dist/migrate.js is /app/db/migrations. The files have to be in the
 # image because migrations run as a Container Apps Job inside the VNet -- the
 # database has no public endpoint a CI runner could reach.
-COPY db/migrations ./db/migrations
+COPY db ./db
 
 # Expose the app port
 EXPOSE 5173
