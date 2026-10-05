@@ -57,6 +57,14 @@ on:
           reference is assembled below, inside this job.
         required: true
         type: string
+      repo_database_fingerprint:
+        description: >-
+          Digest of the REPOSITORY-level DATABASE_URL, computed by a job that
+          declares no environment. A non-production environment whose own
+          DATABASE_URL matches this did not set one and inherited production's.
+        required: false
+        type: string
+        default: ''
       image_name:
         description: 'Repository name within the registry'
         required: false
@@ -119,6 +127,7 @@ jobs:
           RG: ${{ secrets.RESOURCE_GROUP }}
           DB_URL: ${{ secrets.DATABASE_URL }}
           DECLARED: ${{ vars.ENVIRONMENT_NAME }}
+          REPO_DB_FP: ${{ inputs.repo_database_fingerprint }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
           # Fails the job rather than passing it. Refusing to deploy is a
@@ -158,6 +167,21 @@ jobs:
           every secret it reads would fall back to the repository-level value, which is \
           PRODUCTION'S. Create the '$ENVIRONMENT' environment, set the ENVIRONMENT_NAME variable \
           to '$ENVIRONMENT', and give it its own CONTAINER_APP_NAME and DATABASE_URL."
+            fi
+
+            # Declared, and it has A database -- but is it its OWN? An
+            # environment secret falls back to the repository-level one when it
+            # is not set, so a non-empty value proves nothing. Comparing
+            # fingerprints is what distinguishes "mine" from "production's".
+            if [ -n "$DB_URL" ] && [ -n "$REPO_DB_FP" ] && [ "$REPO_DB_FP" != "none" ]; then
+              MINE=$(printf 'cloudwise-db-fingerprint:%s' "$DB_URL" | sha256sum | cut -c1-16)
+              if [ "$MINE" = "$REPO_DB_FP" ]; then
+                refuse "::error::Refusing to deploy '$ENVIRONMENT': its DATABASE_URL is \
+          byte-for-byte the REPOSITORY-level one, which is PRODUCTION'S database. The \
+          environment exists but has no DATABASE_URL of its own, and a missing environment \
+          secret silently falls back to the repository value. Set a DATABASE_URL on the \
+          '$ENVIRONMENT' environment that points at that environment's own database."
+              fi
             fi
 
             # Declared, but still inheriting the database. Refusing here is the

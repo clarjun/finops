@@ -81,6 +81,32 @@ jobs:
           echo "max_replicas=$MAX" >> "$GITHUB_OUTPUT"
           echo "${{ github.ref_name }} -> $ENV (replicas $MIN..$MAX)"
 
+  # ── What does the REPOSITORY-level DATABASE_URL point at? ──────────────────
+  #
+  # This job deliberately declares no `environment:`, so its secrets resolve at
+  # the repository level -- production's. The digest lets each environment check
+  # whether its own DATABASE_URL is really its own, or whether it fell back to
+  # this one because nobody set it.
+  baseline:
+    name: Fingerprint the repository database
+    runs-on: ubuntu-latest
+    outputs:
+      db: ${{ steps.fp.outputs.db }}
+    steps:
+      - id: fp
+        env:
+          URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "db=none" >> "$GITHUB_OUTPUT"
+          else
+            # Salted and truncated. The digest is not the secret and is not
+            # reversible to it; it only has to be comparable.
+            D=$(printf 'cloudwise-db-fingerprint:%s' "$URL" | sha256sum | cut -c1-16)
+            echo "db=$D" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Repository DATABASE_URL fingerprinted."
+
   # ── Independent re-verification ────────────────────────────────────────────
   verify:
     name: Verify before deploying
@@ -202,10 +228,11 @@ jobs:
   # main's deployment wait for approval. That is GitHub's gate, not this file's.
   deploy:
     name: Deploy
-    needs: [target, docker]
+    needs: [target, docker, baseline]
     uses: ./.github/workflows/deploy-environment.yml
     with:
       environment: ${{ needs.target.outputs.environment }}
+      repo_database_fingerprint: ${{ needs.baseline.outputs.db }}
       image_tag: ${{ needs.docker.outputs.tag }}
       image_name: finops-dashboard
       min_replicas: ${{ fromJSON(needs.target.outputs.min_replicas) }}
