@@ -20,11 +20,23 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Which commit is this? Without it, a probe cannot tell a new revision that is
+# serving from an old one that never got replaced -- the two look identical over
+# HTTP, and that ambiguity is what had a healthy production rolled back.
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
+
 # Only copy what's needed to run
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
+
+# migrate.ts resolves its SQL as <dir of the module>/../db/migrations, which
+# from /app/dist/migrate.js is /app/db/migrations. The files have to be in the
+# image because migrations run as a Container Apps Job inside the VNet -- the
+# database has no public endpoint a CI runner could reach.
+COPY db ./db
 
 # Expose the app port
 EXPOSE 5173

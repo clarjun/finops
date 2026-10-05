@@ -24,6 +24,18 @@ import pkg from "pg";
 const { Client } = pkg;
 
 const MIGRATIONS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "db", "migrations");
+const BASELINE_FILE = join(dirname(fileURLToPath(import.meta.url)), "..", "db", "baseline.sql");
+
+/**
+ * The newest migration whose effects db/baseline.sql already contains.
+ *
+ * The baseline is generated from the current schema, so applying it and then
+ * replaying history on top would fail on everything that already exists.
+ * Migrations up to and including this one are recorded as applied; anything
+ * newer still runs normally, which is why adding a migration does not require
+ * regenerating the baseline.
+ */
+const BASELINE_INCLUDES_THROUGH = "0028_github_app_credentials.sql";
 
 interface MigrationFile {
   name: string;
@@ -39,6 +51,48 @@ function loadMigrations(): MigrationFile[] {
       const sql = readFileSync(join(MIGRATIONS_DIR, name), "utf8");
       return { name, sql, checksum: createHash("sha256").update(sql).digest("hex") };
     });
+}
+
+/** True when the database has no tables of ours at all. */
+async function isEmptyDatabase(client: InstanceType<typeof Client>): Promise<boolean> {
+  const { rows } = await client.query<{ n: string }>(
+    `SELECT count(*)::text AS n
+       FROM information_schema.tables
+      WHERE table_schema = 'public'
+        AND table_name <> 'schema_migrations'`
+  );
+  return rows[0]?.n === "0";
+}
+
+/**
+ * Create the schema on a database that has none, and record the history it
+ * already represents.
+ *
+ * Only ever reached when the database is genuinely empty, so this cannot
+ * overwrite anything: an established database takes the normal path.
+ */
+async function applyBaseline(
+  client: InstanceType<typeof Client>,
+  migrations: MigrationFile[],
+): Promise<void> {
+  console.log("Empty database — applying db/baseline.sql");
+  await client.query(readFileSync(BASELINE_FILE, "utf8"));
+
+  // Zero-padded names sort lexicographically, so a string comparison is an
+  // ordering comparison here.
+  const covered = migrations.filter((m) => m.name <= BASELINE_INCLUDES_THROUGH);
+  for (const m of covered) {
+    await client.query(
+      `INSERT INTO schema_migrations (name, checksum)
+       VALUES ($1, $2) ON CONFLICT (name) DO NOTHING`,
+      [m.name, m.checksum],
+    );
+  }
+
+  console.log(
+    `Baseline applied. ${covered.length} migration(s) recorded as already present; ` +
+      `${migrations.length - covered.length} will be applied normally.`,
+  );
 }
 
 async function main() {
@@ -65,8 +119,23 @@ async function main() {
       "SELECT name, checksum FROM schema_migrations"
     );
     const applied = new Map(rows.map((r) => [r.name, r.checksum]));
-
     const migrations = loadMigrations();
+
+    // A database with no ledger AND no tables has never been set up. Replaying
+    // history from 0003 would fail immediately, because 0003 alters a table the
+    // migrations never create.
+    if (applied.size === 0 && (await isEmptyDatabase(client))) {
+      if (dryRun) {
+        console.log("Empty database: baseline would be applied, then:");
+      } else {
+        await applyBaseline(client, migrations);
+        const refreshed = await client.query<{ name: string; checksum: string }>(
+          "SELECT name, checksum FROM schema_migrations",
+        );
+        for (const r of refreshed.rows) applied.set(r.name, r.checksum);
+      }
+    }
+
     const pending = migrations.filter((m) => !applied.has(m.name));
 
     // A changed file that was already applied means someone edited history.

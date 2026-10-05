@@ -57,6 +57,14 @@ on:
           reference is assembled below, inside this job.
         required: true
         type: string
+      repo_database_fingerprint:
+        description: >-
+          Digest of the REPOSITORY-level DATABASE_URL, computed by a job that
+          declares no environment. A non-production environment whose own
+          DATABASE_URL matches this did not set one and inherited production's.
+        required: false
+        type: string
+        default: ''
       image_name:
         description: 'Repository name within the registry'
         required: false
@@ -119,35 +127,73 @@ jobs:
           RG: ${{ secrets.RESOURCE_GROUP }}
           DB_URL: ${{ secrets.DATABASE_URL }}
           DECLARED: ${{ vars.ENVIRONMENT_NAME }}
+          REPO_DB_FP: ${{ inputs.repo_database_fingerprint }}
           ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          skip() {
+          # Fails the job rather than passing it. Refusing to deploy is a
+          # legitimate outcome; reporting it as a successful deployment is not,
+          # and that is what made dev and staging look like they were rehearsing
+          # production when neither had ever run a single container.
+          refuse() {
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "$1"
-            exit 0
+            {
+              echo "## $ENVIRONMENT was NOT deployed"
+              echo ""
+              echo "This environment is not set up, so nothing was deployed and nothing"
+              echo "was migrated. The deployment did not partially happen."
+              echo ""
+              echo "Create it under **Settings -> Environments -> $ENVIRONMENT** with:"
+              echo ""
+              echo "| Kind | Name | Value |"
+              echo "|---|---|---|"
+              echo "| Variable | \`ENVIRONMENT_NAME\` | \`$ENVIRONMENT\` |"
+              echo "| Secret | \`CONTAINER_APP_NAME\` | that environment's own Container App |"
+              echo "| Secret | \`RESOURCE_GROUP\` | its resource group |"
+              echo "| Secret | \`DATABASE_URL\` | **its own** database, never production's |"
+              echo ""
+              echo "Each must be the environment's OWN value. A missing environment secret"
+              echo "silently falls back to the repository-level one, which is production's."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           }
 
           # Production is the repository-level configuration, so inheriting it
           # is correct there and no declaration is required.
           if [ "$ENVIRONMENT" != "production" ]; then
             if [ "$DECLARED" != "$ENVIRONMENT" ]; then
-              skip "::warning::Skipping '$ENVIRONMENT'. Its ENVIRONMENT_NAME variable is \
+              refuse "::error::Skipping '$ENVIRONMENT'. Its ENVIRONMENT_NAME variable is \
           '${DECLARED:-unset}', not '$ENVIRONMENT' — so this environment has not been set up and \
           every secret it reads would fall back to the repository-level value, which is \
           PRODUCTION'S. Create the '$ENVIRONMENT' environment, set the ENVIRONMENT_NAME variable \
           to '$ENVIRONMENT', and give it its own CONTAINER_APP_NAME and DATABASE_URL."
             fi
 
+            # Declared, and it has A database -- but is it its OWN? An
+            # environment secret falls back to the repository-level one when it
+            # is not set, so a non-empty value proves nothing. Comparing
+            # fingerprints is what distinguishes "mine" from "production's".
+            if [ -n "$DB_URL" ] && [ -n "$REPO_DB_FP" ] && [ "$REPO_DB_FP" != "none" ]; then
+              MINE=$(printf 'cloudwise-db-fingerprint:%s' "$DB_URL" | sha256sum | cut -c1-16)
+              if [ "$MINE" = "$REPO_DB_FP" ]; then
+                refuse "::error::Refusing to deploy '$ENVIRONMENT': its DATABASE_URL is \
+          byte-for-byte the REPOSITORY-level one, which is PRODUCTION'S database. The \
+          environment exists but has no DATABASE_URL of its own, and a missing environment \
+          secret silently falls back to the repository value. Set a DATABASE_URL on the \
+          '$ENVIRONMENT' environment that points at that environment's own database."
+              fi
+            fi
+
             # Declared, but still inheriting the database. Refusing here is the
             # check that was missing when a preview migrated production.
             if [ -z "$DB_URL" ]; then
-              skip "::warning::Skipping '$ENVIRONMENT': it declares itself correctly but has no \
+              refuse "::error::Skipping '$ENVIRONMENT': it declares itself correctly but has no \
           DATABASE_URL of its own."
             fi
           fi
 
           if [ -z "$APP_NAME" ] || [ -z "$RG" ]; then
-            skip "::warning::Skipping '$ENVIRONMENT': CONTAINER_APP_NAME or RESOURCE_GROUP is unset."
+            refuse "::error::Skipping '$ENVIRONMENT': CONTAINER_APP_NAME or RESOURCE_GROUP is unset."
           fi
 
           echo "configured=true" >> "$GITHUB_OUTPUT"
@@ -207,21 +253,6 @@ jobs:
       # environment secret. Running production's migrations against production
       # only after they have already run against dev and staging is the entire
       # point of having the three.
-      - name: Check out (for migrations)
-        if: steps.gate.outputs.configured == 'true'
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        if: steps.gate.outputs.configured == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-
-      - name: Install dependencies
-        if: steps.gate.outputs.configured == 'true'
-        run: npm ci
-
       - name: Migration gate
         id: migrations
         if: steps.gate.outputs.configured == 'true'
@@ -244,18 +275,6 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: List pending migrations
-        if: steps.migrations.outputs.run == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run db:migrate -- --dry
-
-      - name: Apply migrations
-        if: steps.migrations.outputs.run == 'true'
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run db:migrate
-
       # ── What is running now, so a rollback has somewhere to go ────────────
       - name: Record the current image
         id: previous
@@ -268,30 +287,137 @@ jobs:
           echo "image=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "Currently running: ${CURRENT:-<nothing — first deployment>}"
 
-      - name: Ensure the Container Apps environment exists
+      - name: Resolve the Container Apps environment
+        id: cae
         if: steps.gate.outputs.configured == 'true'
         run: |
-          az monitor log-analytics workspace create \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --workspace-name finops-logs \
-            --tags creator=arjun.rathod@cirruslabs.io \
-            --only-show-errors || true
+          RG="${{ secrets.RESOURCE_GROUP }}"
 
-          WORKSPACE_ID=$(az monitor log-analytics workspace show \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --workspace-name finops-logs --query customerId -o tsv)
-          WORKSPACE_KEY=$(az monitor log-analytics workspace get-shared-keys \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --workspace-name finops-logs --query primarySharedKey -o tsv)
+          # Discovered from the resource group, not hardcoded. The name, region
+          # and log workspace used to be literals naming resources in a
+          # DIFFERENT resource group, so pointing RESOURCE_GROUP somewhere else
+          # left the app trying to join an environment in another region.
+          # Access is probed first, and stderr is NOT discarded. When the
+          # deployment identity has no role on $RG, `env list` returns an empty
+          # result that is indistinguishable from "this resource group has no
+          # environment yet" -- so the step went on to CREATE one and failed
+          # with a second, more confusing authorization error instead of naming
+          # the real problem, which is a missing role assignment.
+          if ! LOC=$(az group show -n "$RG" --query location -o tsv 2>&1); then
+            echo "::error::The deployment identity cannot read resource group '$RG'."
+            echo "$LOC"
+            echo ""
+            echo "This is almost always a missing role assignment rather than a wrong name."
+            echo "Grant the CI service principal Contributor on that resource group:"
+            echo ""
+            echo "  az role assignment create --assignee <ci-service-principal-app-id> \\"
+            echo "    --role Contributor \\"
+            echo "    --scope /subscriptions/<subscription-id>/resourceGroups/$RG"
+            exit 1
+          fi
 
-          az containerapp env create \
-            --name finops-env \
-            --resource-group ${{ secrets.RESOURCE_GROUP }} \
-            --location eastus \
-            --logs-workspace-id "$WORKSPACE_ID" \
-            --logs-workspace-key "$WORKSPACE_KEY" \
-            --tags creator=arjun.rathod@cirruslabs.io \
-            --only-show-errors || true
+          # An explicit name wins. finops-rg now holds more than one Container
+          # Apps environment -- the original, and a VNet-integrated one that can
+          # reach the private database -- and taking [0] from a list would pick
+          # between them by luck. The wrong choice produces an app that starts
+          # cleanly and then cannot reach its database, which is a far more
+          # expensive failure than refusing here.
+          NAME="${{ vars.CONTAINERAPPS_ENVIRONMENT }}"
+
+          if [ -n "$NAME" ]; then
+            echo "Using CONTAINERAPPS_ENVIRONMENT: $NAME"
+          else
+            COUNT=$(az containerapp env list -g "$RG" --query "length([])" -o tsv)
+
+            if [ "$COUNT" = "0" ]; then
+              NAME="$RG-env"
+              echo "No Container Apps environment in $RG; creating $NAME in $LOC"
+              az containerapp env create --name "$NAME" --resource-group "$RG" \
+                --location "$LOC" --tags creator=arjun.rathod@cirruslabs.io \
+                --only-show-errors
+            elif [ "$COUNT" = "1" ]; then
+              NAME=$(az containerapp env list -g "$RG" --query "[0].name" -o tsv)
+              echo "One environment in $RG, using it: $NAME"
+            else
+              echo "::error::$RG holds $COUNT Container Apps environments, so the target is ambiguous."
+              az containerapp env list -g "$RG" \
+                --query "[].{name:name,location:location,vnet:properties.vnetConfiguration.infrastructureSubnetId}" \
+                -o table || true
+              echo ""
+              echo "Set a CONTAINERAPPS_ENVIRONMENT variable naming the one to deploy into."
+              echo "Pick the VNet-integrated one if the database has no public endpoint."
+              exit 1
+            fi
+          fi
+
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Container Apps environment: $NAME"
+
+      - name: Apply migrations (inside the VNet)
+        if: steps.migrations.outputs.run == 'true'
+        run: |
+          RG="${{ secrets.RESOURCE_GROUP }}"
+          JOB="${{ secrets.CONTAINER_APP_NAME }}-migrate"
+          IMAGE="${{ steps.image.outputs.ref }}"
+
+          # A Container Apps Job on the same environment as the app, so it runs
+          # inside the VNet and can reach a database with no public endpoint.
+          # This is why migrations are not run from the runner.
+          #
+          # Deleted and recreated rather than updated: it is a manual-trigger
+          # job holding no state, and recreating guarantees the image, args and
+          # secret are this deployment's rather than a previous run's.
+          az containerapp job delete -n "$JOB" -g "$RG" --yes --only-show-errors >/dev/null 2>&1 || true
+
+          REGISTRY_ARGS=()
+          if [ "${{ steps.auth.outputs.method }}" = "secret" ]; then
+            REGISTRY_ARGS=(
+              --registry-server ${{ secrets.ACR_LOGIN_SERVER }}
+              --registry-username ${{ secrets.ACR_USERNAME }}
+              --registry-password ${{ secrets.ACR_PASSWORD }}
+            )
+          else
+            REGISTRY_ARGS=(--mi-system-assigned --registry-identity system)
+          fi
+
+          az containerapp job create \
+            --name "$JOB" \
+            --resource-group "$RG" \
+            --environment "${{ steps.cae.outputs.name }}" \
+            --trigger-type Manual \
+            --replica-timeout 1800 \
+            --replica-retry-limit 0 \
+            --parallelism 1 \
+            --replica-completion-count 1 \
+            --image "$IMAGE" \
+            --cpu 0.5 --memory 1Gi \
+            --command node --args "dist/migrate.js" \
+            "${REGISTRY_ARGS[@]}" \
+            --secrets "database-url=${{ secrets.DATABASE_URL }}" \
+            --env-vars "DATABASE_URL=secretref:database-url" \
+            --tags creator=arjun.rathod@cirruslabs.io environment=${{ inputs.environment }} \
+            --only-show-errors
+
+          az containerapp job start -n "$JOB" -g "$RG" --only-show-errors >/dev/null
+
+          echo "Waiting for the migration job to finish..."
+          for attempt in $(seq 1 60); do
+            STATUS=$(az containerapp job execution list -n "$JOB" -g "$RG" \
+              --query "sort_by([], &properties.startTime)[-1].properties.status" -o tsv 2>/dev/null)
+            echo "  attempt $attempt: ${STATUS:-pending}"
+            case "$STATUS" in
+              Succeeded) echo "Migrations applied."; exit 0 ;;
+              Failed|Degraded)
+                echo "::error::The migration job failed. Its output follows."
+                az containerapp job logs show -n "$JOB" -g "$RG" --container "$JOB" --tail 100 2>/dev/null || true
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          echo "::error::The migration job did not finish within 10 minutes."
+          az containerapp job logs show -n "$JOB" -g "$RG" --container "$JOB" --tail 100 2>/dev/null || true
+          exit 1
 
       - name: Create or update the Container App
         if: steps.gate.outputs.configured == 'true'
@@ -339,7 +465,7 @@ jobs:
             az containerapp create \
               --name "$APP" \
               --resource-group ${{ secrets.RESOURCE_GROUP }} \
-              --environment finops-env \
+              --environment "${{ steps.cae.outputs.name }}" \
               --image "$IMAGE" \
               "${REGISTRY_ARGS[@]}" \
               --target-port 5173 \
@@ -362,32 +488,72 @@ jobs:
           echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
 
       # ── Prove it, do not assume it ────────────────────────────────────────
+      - name: Wait for the new revision
+        id: revision
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          APP=${{ secrets.CONTAINER_APP_NAME }}
+          RG=${{ secrets.RESOURCE_GROUP }}
+
+          # Azure is the authority on which revision is live. Probing HTTP
+          # first cannot distinguish a broken new revision from the previous one
+          # still serving, and the previous image may not even have the endpoint
+          # being probed — which is how a correct deployment reported 401 thirty
+          # times and was rolled back.
+          for attempt in $(seq 1 40); do
+            STATE=$(az containerapp revision list --name "$APP" --resource-group "$RG" \
+              --query "sort_by([?properties.active], &properties.createdTime)[-1].properties.[runningState,healthState]" \
+              -o tsv 2>/dev/null || true)
+            echo "  attempt $attempt: $STATE"
+            case "$STATE" in
+              *Running*Healthy*|*Running*None*) echo "revision is running"; exit 0 ;;
+              *Failed*|*Degraded*)
+                echo "::error::The new revision entered state '$STATE'."
+                az containerapp logs show --name "$APP" --resource-group "$RG" --tail 60 --type console 2>/dev/null || true
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          echo "::error::The new revision never started. Last state: $STATE"
+          az containerapp logs show --name "$APP" --resource-group "$RG" --tail 60 --type console 2>/dev/null || true
+          exit 1
+
       - name: Smoke test
         id: smoke
         if: steps.gate.outputs.configured == 'true'
         run: |
           URL="${{ steps.url.outputs.url }}"
-          echo "Probing $URL/api/ready"
+          WANT="${{ inputs.image_tag }}"
+          echo "Probing $URL/api/ready, expecting commit $WANT"
 
           # /api/ready, not /api/health: health only proves node started, and a
-          # container can serve that happily while every request needing data
-          # fails. Readiness proves the database answers.
+          # container serves it happily while every request needing data fails.
+          # Readiness proves the database answers.
           #
-          # Container Apps keeps the previous revision serving while the new one
-          # starts, so an immediate 200 may be the OLD version replying.
-          sleep 20
-
-          for attempt in $(seq 1 30); do
+          # And the COMMIT is compared, not just the status code. Container Apps
+          # keeps the previous revision serving until the new one is healthy, so
+          # a 200 here can come from the OLD revision and say nothing about this
+          # deployment. The commit is the only thing that proves the response
+          # came from the image just built.
+          for attempt in $(seq 1 20); do
             CODE=$(curl -s -o /tmp/body -m 10 -w '%{http_code}' "$URL/api/ready" || echo 000)
-            if [ "$CODE" = "200" ]; then
-              echo "ready after ${attempt} attempt(s): $(cat /tmp/body)"
+            GOT=$(grep -o '"commit":"[^"]*"' /tmp/body | cut -d'"' -f4)
+
+            if [ "$CODE" = "200" ] && [ "$GOT" = "$WANT" ]; then
+              echo "ready on the new revision after ${attempt} attempt(s)"
               exit 0
             fi
-            echo "  attempt $attempt: HTTP $CODE"
+
+            if [ "$CODE" = "200" ] && [ -n "$GOT" ]; then
+              echo "  attempt $attempt: healthy, but still the old revision ($GOT)"
+            else
+              echo "  attempt $attempt: HTTP $CODE ${GOT:+commit $GOT}"
+            fi
             sleep 10
           done
 
-          echo "::error::${{ inputs.environment }} never became ready. Last body: $(cat /tmp/body 2>/dev/null)"
+          echo "::error::${{ inputs.environment }} never served commit $WANT. Last: HTTP $CODE $(cat /tmp/body 2>/dev/null)"
           exit 1
 
       # ── Put it back ───────────────────────────────────────────────────────
@@ -417,13 +583,19 @@ jobs:
             exit 1
           fi
 
+          # /api/health, NOT /api/ready. The image being restored is by
+          # definition older, and may predate the readiness endpoint — as the
+          # one here did. authGuard answers every unknown /api/* path with 401,
+          # so probing readiness against an older image reports it as broken
+          # when it is serving perfectly. Liveness has existed far longer and is
+          # the right question here: did the previous version come back up?
           sleep 20
           for attempt in $(seq 1 20); do
-            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$FQDN/api/ready" || echo 000)
+            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$FQDN/api/health" || echo 000)
             [ "$CODE" = "200" ] && { echo "Rollback healthy at https://$FQDN"; exit 0; }
             sleep 10
           done
-          echo "::error::Rolled back, but https://$FQDN is still not ready. Manual intervention needed."
+          echo "::error::Rolled back to $PREVIOUS, but https://$FQDN/api/health is still not answering. Manual intervention needed."
           exit 1
 
       - name: Summarise
@@ -431,7 +603,9 @@ jobs:
         run: |
           {
             if [ "${{ steps.gate.outputs.configured }}" != "true" ]; then
-              echo "### ${{ inputs.environment }} — skipped (not configured)"
+              # Nothing to add: the gate already wrote the full explanation and
+              # failed the job. Calling it "skipped" here understated it.
+              :
             elif [ "${{ job.status }}" = "success" ]; then
               echo "### ${{ inputs.environment }} — deployed"
               echo ""
