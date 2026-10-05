@@ -110,7 +110,9 @@ jobs:
     needs: [target, verify]
     timeout-minutes: 30
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      # The TAG only. A full reference would include the registry host, which is
+      # a secret, and GitHub redacts job outputs containing secrets.
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -118,6 +120,9 @@ jobs:
         id: meta
         run: |
           TAG="${{ github.event.inputs.image_tag || github.sha }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # Also exported for the build step below, which runs in THIS job and
+          # may therefore use the secret directly.
           echo "image=${{ secrets.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Choose an authentication method
@@ -197,7 +202,8 @@ jobs:
     uses: ./.github/workflows/deploy-environment.yml
     with:
       environment: ${{ needs.target.outputs.environment }}
-      image: ${{ needs.docker.outputs.image }}
+      image_tag: ${{ needs.docker.outputs.tag }}
+      image_name: finops-dashboard
       min_replicas: ${{ fromJSON(needs.target.outputs.min_replicas) }}
       max_replicas: ${{ fromJSON(needs.target.outputs.max_replicas) }}
       # Each branch migrates its own environment's database before its own code
@@ -218,6 +224,6 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Commit | \`${{ github.sha }}\` |"
-            echo "| Image | \`${{ needs.docker.outputs.image }}\` |"
+            echo "| Tag | \`${{ needs.docker.outputs.tag }}\` |"
             echo "| Result | ${{ needs.deploy.result }} |"
           } >> "$GITHUB_STEP_SUMMARY"
