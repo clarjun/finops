@@ -163,6 +163,10 @@ jobs:
         with:
           context: .
           push: true
+          # Stamped into the image so the smoke test can confirm it reached the
+          # revision built from THIS commit.
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
           # The commit sha ties a running container back to the exact source
           # that produced it, which makes a rollback a lookup rather than a
           # guess. The branch tag is a convenience for "what is in dev now?".

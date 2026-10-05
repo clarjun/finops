@@ -190,7 +190,15 @@ export function installAuthGuard(app: Express) {
       // Cheapest possible round trip that proves the pool can hand out a
       // working connection. Anything heavier turns the probe into load.
       await db.execute(sql`SELECT 1`);
-      res.json({ status: 'ready', database: 'ok', checkedInMs: Date.now() - started });
+      // The commit is here so a deployment can verify it is talking to the
+      // revision it just shipped, rather than to the previous one that
+      // Container Apps keeps serving until the new one is healthy.
+      res.json({
+        status: 'ready',
+        database: 'ok',
+        commit: process.env.GIT_COMMIT ?? 'unknown',
+        checkedInMs: Date.now() - started,
+      });
     } catch (err: any) {
       // 503, not 500: this is "not ready yet", which is a normal state during a
       // rollout and a retryable one for whatever is probing.
@@ -199,7 +207,11 @@ export function installAuthGuard(app: Express) {
       // node-postgres can carry the host, port and user from the connection
       // string, and this endpoint is unauthenticated.
       console.error('[Readiness] Database check failed:', err?.message ?? err);
-      res.status(503).json({ status: 'not_ready', database: 'unreachable' });
+      res.status(503).json({
+        status: 'not_ready',
+        database: 'unreachable',
+        commit: process.env.GIT_COMMIT ?? 'unknown',
+      });
     }
   });
 

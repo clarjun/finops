@@ -362,32 +362,72 @@ jobs:
           echo "url=https://$FQDN" >> "$GITHUB_OUTPUT"
 
       # ── Prove it, do not assume it ────────────────────────────────────────
+      - name: Wait for the new revision
+        id: revision
+        if: steps.gate.outputs.configured == 'true'
+        run: |
+          APP=${{ secrets.CONTAINER_APP_NAME }}
+          RG=${{ secrets.RESOURCE_GROUP }}
+
+          # Azure is the authority on which revision is live. Probing HTTP
+          # first cannot distinguish a broken new revision from the previous one
+          # still serving, and the previous image may not even have the endpoint
+          # being probed — which is how a correct deployment reported 401 thirty
+          # times and was rolled back.
+          for attempt in $(seq 1 40); do
+            STATE=$(az containerapp revision list --name "$APP" --resource-group "$RG" \
+              --query "sort_by([?properties.active], &properties.createdTime)[-1].properties.[runningState,healthState]" \
+              -o tsv 2>/dev/null || true)
+            echo "  attempt $attempt: $STATE"
+            case "$STATE" in
+              *Running*Healthy*|*Running*None*) echo "revision is running"; exit 0 ;;
+              *Failed*|*Degraded*)
+                echo "::error::The new revision entered state '$STATE'."
+                az containerapp logs show --name "$APP" --resource-group "$RG" --tail 60 --type console 2>/dev/null || true
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          echo "::error::The new revision never started. Last state: $STATE"
+          az containerapp logs show --name "$APP" --resource-group "$RG" --tail 60 --type console 2>/dev/null || true
+          exit 1
+
       - name: Smoke test
         id: smoke
         if: steps.gate.outputs.configured == 'true'
         run: |
           URL="${{ steps.url.outputs.url }}"
-          echo "Probing $URL/api/ready"
+          WANT="${{ inputs.image_tag }}"
+          echo "Probing $URL/api/ready, expecting commit $WANT"
 
           # /api/ready, not /api/health: health only proves node started, and a
-          # container can serve that happily while every request needing data
-          # fails. Readiness proves the database answers.
+          # container serves it happily while every request needing data fails.
+          # Readiness proves the database answers.
           #
-          # Container Apps keeps the previous revision serving while the new one
-          # starts, so an immediate 200 may be the OLD version replying.
-          sleep 20
-
-          for attempt in $(seq 1 30); do
+          # And the COMMIT is compared, not just the status code. Container Apps
+          # keeps the previous revision serving until the new one is healthy, so
+          # a 200 here can come from the OLD revision and say nothing about this
+          # deployment. The commit is the only thing that proves the response
+          # came from the image just built.
+          for attempt in $(seq 1 20); do
             CODE=$(curl -s -o /tmp/body -m 10 -w '%{http_code}' "$URL/api/ready" || echo 000)
-            if [ "$CODE" = "200" ]; then
-              echo "ready after ${attempt} attempt(s): $(cat /tmp/body)"
+            GOT=$(grep -o '"commit":"[^"]*"' /tmp/body | cut -d'"' -f4)
+
+            if [ "$CODE" = "200" ] && [ "$GOT" = "$WANT" ]; then
+              echo "ready on the new revision after ${attempt} attempt(s)"
               exit 0
             fi
-            echo "  attempt $attempt: HTTP $CODE"
+
+            if [ "$CODE" = "200" ] && [ -n "$GOT" ]; then
+              echo "  attempt $attempt: healthy, but still the old revision ($GOT)"
+            else
+              echo "  attempt $attempt: HTTP $CODE ${GOT:+commit $GOT}"
+            fi
             sleep 10
           done
 
-          echo "::error::${{ inputs.environment }} never became ready. Last body: $(cat /tmp/body 2>/dev/null)"
+          echo "::error::${{ inputs.environment }} never served commit $WANT. Last: HTTP $CODE $(cat /tmp/body 2>/dev/null)"
           exit 1
 
       # ── Put it back ───────────────────────────────────────────────────────
@@ -417,13 +457,19 @@ jobs:
             exit 1
           fi
 
+          # /api/health, NOT /api/ready. The image being restored is by
+          # definition older, and may predate the readiness endpoint — as the
+          # one here did. authGuard answers every unknown /api/* path with 401,
+          # so probing readiness against an older image reports it as broken
+          # when it is serving perfectly. Liveness has existed far longer and is
+          # the right question here: did the previous version come back up?
           sleep 20
           for attempt in $(seq 1 20); do
-            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$FQDN/api/ready" || echo 000)
+            CODE=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$FQDN/api/health" || echo 000)
             [ "$CODE" = "200" ] && { echo "Rollback healthy at https://$FQDN"; exit 0; }
             sleep 10
           done
-          echo "::error::Rolled back, but https://$FQDN is still not ready. Manual intervention needed."
+          echo "::error::Rolled back to $PREVIOUS, but https://$FQDN/api/health is still not answering. Manual intervention needed."
           exit 1
 
       - name: Summarise
