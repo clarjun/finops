@@ -5,7 +5,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx watch --clear-screen=false server/index.ts",
-    "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist --define:process.env.NODE_ENV=\\\"production\\\" && esbuild server/migrate.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
+    "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist --define:process.env.NODE_ENV=\\\"production\\\" && esbuild server/migrate.ts --platform=node --packages=external --bundle --format=esm --outdir=dist && esbuild server/set-admin-password.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "start": "NODE_ENV=production node dist/index.js",
     "check": "tsc",
     "lint": "eslint .",
@@ -13,6 +13,7 @@
     "db:push": "drizzle-kit push",
     "db:migrate": "tsx server/migrate.ts",
     "db:seed-admin": "tsx server/seed-admin.ts",
+    "db:set-admin-password": "tsx server/set-admin-password.ts",
     "db:rotate-key": "tsx server/rotate-key.ts",
     "test": "vitest run",
     "test:watch": "vitest",
