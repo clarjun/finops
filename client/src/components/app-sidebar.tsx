@@ -16,7 +16,6 @@ const menuItems = [
   { title: "Dashboard",      url: "/",              icon: LayoutDashboard },
   { title: "Reports",        url: "/reports",       icon: FileText },
   { title: "AI Query",       url: "/ai-query",      icon: MessageSquare },
-  { title: "AI Economics",   url: "/ai-economics",  icon: BrainIcon },
   { title: "Cost Estimator", url: "/cost-estimator",icon: Calculator },
   { title: "Forecast",       url: "/forecast",      icon: TrendingUp },
   { title: "Budgets",        url: "/budgets",       icon: DollarSign },
