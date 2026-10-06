@@ -169,14 +169,8 @@ const RULES: Rule[] = [
   // reports, which makes it a finance input rather than a preference.
   // Ingesting usage calls CloudWatch (billed per request) and writes what the
   // organization is measured on, so it is an account-level action, not a read.
-  R(['POST'],   /^\/api\/ai-economics\/ingest$/,              'account:write'),
   // A model rate changes every derived figure the organization reports.
   // Fetching published rates writes what every cost figure is derived from.
-  R(['POST'],   /^\/api\/ai-economics\/pricing\/refresh$/,     'budget:write'),
-  R(['PUT'],    /^\/api\/ai-economics\/pricing$/,             'budget:write'),
-  R(['PUT'],    /^\/api\/ai-economics\/metrics$/,             'budget:write'),
-  R(['DELETE'], /^\/api\/ai-economics\/metrics\/\d+$/,         'budget:write'),
-  R(['GET'],    /^\/api\/ai-economics\//,                     'cost:read'),
 
   // ── Governance & compliance ───────────────────────────────────────────────
   // Reading the posture is a read. Changing a policy redefines what the whole
