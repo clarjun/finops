@@ -1,9 +1,8 @@
 # Continuous Integration — proves a change is safe to merge.
 #
-# Runs on every pull request into dev, staging or main. Each of those branches
-# deploys an environment, so every promotion between them is gated by the same
-# checks: a change is verified on the way into dev, again on the way into
-# staging, and again on the way into main.
+# Runs on every pull request into dev or main. Both branches deploy an
+# environment, so the promotion between them is gated by the same checks: a
+# change is verified on the way into dev, and again on the way into main.
 #
 # Split from deployment deliberately. CI answers "is this code correct?"; CD
 # answers "can this validated code reach its environment?". Mixing them means a
@@ -18,11 +17,11 @@ name: CI
 
 on:
   pull_request:
-    # Every branch that deploys an environment. A promotion PR (dev -> staging,
-    # staging -> main) is checked exactly as a feature PR into dev is.
-    branches: [dev, staging, main]
+    # Every branch that deploys an environment. The promotion PR (dev -> main)
+    # is checked exactly as a feature PR into dev is.
+    branches: [dev, main]
   push:
-    branches: [dev, staging, main]
+    branches: [dev, main]
 
 # A pull request that gets three pushes in a minute should run CI once, on the
 # last one. Pushes to main are never cancelled: each commit on main must have

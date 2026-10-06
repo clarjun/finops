@@ -925,3 +925,53 @@ ALTER TABLE "savings_measurements" ADD CONSTRAINT "savings_measurements_organiza
 ALTER TABLE "savings_plans" ADD CONSTRAINT "savings_plans_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tag_analysis" ADD CONSTRAINT "tag_analysis_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "users" ADD CONSTRAINT "users_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE cascade ON UPDATE no action;
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- Seed rows.
+--
+-- Copied verbatim from the migrations that own them, because this file is
+-- generated from the schema and a schema describes no rows. A database built
+-- from the baseline alone had 47 tables and nothing in them: no organization
+-- for org_id 1 to reference, and no account to log in as.
+--
+--   organizations  0006_multi_tenancy.sql
+--   users          0005_add_users.sql
+--   ai_providers   0025_ai_token_economics.sql
+--
+-- ORDER MATTERS HERE, and differs from the migration numbering. 0005 inserted
+-- the admin before 0006 gave users an organization_id, so there was no foreign
+-- key to satisfy at the time. The baseline creates the finished schema, FK
+-- included, so the organization has to exist before the account that points at
+-- it. Seeding in migration order fails with
+-- users_organization_id_organizations_id_fk.
+--
+-- Each statement is ON CONFLICT DO NOTHING in its migration and stays that way,
+-- so this section is safe whatever already exists.
+--
+-- The admin password hash is the one 0005 ships, and nobody knows what password
+-- produces it. That is deliberate: it creates the account without creating a
+-- known credential. Claim it with `node dist/set-admin-password.js` and
+-- ADMIN_PASSWORD set.
+-- ───────────────────────────────────────────────────────────────────────────
+
+INSERT INTO organizations (id, name, slug, plan)
+VALUES (1, 'Default Organization', 'default', 'enterprise')
+ON CONFLICT (id) DO NOTHING;
+
+SELECT setval('organizations_id_seq', GREATEST((SELECT MAX(id) FROM organizations), 1));
+
+INSERT INTO users (username, password_hash, role)
+VALUES ('admin', '$2b$10$rOzJqxqQX8K9mN1vL3pHOeKvYwZxN8mQ2sT4uV6wX0yA1bC3dE5fG', 'admin')
+ON CONFLICT (username) DO NOTHING;
+
+INSERT INTO ai_providers (key, display_name, billing_mode, usage_source, docs_url) VALUES
+  ('bedrock',      'AWS Bedrock',      'cloud',  'CloudWatch AWS/Bedrock metrics (Invocations, InputTokenCount, OutputTokenCount by ModelId)', 'https://docs.aws.amazon.com/bedrock/latest/userguide/monitoring-runtime-metrics.html'),
+  ('azure_openai', 'Azure OpenAI',     'cloud',  'Azure Monitor metrics (ProcessedPromptTokens, GeneratedTokens, TokenTransaction)',          'https://learn.microsoft.com/en-us/azure/foundry/openai/monitor-openai-reference'),
+  ('vertex',       'Google Vertex AI', 'cloud',  'Cloud Monitoring token metrics, and billing export token counts',                            'https://cloud.google.com/vertex-ai/docs/general/monitoring'),
+  ('openai',       'OpenAI',           'direct', 'Organization usage API /v1/organization/usage/completions (admin key)',                       'https://platform.openai.com/docs/api-reference/usage/completions'),
+  ('anthropic',    'Anthropic',        'direct', 'Admin usage report /v1/organizations/usage_report/messages (admin key)',                      'https://platform.claude.com/docs/en/manage-claude/usage-cost-api')
+ON CONFLICT (key) DO UPDATE
+  SET display_name = EXCLUDED.display_name,
+      billing_mode = EXCLUDED.billing_mode,
+      usage_source = EXCLUDED.usage_source,
+      docs_url     = EXCLUDED.docs_url;

@@ -1,285 +1,206 @@
-# CI/CD — how it works and how to finish setting it up
+# CI/CD
 
-One branch per environment. Promotion is a pull request from one branch to the
-next, so every promotion is a reviewable diff.
+How code reaches production, what protects it on the way, and what to do when a
+deployment fails.
 
 ```
-feature/*
-   | PR  -> CI
-   v
-  dev      branch  ----> DEV environment
-   | PR (promote) -> CI
-   v
-  staging  branch  ----> STAGING environment
-   | PR (promote) -> CI
-   v
-  main     branch  ----> PRODUCTION   [approval]
+feature/*  ──PR──▶  dev  ──▶  DEV environment
+                     │ PR (promote)
+                     ▼
+                    main ──▶  PRODUCTION   (required reviewer)
 ```
 
-CI runs on every pull request into any of the three. CD runs on every push to
-them, deploying that branch to its own environment with its own database.
+Two long-lived branches. A branch *is* an environment: pushing to `dev` deploys
+dev, merging to `main` deploys production. Promotion is a pull request, so what
+reaches production is always a reviewable diff.
 
-### The property this model trades away
+## Why there is no staging
 
-What runs in dev is commit X. Merging dev into staging creates a NEW commit —
-the merge — and staging runs that. Each environment therefore runs a commit
-that never existed in the one before it. Usually immaterial; occasionally it is
-where "but it worked in dev" comes from.
+A staging environment is worth its cost when it genuinely differs from dev —
+production-like data, real integrations, a team too large to share one dev.
+A third identical environment for a small team is not that.
 
-The alternative — build once, promote the same image through all three — avoids
-that, but gives up the reviewable promotion diff. This repository has chosen the
-diff.
+Every failure this pipeline has actually produced was **secret drift between
+environments**: dev inheriting production's `DATABASE_URL`, `SESSION_SECRET`
+present in one place and absent in another, two Container Apps environments with
+nothing to say which was meant. Another environment triples that surface and
+catches nothing dev would not.
 
-**Keep the branches in step.** A hotfix that lands on `main` alone makes
-production diverge from staging, and staging stops being a rehearsal. Merge
-`main` back down into `staging` and `dev` after any hotfix.
+The protection comes from the configuration gate, the commit-verifying smoke
+test and the automatic rollback — and those run in *every* environment.
+Production additionally waits for a human, which is the approval staging is
+often used to simulate.
 
-### Why there is no pull request preview
+To reinstate it: add a `staging)` case to the branch mapping in `cd.yml`, add
+the branch to the triggers in `cd.yml` and `ci.yml`, and create the GitHub
+Environment. `deploy-environment.yml` takes the environment as an input and
+needs no change.
 
-The `dev` branch is where a change is tried. A pull request preview would deploy
-to the same dev environment the dev branch owns, and the two would overwrite
-each other — an open PR replacing what dev is actually running, which is worse
-than no preview. Merge to `dev` and look at dev.
+## The trade this model makes
 
-## 1. CI — `.github/workflows/ci.yml`
+What runs in dev is commit X. Merging dev into main creates a **new** commit —
+the merge — and production runs that. Production therefore runs a commit that
+never existed in dev. Usually immaterial; occasionally it is where "but it
+worked in dev" comes from.
 
-Runs on every pull request and every push to `main`.
+Mitigation: merge `main` back down into `dev` after any hotfix, or dev stops
+resembling the thing it is meant to rehearse.
 
-| Job | What it does | Blocks merge? |
+## Azure topology
+
+Everything lives in **`finops-rg`**, and the application tier is in **East US 2**.
+
+| | |
+|---|---|
+| Container Apps env | `finops-env-us2` — VNet-integrated |
+| VNet | `finops-vnet`, subnets `aca-infra` and `pg-subnet`, both delegated |
+| Database | `cloudwise-pg-eastus2` — **`publicNetworkAccess: Disabled`**, injected into `pg-subnet` |
+| Registry | `cloudwise.azurecr.io` (East US — cross-region pulls are fine) |
+
+The database has **no public endpoint**. It is not a firewalled public server;
+it is unreachable from outside the VNet, including from GitHub runners. That
+single fact shapes the rest of this document.
+
+Two constraints produced this layout, and both will resurface:
+
+- **East US is offer-restricted for Postgres Flexible Server** on this
+  subscription — `OfferRestricted: Enabled`, creation fails with "The location
+  is restricted from performing this operation". Every other US region is fine.
+  Lifting it needs an Azure support request under *Service and subscription
+  limits*.
+- **The CI service principal `finops-github-actions` is Contributor on
+  `finops-rg` only.** It cannot see other resource groups, and granting a role
+  requires Owner or User Access Administrator.
+
+## Migrations run inside the VNet
+
+Not on the runner — the runner cannot reach the database at all.
+
+`deploy-environment.yml` creates a **Container Apps Job** on the same
+environment as the app, so it runs inside the VNet, and executes
+`node dist/migrate.js`. The job is deleted and recreated each deployment: it
+holds no state, and recreating guarantees the image, arguments and database
+secret belong to *this* deployment rather than a previous one. The connection
+string is passed as a job secret, not a plain environment variable.
+
+This requires the runtime image to carry its migrations, so the Dockerfile ships
+`db/` and the build bundles `server/migrate.ts` to `dist/migrate.js`.
+
+## A brand-new database
+
+The migration chain starts at `0003`, which alters `budgets` — a table **no
+migration creates**. The original schema came from `drizzle-kit push`, so every
+database was bootstrapped out of band and had migrations layered on top. A
+genuinely fresh database fails on the first migration.
+
+`db/baseline.sql` is that missing starting point, generated from
+`shared/schema.ts`. The runner applies it **only** when the database has no
+tables *and* no ledger, then records every migration up to
+`BASELINE_INCLUDES_THROUGH` as applied. Adding a new migration needs no
+regeneration — the baseline covers history to a stated point and later
+migrations apply on top.
+
+Its seed rows are deliberately **not** in migration order: `0005` inserts the
+admin before `0006` gives `users` an `organization_id`, so no foreign key
+existed then. The baseline builds the finished schema in one go, so the
+organization must be inserted first.
+
+A fresh database's `admin` account carries `0005`'s hash, which corresponds to
+no known password. Claim it by running `dist/set-admin-password.js` as a
+Container Apps Job with `ADMIN_PASSWORD` set — again inside the VNet, because
+the database has no public endpoint. The tool never generates a password and
+never logs one.
+
+## What protects a deployment
+
+**The configuration gate** refuses to deploy an environment that is not set up,
+and **fails** rather than passing green — "I deliberately deployed nothing" must
+never be reported as "deployed successfully".
+
+It also refuses when a non-production environment's `DATABASE_URL` is
+byte-identical to the repository-level one. A missing environment secret falls
+back to the repository value, so a non-empty check proves nothing; a job that
+declares no `environment:` fingerprints the repository value and the gate
+compares against that. This exists because a dev deployment once ran its
+migrations against production's database.
+
+**The revision check** asks Azure which revision is running before any HTTP
+probe, and dumps the container's own logs when one never starts.
+
+**The smoke test** compares the commit reported by `/api/ready` against the
+commit being deployed. Container Apps keeps the previous revision serving until
+the new one is healthy, so a 200 can come from the old revision and say nothing
+about this deployment.
+
+**Rollback** restores the previous image and verifies it against `/api/health`,
+not `/api/ready` — the image being restored is by definition older and may
+predate the readiness endpoint.
+
+## Required configuration
+
+**Repository secrets** — Settings → Secrets and variables → Actions:
+
+| Secret | |
+|---|---|
+| `AZURE_CREDENTIALS` *or* `AZURE_CLIENT_ID`/`AZURE_TENANT_ID`/`AZURE_SUBSCRIPTION_ID` | service principal |
+| `ACR_LOGIN_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD` | registry |
+| `RESOURCE_GROUP` | `finops-rg` |
+| `CONTAINER_APP_NAME` | production's app |
+| `DATABASE_URL` | production's database |
+| `SESSION_SECRET` | 48 random bytes — the app **refuses to start** without one |
+| `ENCRYPTION_KEY` | 48 random bytes |
+| `OPENAI_API_KEY`, `RESEND_API_KEY` | |
+
+**Repository variables** — the Variables tab:
+
+| Variable | |
+|---|---|
+| `CONTAINERAPPS_ENVIRONMENT` | `finops-env-us2` |
+
+`finops-rg` holds more than one Container Apps environment, and only the
+VNet-integrated one can reach the database. Deploying into the wrong one
+produces an app that starts cleanly and then cannot reach its database, so the
+pipeline refuses to guess.
+
+**Environments** — Settings → Environments:
+
+| Environment | Variable | Secrets |
 |---|---|---|
-| `quality` | typecheck → lint → **842 tests** → build | yes |
-| `security` | `npm audit`, **gitleaks** secret scan | secrets: yes · advisories: no |
-| `codeql` | static analysis into the Security tab | yes |
-| `ci-passed` | one aggregate status to protect the branch with | — |
-| `preview-*` | build → deploy to dev → comment the URL | no |
+| `dev` | `ENVIRONMENT_NAME` = `dev` | `CONTAINER_APP_NAME`, `DATABASE_URL` |
+| `production` | — | — (inherits; add a **required reviewer**) |
 
-### Preview deployments
+Set **only** what must differ per environment. Anything else inherits, so there
+is one place to rotate it. The two that must differ are the app name and the
+database; everything else should be identical and therefore inherited.
 
-After `ci-passed`, a pull request builds an image tagged `pr-<number>-<sha>`,
-deploys it to the shared **dev** environment, and comments the URL on the pull
-request. The comment is rewritten on each push rather than appended, so the
-review conversation is not buried under near-identical bot messages.
-
-Dev is **shared**: two open pull requests overwrite each other, and whoever
-pushed last owns it. The comment always names the commit that is live, so it is
-visible when you are looking at someone else'''s change. Per-pull-request preview
-environments would remove the collision at the cost of one Container App per
-open PR plus teardown logic.
-
-Pull requests **from forks receive no secrets**, so the preview gates itself off
-and skips — which is correct, since a fork must not be able to push an image or
-touch the subscription. This is also why the workflow uses `pull_request` and
-not `pull_request_target`, which would run fork code with write access.
-
-**Protect `CI / ci-passed`, not the individual jobs.** Branch protection names
-checks one by one, so adding a job later silently leaves it unenforced. The
-aggregate depends on all of them and stays correct as jobs are added.
-
-### Why dependency advisories report rather than block
-
-The tree currently carries **3 critical and 21 high** advisories in production
-dependencies. Failing on those would paint CI red on its first run, and a gate
-that is always red is one everyone learns to ignore. Counts are published to
-each run's summary instead. Once the backlog is down, flip the commented line
-in `ci.yml` to make it blocking.
-
-Secret scanning **does** block. A committed credential is a present-tense
-incident, not a backlog item — and this repository is public.
-
-### Lint
-
-`npm run lint` · `npm run lint:fix`
-
-The rule set is deliberately small: every rule catches a **defect**, not a style
-preference. Errors fail the build (currently zero); warnings do not (currently
-121, mostly unused imports). A maximal preset on code written before any linter
-existed reports thousands of findings nobody fixes, and the lint step becomes
-something people pass with `--no-verify`.
-
-Excluded: `dist/`, `client/src/components/ui/**` (vendored shadcn), and the 26
-ad-hoc `*.cjs` debug scripts at the repository root.
-
----
-
-## 2. CD — `.github/workflows/cd.yml`
-
-Runs on push to `main`, or manually via **Run workflow**.
-
-```
-verify      typecheck · lint · tests — so a deploy can never outrun CI
-docker      ONE image, tagged with the commit sha, + Trivy scan
-dev         migrate → deploy → smoke → rollback on failure
-staging     same, only if dev did not fail
-production  same, only if staging did not fail, and after approval
-```
-
-**One image is promoted, not three builds.** If each environment rebuilt from
-source they would be three different artifacts, and testing one would say
-nothing about the others.
-
-**Each environment migrates its own database**, because `DATABASE_URL` is an
-environment secret. Production's migrations run only after they have already
-run against dev and staging.
-
-The smoke test probes **`/api/ready`**, not `/api/health`. Health only proves
-node started; a container can serve that happily while every request needing
-data fails — exactly the deployment worth rolling back.
-
-### Manual re-deploy
-
-**Actions → CD → Run workflow** takes:
-
-- `image_tag` — a previously built sha, to roll forward or back deliberately
-- `only` — `dev`, `staging` or `production` to target one environment
-
----
-
-## 3. Setup still required
-
-### 3a. Branches
+Generate the secrets with:
 
 ```bash
-git checkout -b dev main     && git push -u origin dev
-git checkout -b staging main && git push -u origin staging
+node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 ```
 
-`dev` and `staging` are long-lived. Feature branches target `dev`; promotion is
-a PR `dev -> staging`, then `staging -> main`.
+## Branch protection
 
-### 3b. Branch protection — do this first
+On `main`: require a pull request, require the `ci-passed` check, and do not
+allow bypassing. Apply the same to `dev` so a promotion cannot skip CI. The
+required reviewer on the `production` environment is what makes a deployment to
+main wait for a human — that is GitHub's gate, not something the workflow can
+fake.
 
-Nothing above is enforced until `main` is protected. Without it, anyone can push
-straight past CI.
+## When a deployment fails
 
-**Settings → Branches → Add rule** for `main`:
+Read the failing step's output first; each failure mode below was reported
+unhelpfully once and now names itself.
 
-- Require a pull request before merging — **1 approval**
-- Require status checks to pass — select **`ci-passed`**
-- Apply the same rule to `dev` and `staging`, so a promotion cannot skip CI
-- Require branches to be up to date before merging
-- Do not allow force pushes or deletions
-
-### 3c. Environments
-
-**Settings → Environments** — create `dev`, `staging`, `production`.
-
-For each, add these as **environment** secrets (not repository secrets):
-
-| Secret | Why it must be per-environment |
+| Symptom | Cause |
 |---|---|
-| `CONTAINER_APP_NAME` | **Required.** The deploy refuses without it — see the interlock below |
-| `DATABASE_URL` | A separate database per environment |
-| `SESSION_SECRET` | A leaked dev secret must not forge production sessions |
-| `ENCRYPTION_KEY` | A leaked dev key must not decrypt production credentials |
+| `Check the environment is configured` fails | the environment has no `ENVIRONMENT_NAME`, no `DATABASE_URL` of its own, or one identical to production's |
+| `Resolve the Container Apps environment` fails | the principal has no role on `RESOURCE_GROUP`, or the group holds several environments and `CONTAINERAPPS_ENVIRONMENT` is unset |
+| `Apply migrations` fails | the job's own container logs are dumped into the step output |
+| `Wait for the new revision` fails | the container crashed on startup; its logs are dumped. A missing `SESSION_SECRET` looks exactly like this |
+| Smoke test says "still the old revision" | the new revision never took over; Azure's revision state is the authority |
+| `relation "..." does not exist` on a new database | the baseline did not run, or does not cover that table |
 
-On **`production`**, add a **Required reviewer**. That is what creates the
-approval gate — the workflow declares `environment:`, and GitHub enforces
-whatever protection rules exist. Nothing in the YAML can fake it.
-
-> **The interlock.** When an environment does not define a secret, GitHub falls
-> back to the repository-level one. For `CONTAINER_APP_NAME` that fallback is
-> *production's app* — so a half-configured `dev` would deploy over production
-> and report success. Any non-production environment resolving to production's
-> app name refuses to deploy, with a red annotation. It **skips** rather than
-> failing, so an unconfigured dev does not block the promotion to production.
-
-### 3d. Repository-level variables
-
-None required. `ENVIRONMENT_NAME` is set per environment, not here — see above.
-
-### 3e. Repository-level secrets
-
-These stay at repository level, shared by all environments:
-
-```
-ACR_LOGIN_SERVER      myregistry.azurecr.io
-RESOURCE_GROUP        the resource group holding the Container Apps
-CONTAINER_APP_NAME    production's app — also used by the interlock
-OPENAI_API_KEY
-RESEND_API_KEY
-```
-
-### 3f. OIDC — removing the long-lived Azure key
-
-Currently authentication uses `AZURE_CREDENTIALS`: a service principal client
-secret that grants standing access to the subscription, never expires on its
-own, and must be rotated by hand everywhere it is copied.
-
-Federation stores nothing. The runner proves which repository, branch and
-environment it is, Entra ID checks that against a federated credential you
-defined, and issues a token good for one job.
-
-**The pipeline prefers OIDC and falls back to the secret**, so this can be
-adopted without a flag day and rolled back by clearing one secret.
-
-```bash
-APP_NAME=cloudwise-github-actions
-REPO=clarjun/finops
-SUBSCRIPTION=$(az account show --query id -o tsv)
-
-# 1. An app registration for the pipeline
-APP_ID=$(az ad app create --display-name "$APP_NAME" --query appId -o tsv)
-az ad sp create --id "$APP_ID"
-
-# 2. Trust GitHub — one credential per environment, so a dev run cannot
-#    obtain a token scoped to production
-for ENV in dev staging production; do
-  az ad app federated-credential create --id "$APP_ID" --parameters "{
-    \"name\": \"github-$ENV\",
-    \"issuer\": \"https://token.actions.githubusercontent.com\",
-    \"subject\": \"repo:$REPO:environment:$ENV\",
-    \"audiences\": [\"api://AzureADTokenExchange\"]
-  }"
-done
-
-# 3. Give it only what it needs
-az role assignment create --assignee "$APP_ID" --role Contributor \
-  --scope "/subscriptions/$SUBSCRIPTION/resourceGroups/<your-resource-group>"
-az role assignment create --assignee "$APP_ID" --role AcrPush \
-  --scope "/subscriptions/$SUBSCRIPTION/resourceGroups/<rg>/providers/Microsoft.ContainerRegistry/registries/<acr>"
-```
-
-Then add as **repository** secrets:
-
-```
-AZURE_CLIENT_ID        the APP_ID above
-AZURE_TENANT_ID        az account show --query tenantId -o tsv
-AZURE_SUBSCRIPTION_ID  az account show --query id -o tsv
-ACR_NAME               the registry name, without .azurecr.io
-```
-
-The moment `AZURE_CLIENT_ID` exists, both workflows switch to OIDC. Verify a
-deployment succeeds, then **delete `AZURE_CREDENTIALS`, `ACR_USERNAME` and
-`ACR_PASSWORD`** and disable the ACR admin account.
-
-Under OIDC the Container App is created with a system-assigned identity rather
-than stored registry credentials; grant it `AcrPull` on the registry so it can
-pull images.
-
----
-
-## 4. Known gaps
-
-| Gap | Impact |
-|---|---|
-| Dependency advisories do not block | 3 critical / 21 high unaddressed in production deps |
-| No integration tests in CI | `npm run test:integration` exists but needs a database |
-| No deployment notifications | Results live in the Actions tab only |
-| No DORA metrics | Deployment frequency, lead time, change failure rate, MTTR |
-| No canary or blue/green | Container Apps does a rolling replace; rollback is image-swap |
-| Infrastructure provisioned inside the deploy | Log Analytics and the Container Apps environment are created on every run; belongs in Terraform |
-
----
-
-## 5. Local equivalents
-
-```bash
-npm run check          # typecheck — same as CI
-npm run lint           # lint — same as CI
-npm test               # 842 tests — same as CI
-npm run build          # production build
-npm run db:migrate -- --dry   # what migrations would apply
-npm run db:migrate            # apply them
-```
-
-Running those four before pushing is the whole of CI, minus the scanners.
+Container Apps keeps the previous revision serving while a new one starts, so a
+failed deployment usually means the **old version is still up**. Check
+`az containerapp revision list` before assuming an outage.

@@ -1,10 +1,12 @@
-# One environment's deployment, called three times by cd.yml.
+# One environment's deployment, called once per environment by cd.yml.
 #
-# A reusable workflow rather than three copies of the same 150 lines. The Azure
-# steps are fiddly — provider registration, create-or-update, URL resolution —
-# and three copies means a fix applied to production and forgotten in staging,
-# which is how staging stops resembling production and stops being a useful
-# rehearsal.
+# A reusable workflow rather than a copy per environment. The Azure steps are
+# fiddly — provider registration, create-or-update, revision state, URL
+# resolution — and a copy per environment means a fix applied to production and
+# forgotten in dev, after which dev stops resembling the thing it rehearses.
+#
+# It takes the environment as an input and hardcodes none of them, which is what
+# keeps adding one back to a single case in cd.yml.
 #
 # ── How an environment is addressed ─────────────────────────────────────────
 #
@@ -45,7 +47,7 @@ on:
   workflow_call:
     inputs:
       environment:
-        description: 'dev | staging | production'
+        description: 'dev | production'
         required: true
         type: string
       image_tag:
@@ -132,8 +134,8 @@ jobs:
         run: |
           # Fails the job rather than passing it. Refusing to deploy is a
           # legitimate outcome; reporting it as a successful deployment is not,
-          # and that is what made dev and staging look like they were rehearsing
-          # production when neither had ever run a single container.
+          # and that is what made dev look like it was rehearsing production
+          # when it had never run a single container.
           refuse() {
             echo "configured=false" >> "$GITHUB_OUTPUT"
             echo "$1"
@@ -250,9 +252,8 @@ jobs:
       # ── Schema before code, per environment ───────────────────────────────
       #
       # Each environment migrates its OWN database, because DATABASE_URL is an
-      # environment secret. Running production's migrations against production
-      # only after they have already run against dev and staging is the entire
-      # point of having the three.
+      # environment secret. A migration reaches production only after it has
+      # already run against dev, which is most of the point of having two.
       - name: Migration gate
         id: migrations
         if: steps.gate.outputs.configured == 'true'
