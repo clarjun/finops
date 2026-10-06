@@ -1,37 +1,43 @@
 # Continuous Deployment — one branch per environment.
 #
-#   feature/*  ──PR──▶  dev      branch  ──▶  DEV environment
+#   feature/*  ──PR──▶  dev   branch  ──▶  DEV environment
 #                        │ PR (promote)
 #                        ▼
-#                       staging  branch  ──▶  STAGING environment
-#                        │ PR (promote)
-#                        ▼
-#                       main     branch  ──▶  PRODUCTION   (approval)
+#                       main  branch  ──▶  PRODUCTION   (required reviewer)
 #
-# Promotion is a pull request from one branch to the next, so every promotion is
-# a reviewable diff: you can see exactly what is about to reach production.
+# Promotion is a pull request, so what reaches production is a reviewable diff.
+#
+# ── Why there is no staging ─────────────────────────────────────────────────
+#
+# A staging environment is worth its cost when it differs from dev: production
+# -like data, real integrations, a team that cannot all share one dev. A third
+# identical environment for one developer is not that.
+#
+# Every failure this pipeline has actually produced was secret drift BETWEEN
+# environments — dev inheriting production's DATABASE_URL, SESSION_SECRET
+# present in one place and absent in another. Another environment triples that
+# surface and catches nothing dev would not.
+#
+# What does the protecting is the configuration gate, the commit-verifying
+# smoke test and the automatic rollback, and those run in every environment.
+# Production additionally waits for a human, which is the approval staging is
+# often used to simulate.
 #
 # ── The property this model trades away, stated plainly ─────────────────────
 #
-# What runs in dev is commit X. Merging dev into staging creates a NEW commit —
-# the merge — and staging runs that. So each environment runs a commit that
-# never existed in the one before it. Usually immaterial; occasionally it is
-# where "but it worked in dev" comes from.
+# What runs in dev is commit X. Merging dev into main creates a NEW commit — the
+# merge — and production runs that. So production runs a commit that never
+# existed in dev. Usually immaterial; occasionally it is where "but it worked in
+# dev" comes from.
 #
-# The alternative (build once on main, promote the same image through all three)
-# avoids that but gives up the reviewable promotion diff. This repository has
-# chosen the diff.
-#
-# Mitigation, and it matters: each environment must be kept up to date with the
-# one ahead of it. A hotfix that lands on `main` alone makes production diverge
-# from staging, and staging stops being a rehearsal. Merge main back down after
-# any hotfix.
+# Mitigation: merge main back down after any hotfix, or dev stops resembling
+# what it is meant to rehearse.
 
 name: CD
 
 on:
   push:
-    branches: [dev, staging, main]
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       image_tag:
@@ -68,8 +74,10 @@ jobs:
         run: |
           case "${{ github.ref_name }}" in
             main)    ENV=production; MIN=1; MAX=3 ;;
-            staging) ENV=staging;    MIN=1; MAX=3 ;;
             dev)     ENV=dev;        MIN=0; MAX=1 ;;
+            # To reinstate staging: add a case here and add the branch to the
+            # triggers above and in ci.yml. deploy-environment.yml already
+            # takes the environment as an input and needs no change.
             *)
               # Unreachable given the trigger, but a wrong answer here would
               # deploy the wrong branch to production, so it refuses instead.

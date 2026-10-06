@@ -18,11 +18,11 @@ name: CI
 
 on:
   pull_request:
-    # Every branch that deploys an environment. A promotion PR (dev -> staging,
-    # staging -> main) is checked exactly as a feature PR into dev is.
-    branches: [dev, staging, main]
+    # Every branch that deploys an environment. The promotion PR (dev -> main)
+    # is checked exactly as a feature PR into dev is.
+    branches: [dev, main]
   push:
-    branches: [dev, staging, main]
+    branches: [dev, main]
 
 # A pull request that gets three pushes in a minute should run CI once, on the
 # last one. Pushes to main are never cancelled: each commit on main must have
