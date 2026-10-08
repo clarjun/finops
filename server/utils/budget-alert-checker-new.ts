@@ -8,8 +8,8 @@ import { storage } from "../storage";
 import { runExclusively, startTicker } from "./advisory-lock";
 import { runAsSystem } from "../tenant-context";
 import { EmailService } from "../email-service";
-import type { Budget, AlertRule, CloudProvider } from "@shared/schema";
-import { getServiceCost, fetchLiveCosts, aggregateCosts } from "./live-cost-fetcher";
+import type { CloudProvider } from "@shared/schema";
+import { getServiceCost } from "./live-cost-fetcher";
 
 interface CheckResults {
   checked: number;
@@ -262,35 +262,48 @@ export async function checkBudgetAlerts(): Promise<CheckResults> {
     errors: []
   };
 
+  // The provider/service/account dropdowns store the literal string "all" for
+  // "no filter". Treat that (and empty) as a wildcard everywhere, so an
+  // "All services" budget sums every service instead of filtering for a service
+  // literally named "all" (which matches nothing), and so a wildcard alert rule
+  // matches a specific-service budget.
+  const wildcard = (v?: string | null): string | undefined =>
+    !v || v.trim().toLowerCase() === 'all' ? undefined : v;
+
   try {
     // Get all active budgets
     const budgets = await storage.getActiveBudgets();
     results.checked = budgets.length;
-    
+
     console.log(`[Budget Checker] Checking ${budgets.length} budgets...`);
 
     for (const budget of budgets) {
       try {
         console.log(`[Budget Checker] Checking budget: ${budget.budgetName}`);
-        
-        // Determine date range based on budget period
-        const { startDate, endDate } = budget.startDate && budget.endDate
-          ? { startDate: new Date(budget.startDate), endDate: new Date(budget.endDate) }
-          : getDateRangeForPeriod(budget.period);
-        
-        console.log(`[Budget Checker] Period: ${budget.period} (${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]})`);
-        
+
+        // Always evaluate month-to-date so the checker matches the figure shown
+        // on the Budgets page. A period-scoped window (e.g. "daily") read $0 for
+        // a service billed earlier in the month, so alerts never fired.
+        const endDate = new Date();
+        const startDate = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
+
+        const budgetProvider = wildcard(budget.provider);
+        const budgetService = wildcard(budget.serviceName);
+        const budgetAccount = wildcard(budget.accountId);
+
+        console.log(`[Budget Checker] Month-to-date (${startDate.toISOString().split('T')[0]} to ${endDate.toISOString().split('T')[0]}), check frequency: ${budget.period}`);
+
         // Fetch live cost data for this budget's criteria
         const currentCost = await getServiceCost(
-          budget.provider as CloudProvider | undefined,
-          budget.serviceName || undefined,
-          budget.accountId || undefined,
+          budgetProvider as CloudProvider | undefined,
+          budgetService,
+          budgetAccount,
           startDate,
           endDate
         );
 
         const budgetAmount = parseFloat(budget.amount);
-        const percentage = (currentCost / budgetAmount) * 100;
+        const percentage = budgetAmount > 0 ? (currentCost / budgetAmount) * 100 : 0;
 
         console.log(`[Budget Checker] Budget "${budget.budgetName}": Current cost = $${currentCost.toFixed(2)}, Budget = $${budgetAmount.toFixed(2)}, Usage = ${percentage.toFixed(1)}%`);
 
@@ -306,69 +319,90 @@ export async function checkBudgetAlerts(): Promise<CheckResults> {
             }
           }
         }
+        triggeredThresholds.sort((a, b) => b - a);
+        const highestThreshold = triggeredThresholds[0];
 
-        if (triggeredThresholds.length > 0) {
-          console.log(`[Budget Checker] ✓ Budget alert triggered: ${triggeredThresholds.join(', ')}% thresholds exceeded`);
-          
-          // Get matching alert rules for this budget
-          const allAlertRules = await storage.getEnabledAlertRules();
-          const matchingRules = allAlertRules.filter(rule => {
-            const providerMatch = !rule.provider || !budget.provider || rule.provider === budget.provider;
-            const accountMatch = !rule.accountId || !budget.accountId || rule.accountId === budget.accountId;
-            const serviceMatch = !rule.serviceName || !budget.serviceName || rule.serviceName === budget.serviceName;
-            return providerMatch && accountMatch && serviceMatch;
+        if (triggeredThresholds.length === 0) {
+          console.log(`[Budget Checker] ✗ No thresholds exceeded`);
+          continue;
+        }
+
+        console.log(`[Budget Checker] ✓ Budget alert triggered: ${triggeredThresholds.join(', ')}% thresholds exceeded`);
+
+        // Collect notification targets. The budget's OWN recipients/webhook are
+        // the primary channel — that is what the budget form configures. Any
+        // matching alert rules are layered on top (backward compatibility).
+        const emailSet = new Set<string>();
+        const webhookSet = new Set<string>();
+
+        if (budget.emailRecipients) {
+          budget.emailRecipients.split(',').map(e => e.trim()).filter(Boolean).forEach(e => emailSet.add(e));
+        }
+        if (budget.webhookUrl) webhookSet.add(budget.webhookUrl);
+
+        const allAlertRules = await storage.getEnabledAlertRules();
+        const matchingRules = allAlertRules.filter(rule => {
+          const ruleProvider = wildcard(rule.provider);
+          const ruleAccount = wildcard(rule.accountId);
+          const ruleService = wildcard(rule.serviceName);
+          const providerMatch = !ruleProvider || !budgetProvider || ruleProvider === budgetProvider;
+          const accountMatch = !ruleAccount || !budgetAccount || ruleAccount === budgetAccount;
+          const serviceMatch = !ruleService || !budgetService || ruleService === budgetService;
+          return providerMatch && accountMatch && serviceMatch;
+        });
+        for (const rule of matchingRules) {
+          if (rule.emailRecipients) {
+            rule.emailRecipients.split(',').map(e => e.trim()).filter(Boolean).forEach(e => emailSet.add(e));
+          }
+          if (rule.webhookUrl) webhookSet.add(rule.webhookUrl);
+        }
+
+        if (emailSet.size === 0 && webhookSet.size === 0) {
+          console.log(`[Budget Checker] ⚠ No notification targets (budget has no recipients/webhook and no alert rule matched)`);
+          continue;
+        }
+
+        // Send email (Outlook/M365 via Entra ID when configured)
+        if (emailSet.size > 0) {
+          const emails = [...emailSet];
+          const emailService = new EmailService();
+          const success = await emailService.sendCostAlert({
+            to: emails,
+            ruleName: `Budget Alert: ${budget.budgetName}`,
+            currentCost,
+            threshold: budgetAmount,
+            period: budget.period,
+            percentage: percentage.toFixed(1),
+            thresholdPercentage: highestThreshold,
           });
 
-          console.log("matchingRules ", matchingRules);
-          // Send notifications via matching alert rules
-          for (const rule of matchingRules) {
-            // Send email
-            if (rule.emailRecipients) {
-              const emails = rule.emailRecipients.split(',').map(e => e.trim()).filter(e => e);
-              
-              if (emails.length > 0) {
-                const emailService = new EmailService();
-                const success = await emailService.sendCostAlert({
-                  to: emails,
-                  ruleName: `Budget Alert: ${budget.budgetName}`,
-                  currentCost,
-                  threshold: budgetAmount,
-                  period: budget.period,
-                });
-                
-                if (success) {
-                  console.log(`[Budget Checker] ✓ Email sent to ${emails.join(', ')}`);
-                  results.alerted++;
-                } else {
-                  console.error(`[Budget Checker] ✗ Failed to send email`);
-                  results.errors.push(`Failed to send email for budget: ${budget.budgetName}`);
-                }
-              }
-            }
-
-            console.log("rule.webhookUrl ", rule.webhookUrl, rule.emailRecipients);
-            // Send webhook
-            if (rule.webhookUrl) {
-              const webhookSuccess = await sendWebhookNotification(
-                rule.webhookUrl,
-                `Budget Alert: ${budget.budgetName}`,
-                currentCost,
-                budgetAmount,
-                budget.provider || 'All Providers',
-                budget.serviceName || 'All Services',
-                budget.period
-              );
-
-              if (webhookSuccess) {
-                console.log(`[Budget Checker] ✓ Webhook sent successfully`);
-              } else {
-                console.error(`[Budget Checker] ✗ Webhook failed`);
-                results.errors.push(`Webhook failed for budget: ${budget.budgetName}`);
-              }
-            }
+          if (success) {
+            console.log(`[Budget Checker] ✓ Email sent to ${emails.join(', ')}`);
+            results.alerted++;
+          } else {
+            console.error(`[Budget Checker] ✗ Failed to send email`);
+            results.errors.push(`Failed to send email for budget: ${budget.budgetName}`);
           }
-        } else {
-          console.log(`[Budget Checker] ✗ No thresholds exceeded`);
+        }
+
+        // Send webhook notification (Teams/Slack)
+        for (const webhookUrl of webhookSet) {
+          const webhookSuccess = await sendWebhookNotification(
+            webhookUrl,
+            `Budget Alert: ${budget.budgetName} (${highestThreshold}% threshold)`,
+            currentCost,
+            budgetAmount,
+            budget.provider || 'All Providers',
+            budget.serviceName || 'All Services',
+            budget.period
+          );
+
+          if (webhookSuccess) {
+            console.log(`[Budget Checker] ✓ Webhook sent successfully`);
+          } else {
+            console.error(`[Budget Checker] ✗ Webhook failed`);
+            results.errors.push(`Webhook failed for budget: ${budget.budgetName}`);
+          }
         }
       } catch (error) {
         const errorMsg = `Error checking budget "${budget.budgetName}": ${error instanceof Error ? error.message : 'Unknown error'}`;
