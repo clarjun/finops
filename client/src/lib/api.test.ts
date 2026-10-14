@@ -101,6 +101,25 @@ describe('throwIfFailed', () => {
     expect(permanent.retryable).toBe(false);
   });
 
+  it('lets the server overrule the status, because some 5xx are permanent', async () => {
+    // A rejected AI provider key returns 503 -- the same status as "the
+    // provider is down" -- but no amount of retrying replaces a revoked key.
+    // Only the server can tell those apart, so when it says so, it wins.
+    const permanent503 = await readApiError(res(503, { error: 'Key rejected', retryable: false }));
+    expect(permanent503.retryable).toBe(false);
+
+    // And it can go the other way: a 400 the server knows is worth repeating.
+    const retryable400 = await readApiError(res(400, { error: 'Not ready yet', retryable: true }));
+    expect(retryable400.retryable).toBe(true);
+  });
+
+  it('falls back to the status when the server offers no verdict', async () => {
+    expect((await readApiError(res(503, { error: 'down' }))).retryable).toBe(true);
+    expect((await readApiError(res(400, { error: 'bad' }))).retryable).toBe(false);
+    // A non-boolean must not be mistaken for one.
+    expect((await readApiError(res(503, { error: 'x', retryable: 'no' }))).retryable).toBe(true);
+  });
+
   it('is an Error, so existing catch blocks keep working', async () => {
     const err = await readApiError(res(500));
     expect(err).toBeInstanceOf(Error);

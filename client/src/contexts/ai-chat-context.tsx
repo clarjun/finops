@@ -12,6 +12,7 @@
  */
 
 import { createContext, useCallback, useContext, useState, ReactNode } from "react";
+import { ApiError } from "@/lib/api";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { AiQueryResponse, AiTurn } from "@shared/schema";
@@ -80,13 +81,20 @@ export function AiChatProvider({ children }: { children: ReactNode }) {
       // Clear the input only on success, so a failed query stays put for a retry.
       setInput("");
     } catch (error) {
+      // The server classifies its own failures, so say which one happened.
+      // "Please try again" on a rejected API key sent users in a loop that
+      // could never succeed and made a configuration fault look like flakiness.
+      const api = error instanceof ApiError ? error : null;
+      const message = api?.message ?? "Something went wrong while analyzing your query.";
+      const canRetry = api?.retryable ?? true;
+
       toast({
-        title: "Query failed",
-        description: "Failed to process your query. Please try again.",
+        title: canRetry ? "Query failed" : "AI analysis unavailable",
+        description: message,
         variant: "destructive",
       });
       setResponses((prev) => [
-        { query: currentQuery, answer: "Sorry, I couldn't process your query at this time.", success: false, provider: askedProvider },
+        { query: currentQuery, answer: message, success: false, provider: askedProvider },
         ...prev,
       ]);
     } finally {

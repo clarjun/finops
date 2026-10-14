@@ -1,4 +1,5 @@
 import type { Express } from "express";
+import { classifyAiError } from "./analysis/ai-error";
 import { createServer, type Server } from "http";
 import { readFileSync } from "fs";
 import { join } from "path";
@@ -648,9 +649,19 @@ When answering:
         success: true,
       });
     } catch (error) {
+      // Logged in full for operators; only the classified summary is returned.
       console.error("AI analysis error:", error);
-      res.status(500).json({
-        answer: "Sorry, I encountered an error while analyzing your query.",
+
+      const failure = classifyAiError(error);
+      res.status(failure.status).json({
+        // `error` is the field readApiError looks for, so the client gets the
+        // real reason instead of a generic "failed on the server (500)".
+        error: failure.message,
+        // Explicit, because the client's default is derived from the status and
+        // a rejected API key is a 5xx that retrying can never fix.
+        retryable: failure.retryable,
+        reason: failure.kind,
+        answer: failure.message,
         success: false,
       });
     }

@@ -35,6 +35,13 @@ export class ApiError extends Error {
     readonly details?: unknown,
     /** Seconds to wait, from a 429. */
     readonly retryAfterSeconds?: number,
+    /**
+     * The server's own verdict, where it gave one. Some failures are a 5xx that
+     * retrying can never fix -- a rejected AI provider key is the same 503
+     * whether the key is wrong or the provider is down, and only the server can
+     * tell those apart.
+     */
+    private readonly explicitRetryable?: boolean,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -42,6 +49,7 @@ export class ApiError extends Error {
 
   /** True when retrying unchanged could plausibly work. */
   get retryable(): boolean {
+    if (typeof this.explicitRetryable === 'boolean') return this.explicitRetryable;
     return this.status === 429 || this.status >= 500;
   }
 }
@@ -53,6 +61,8 @@ interface ErrorBody {
   message?: unknown;
   details?: unknown;
   retryAfterSeconds?: unknown;
+  /** Set when the server knows better than the status code does. */
+  retryable?: unknown;
 }
 
 const str = (v: unknown): string | undefined =>
@@ -125,6 +135,7 @@ export async function readApiError(res: Response, what = 'The request'): Promise
     detail,
     body?.details,
     typeof body?.retryAfterSeconds === 'number' ? body.retryAfterSeconds : undefined,
+    typeof body?.retryable === 'boolean' ? body.retryable : undefined,
   );
 }
 
