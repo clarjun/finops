@@ -1,0 +1,1435 @@
+{
+  "key": "finops-report:aws:2026-10-01:2026-10-14",
+  "data": {
+    "provider": "aws",
+    "generatedAt": "2026-10-14T08:39:20.238Z",
+    "dateRange": {
+      "start": "2026-10-01",
+      "end": "2026-10-14"
+    },
+    "spendOverview": {
+      "totalSpendMTD": 9234.600690219615,
+      "forecastMonthEnd": 25619.570562548717,
+      "budget": 5000,
+      "potentialSavings": 134.192,
+      "budgetUtilization": 184.6920138043923,
+      "daysIntoMonth": 14,
+      "daysInMonth": 31,
+      "budgetBasis": "Monthly AWS budget (current month)"
+    },
+    "topCostDrivers": [
+      {
+        "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+        "cost": 1446.5408415000004,
+        "percentage": 15.664357236713403,
+        "trend": "down",
+        "changePercent": -87.40128692863854
+      },
+      {
+        "service": "Amazon Elastic Compute Cloud - Compute",
+        "cost": 1441.7373001248002,
+        "percentage": 15.612340462666122,
+        "trend": "down",
+        "changePercent": -41.58558620979591
+      },
+      {
+        "service": "Amazon Elastic Container Service",
+        "cost": 1007.1413385078,
+        "percentage": 10.90617095739144,
+        "trend": "down",
+        "changePercent": -65.81632801632324
+      },
+      {
+        "service": "Claude Sonnet 4.6 (Amazon Bedrock Edition)",
+        "cost": 815.0178788250001,
+        "percentage": 8.82569702973934,
+        "trend": "down",
+        "changePercent": -75.35130089981647
+      },
+      {
+        "service": "Amazon Virtual Private Cloud",
+        "cost": 751.7818855918,
+        "percentage": 8.140924668112772,
+        "trend": "down",
+        "changePercent": -56.91898370386345
+      }
+    ],
+    "expensiveResources": [
+      {
+        "resourceId": "Claude Opus 4.8 (Amazon Bedrock Edition)-aggregate",
+        "resourceName": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+        "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+        "cost": 1446.5408415000004,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "Amazon Elastic Compute Cloud - Compute-aggregate",
+        "resourceName": "Amazon Elastic Compute Cloud - Compute",
+        "service": "Amazon Elastic Compute Cloud - Compute",
+        "cost": 1441.7373001248004,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "Amazon Elastic Container Service-aggregate",
+        "resourceName": "Amazon Elastic Container Service",
+        "service": "Amazon Elastic Container Service",
+        "cost": 1007.1413385078001,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "Claude Sonnet 4.6 (Amazon Bedrock Edition)-aggregate",
+        "resourceName": "Claude Sonnet 4.6 (Amazon Bedrock Edition)",
+        "service": "Claude Sonnet 4.6 (Amazon Bedrock Edition)",
+        "cost": 815.0178788250001,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "Amazon Virtual Private Cloud-aggregate",
+        "resourceName": "Amazon Virtual Private Cloud",
+        "service": "Amazon Virtual Private Cloud",
+        "cost": 751.7818855918002,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "Amazon Elastic Container Service for Kubernetes-aggregate",
+        "resourceName": "Amazon Elastic Container Service for Kubernetes",
+        "service": "Amazon Elastic Container Service for Kubernetes",
+        "cost": 592.7999999999998,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "EC2 - Other-aggregate",
+        "resourceName": "EC2 - Other",
+        "service": "EC2 - Other",
+        "cost": 528.6517718915002,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "Amazon Relational Database Service-aggregate",
+        "resourceName": "Amazon Relational Database Service",
+        "service": "Amazon Relational Database Service",
+        "cost": 372.83450785030004,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "AWS CloudTrail-aggregate",
+        "resourceName": "AWS CloudTrail",
+        "service": "AWS CloudTrail",
+        "cost": 332.30952149999973,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      },
+      {
+        "resourceId": "AmazonCloudWatch-aggregate",
+        "resourceName": "AmazonCloudWatch",
+        "service": "AmazonCloudWatch",
+        "cost": 296.14924838449986,
+        "region": "us-east-1",
+        "owner": "Unknown"
+      }
+    ],
+    "costTrend": [
+      {
+        "month": "May 2026",
+        "cost": 0
+      },
+      {
+        "month": "Jun 2026",
+        "cost": 3625.4917245751008
+      },
+      {
+        "month": "Jul 2026",
+        "cost": 14431.21231232516
+      },
+      {
+        "month": "Aug 2026",
+        "cost": 14470.052638601735
+      },
+      {
+        "month": "Sep 2026",
+        "cost": 32408.011794339174
+      },
+      {
+        "month": "Oct 2026",
+        "cost": 9234.600690219615
+      }
+    ],
+    "anomalies": [
+      {
+        "date": "2026-10-06",
+        "service": "Claude Haiku 4.5 (Amazon Bedrock Edition)",
+        "type": "spike",
+        "changePercent": 315.6688621044791,
+        "baselineCost": 9.861013209523811,
+        "currentCost": 40.9891614,
+        "previousDayCost": 18.0551074,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 2,
+        "sustainedThrough": "2026-10-07",
+        "severity": "high"
+      },
+      {
+        "date": "2026-10-14",
+        "service": "Amazon Elastic Container Service",
+        "type": "drop",
+        "changePercent": 99.98609359235815,
+        "baselineCost": 89.69185300210474,
+        "currentCost": 0.0124729147,
+        "previousDayCost": 76.4228296269,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 1,
+        "severity": "medium"
+      },
+      {
+        "date": "2026-10-14",
+        "service": "Amazon Virtual Private Cloud",
+        "type": "drop",
+        "changePercent": 97.64775366423295,
+        "baselineCost": 58.26603409515238,
+        "currentCost": 1.370560652,
+        "previousDayCost": 57.42769178559999,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 1,
+        "severity": "medium"
+      },
+      {
+        "date": "2026-10-14",
+        "service": "EC2 - Other",
+        "type": "drop",
+        "changePercent": 99.41902736941127,
+        "baselineCost": 40.07566023619047,
+        "currentCost": 0.23282861750000003,
+        "previousDayCost": 39.319598782599996,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 1,
+        "severity": "medium"
+      },
+      {
+        "date": "2026-10-14",
+        "service": "AmazonCloudWatch",
+        "type": "drop",
+        "changePercent": 98.76239190482289,
+        "baselineCost": 23.962863919176193,
+        "currentCost": 0.29656634369999996,
+        "previousDayCost": 22.531996978400002,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 1,
+        "severity": "low"
+      },
+      {
+        "date": "2026-10-14",
+        "service": "AWS Directory Service",
+        "type": "drop",
+        "changePercent": 95.55918647403459,
+        "baselineCost": 10.798129227814286,
+        "currentCost": 0.47952478330000003,
+        "previousDayCost": 11.3633895225,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 1,
+        "severity": "low"
+      },
+      {
+        "date": "2026-10-14",
+        "service": "Amazon OpenSearch Service",
+        "type": "drop",
+        "changePercent": 95.83333335647947,
+        "baselineCost": 5.932801343357141,
+        "currentCost": 0.2472000546,
+        "previousDayCost": 5.9328013104,
+        "baselinePeriod": "2026-09-15 to 2026-10-05",
+        "baselineDays": 21,
+        "sustainedDays": 1,
+        "severity": "low"
+      }
+    ],
+    "wasteDetection": {
+      "idleInstances": 11,
+      "unattachedDisks": 1,
+      "lowCpuVMs": 8,
+      "potentialSaving": 134.192,
+      "details": {
+        "idleResources": [
+          {
+            "resourceId": "vol-05ba8883dc4d742bc",
+            "type": "EBS Volume",
+            "cost": 2.4,
+            "reason": "Unattached gp3 volume, 30 GB",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-03677cd2b62821bba",
+            "type": "EC2 Instance",
+            "cost": 2.4,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0fac52c879fa3162b",
+            "type": "EC2 Instance",
+            "cost": 1.28,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0f786f773e4cae38e",
+            "type": "EC2 Instance",
+            "cost": 1.28,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0edb1a0b046aa8bc3",
+            "type": "EC2 Instance",
+            "cost": 2,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-055d6e8b0bb5d5149",
+            "type": "EC2 Instance",
+            "cost": 1.2,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-06a4793470c7a5de6",
+            "type": "EC2 Instance",
+            "cost": 0.64,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0382f3413e3234b58",
+            "type": "EC2 Instance",
+            "cost": 0.8,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0c2f450a5d89b9905",
+            "type": "EC2 Instance",
+            "cost": 1.6,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-00d8541c8417fe628",
+            "type": "EC2 Instance",
+            "cost": 8,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0dc462ed851b3fb4e",
+            "type": "EC2 Instance",
+            "cost": 8,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0e1bae45756af8ad8",
+            "type": "EC2 Instance",
+            "cost": 0.64,
+            "reason": "Stopped, still paying for 1 attached volume(s)",
+            "costBasis": "list-price"
+          }
+        ],
+        "underutilizedResources": [
+          {
+            "resourceId": "i-0126b86e8133b184f",
+            "type": "EC2 Instance",
+            "cost": 15.184,
+            "utilization": 1.2204521997229225,
+            "recommendation": "CPU averaged 1.2% over 13 day(s) on t3.small ($15.18/mo). Downsizing one step would save about $7.59/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-06661dca43c1e3965",
+            "type": "EC2 Instance",
+            "cost": 30.368,
+            "utilization": 6.0732122371766115,
+            "recommendation": "CPU averaged 6.1% over 13 day(s) on t3.medium ($30.37/mo). Downsizing one step would save about $15.18/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-010bc55a20874c70a",
+            "type": "EC2 Instance",
+            "cost": 12.264,
+            "utilization": 3.2564366523509376,
+            "recommendation": "CPU averaged 3.3% over 13 day(s) on t4g.small ($12.26/mo). Downsizing one step would save about $6.13/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0bcd524ab8a8560b2",
+            "type": "EC2 Instance",
+            "cost": 24.528,
+            "utilization": 7.122585968249656,
+            "recommendation": "CPU averaged 7.1% over 13 day(s) on t4g.medium ($24.53/mo). Downsizing one step would save about $12.26/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0d1b3cec32a921830",
+            "type": "EC2 Instance",
+            "cost": 30.368,
+            "utilization": 3.07597801092933,
+            "recommendation": "CPU averaged 3.1% over 13 day(s) on t3.medium ($30.37/mo). Downsizing one step would save about $15.18/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-011860e813520bd7c",
+            "type": "EC2 Instance",
+            "cost": 12.264,
+            "utilization": 4.93695355900823,
+            "recommendation": "CPU averaged 4.9% over 13 day(s) on t4g.small ($12.26/mo). Downsizing one step would save about $6.13/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-0e20c7128704e2fdc",
+            "type": "EC2 Instance",
+            "cost": 67.744,
+            "utilization": 1.4847621608388109,
+            "recommendation": "CPU averaged 1.5% over 13 day(s) on t2.large ($67.74/mo). Downsizing one step would save about $33.87/mo.",
+            "costBasis": "list-price"
+          },
+          {
+            "resourceId": "i-00c140391a0f58504",
+            "type": "EC2 Instance",
+            "cost": 15.184,
+            "utilization": 0.21075429599488205,
+            "recommendation": "CPU averaged 0.2% over 13 day(s) on t3.small ($15.18/mo). Downsizing one step would save about $7.59/mo.",
+            "costBasis": "list-price"
+          }
+        ]
+      },
+      "asOf": "2026-10-14T08:32:08.200Z",
+      "regionAssessed": "us-east-1",
+      "instancesAssessed": 8,
+      "instancesNotAssessed": 0,
+      "utilizationPeriod": "2026-10-01 to 2026-10-14"
+    },
+    "utilizationData": [
+      {
+        "resourceId": "i-0126b86e8133b184f",
+        "resourceName": "mlflow-server-raia",
+        "service": "EC2",
+        "cost": 15.184,
+        "utilization": 1.2204521997229225,
+        "size": "t3.small",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-06661dca43c1e3965",
+        "resourceName": "cirrus-ai-data-dev-node",
+        "service": "EC2",
+        "cost": 30.368,
+        "utilization": 6.0732122371766115,
+        "size": "t3.medium",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-010bc55a20874c70a",
+        "resourceName": "nexus-dev-clickhouse",
+        "service": "EC2",
+        "cost": 12.264,
+        "utilization": 3.256436652350937,
+        "size": "t4g.small",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-0bcd524ab8a8560b2",
+        "resourceName": "nexus-prod-clickhouse",
+        "service": "EC2",
+        "cost": 24.528,
+        "utilization": 7.122585968249656,
+        "size": "t4g.medium",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-0d1b3cec32a921830",
+        "resourceName": "cirrus-ai-data-dev-node",
+        "service": "EC2",
+        "cost": 30.368,
+        "utilization": 3.07597801092933,
+        "size": "t3.medium",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-011860e813520bd7c",
+        "resourceName": "nexus-staging-clickhouse",
+        "service": "EC2",
+        "cost": 12.264,
+        "utilization": 4.93695355900823,
+        "size": "t4g.small",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-0e20c7128704e2fdc",
+        "resourceName": "voxera-claire-v1",
+        "service": "EC2",
+        "cost": 67.744,
+        "utilization": 1.484762160838811,
+        "size": "t2.large",
+        "recommendation": "Consider stopping or downsizing"
+      },
+      {
+        "resourceId": "i-00c140391a0f58504",
+        "resourceName": "i-want-application-j-deve-app",
+        "service": "EC2",
+        "cost": 15.184,
+        "utilization": 0.21075429599488205,
+        "size": "t3.small",
+        "recommendation": "Consider stopping or downsizing"
+      }
+    ],
+    "optimizationOpportunities": [
+      {
+        "category": "Reserved Instances",
+        "description": "70% of compute is On-Demand. Purchase Reserved Instances or Savings Plans",
+        "monthlySavings": 1939.2661449461189,
+        "effort": "low",
+        "impact": "high",
+        "resources": 0
+      },
+      {
+        "category": "Idle Resources",
+        "description": "11 stopped instances and 1 unattached disks can be deleted",
+        "monthlySavings": 80.51520000000001,
+        "effort": "low",
+        "impact": "medium",
+        "resources": 12
+      },
+      {
+        "category": "Instance Rightsizing",
+        "description": "8 instances with low CPU utilization can be downsized",
+        "monthlySavings": 53.67680000000001,
+        "effort": "medium",
+        "impact": "high",
+        "resources": 8
+      },
+      {
+        "category": "Storage Tiering",
+        "description": "Implement lifecycle policies to move infrequently accessed data to cheaper storage tiers",
+        "monthlySavings": 3.8242420944000006,
+        "effort": "low",
+        "impact": "medium",
+        "resources": 0
+      }
+    ],
+    "departmentAllocation": [
+      {
+        "department": "Unassigned",
+        "cost": 8879.757070423158,
+        "percentage": 96.15745572873267,
+        "resourceCount": 109632,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 1390.9568692634002
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 1386.3379060921307
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 968.4414867014036
+          }
+        ]
+      },
+      {
+        "department": "rahil",
+        "cost": 249.62977315969948,
+        "percentage": 2.70320051222229,
+        "resourceCount": 3082,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 39.10289943693264
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 38.97305008187342
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 27.22504982134528
+          }
+        ]
+      },
+      {
+        "department": "Ayub",
+        "cost": 52.64742133478413,
+        "percentage": 0.5701104260040522,
+        "resourceCount": 650,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 8.246880153798253
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 8.219494663600818
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 5.741817775429731
+          }
+        ]
+      },
+      {
+        "department": "gchalapati",
+        "cost": 26.242714634569317,
+        "percentage": 0.28417812003894294,
+        "resourceCount": 324,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 4.110752568970207
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 4.097101955394869
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 2.8620753219065125
+          }
+        ]
+      },
+      {
+        "department": "arn:aws:connect:us-east-1:890882436612:instance/33d6c245-5020-4ba3-bfa9-13df5de7ed04",
+        "cost": 8.74757154485644,
+        "percentage": 0.09472604001298099,
+        "resourceCount": 108,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 1.370250856323402
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 1.3657006517982897
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 0.9540251073021708
+          }
+        ]
+      },
+      {
+        "department": "samir.shamsi@cirruslabs.io",
+        "cost": 8.74757154485644,
+        "percentage": 0.09472604001298099,
+        "resourceCount": 108,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 1.370250856323402
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 1.3657006517982897
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 0.9540251073021708
+          }
+        ]
+      },
+      {
+        "department": "Carlos",
+        "cost": 4.454781805250964,
+        "percentage": 0.04824011296957364,
+        "resourceCount": 55,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 0.6978129360906214
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 0.6954957023046846
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 0.48584611945943884
+          }
+        ]
+      },
+      {
+        "department": "arn:aws:connect:us-east-1:890882436612:instance/a605a803-ff42-455c-8d65-938a02572893",
+        "cost": 4.37378577242822,
+        "percentage": 0.047363020006490494,
+        "resourceCount": 54,
+        "topServices": [
+          {
+            "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+            "cost": 0.685125428161701
+          },
+          {
+            "service": "Amazon Elastic Compute Cloud - Compute",
+            "cost": 0.6828503258991448
+          },
+          {
+            "service": "Amazon Elastic Container Service",
+            "cost": 0.4770125536510854
+          }
+        ]
+      }
+    ],
+    "heatmapData": {
+      "services": [
+        "Contact Center Telecommunications (service sold by AMCS, LLC)",
+        "AWS CloudTrail",
+        "Amazon Simple Storage Service",
+        "Amazon GuardDuty",
+        "EC2 - Other",
+        "Amazon Relational Database Service",
+        "Amazon Virtual Private Cloud",
+        "AWS Secrets Manager",
+        "Amazon DocumentDB (with MongoDB compatibility)",
+        "AWS Directory Service",
+        "AWS Cost Explorer",
+        "Amazon Elastic Load Balancing",
+        "AWS Key Management Service",
+        "Amazon DynamoDB",
+        "Amazon Kinesis",
+        "Amazon Elastic Container Service",
+        "Amazon ElastiCache",
+        "Amazon EC2 Container Registry (ECR)",
+        "AWS Glue",
+        "AmazonCloudWatch",
+        "AWS WAF",
+        "Claude Sonnet 4.6 (Amazon Bedrock Edition)",
+        "Amazon CloudFront",
+        "Amazon Elastic Compute Cloud - Compute",
+        "Amazon Elastic File System",
+        "AWS Config",
+        "Amazon Elastic Container Service for Kubernetes",
+        "Claude Opus 4.8 (Amazon Bedrock Edition)",
+        "Amazon Textract",
+        "Kiro",
+        "Amazon Inspector",
+        "Amazon SageMaker",
+        "AWS Application Migration Service",
+        "AWS Amplify",
+        "CloudWatch Events",
+        "Amazon FSx",
+        "Claude 3 Haiku (Amazon Bedrock Edition)",
+        "Amazon Simple Notification Service",
+        "Amazon Bedrock",
+        "Claude 3.7 Sonnet (Amazon Bedrock Edition)",
+        "Amazon Transcribe",
+        "Claude Sonnet 5 (Amazon Bedrock Edition)",
+        "Claude Opus 5.5 (Amazon Bedrock Edition)",
+        "Amazon Route 53",
+        "Claude Haiku 4.5 (Amazon Bedrock Edition)",
+        "Amazon Connect",
+        "Q in Connect",
+        "Amazon OpenSearch Service",
+        "AWS Backup",
+        "Claude Haiku 5.5 (Amazon Bedrock Edition)",
+        "AWS IoT",
+        "Claude Sonnet 4 (Amazon Bedrock Edition)",
+        "AWS Identity and Access Management Access Analyzer",
+        "Claude Sonnet 4.5 (Amazon Bedrock Edition)",
+        "AWS Support (Developer)",
+        "AWS Step Functions",
+        "AWS CloudShell",
+        "Amazon WorkSpaces"
+      ],
+      "departments": [
+        "Unassigned",
+        "gchalapati",
+        "arn:aws:connect:us-east-1:890882436612:instance/a605a803-ff42-455c-8d65-938a02572893",
+        "Ayub",
+        "rahil",
+        "arn:aws:connect:us-east-1:890882436612:instance/33d6c245-5020-4ba3-bfa9-13df5de7ed04",
+        "Carlos",
+        "samir.shamsi@cirruslabs.io"
+      ],
+      "data": [
+        [
+          12.796635228418033,
+          0.03781842722934401,
+          0.006303071204890669,
+          0.07587030154035064,
+          0.35974195284209337,
+          0.012606142409781338,
+          0.006419794745721978,
+          0.012606142409781338
+        ],
+        [
+          319.54038101872595,
+          0.9443509509091069,
+          0.1573918251515178,
+          1.8945312286756772,
+          8.982992687351443,
+          0.3147836503030356,
+          0.16030648858024962,
+          0.3147836503030356
+        ],
+        [
+          18.3864694944112,
+          0.05433829644801909,
+          0.009056382741336515,
+          0.10901201447905064,
+          0.5168846594222063,
+          0.01811276548267303,
+          0.009224093532842747,
+          0.01811276548267303
+        ],
+        [
+          10.525532121710471,
+          0.03110654195339128,
+          0.0051844236588985465,
+          0.06240509959785288,
+          0.2958961799393578,
+          0.010368847317797093,
+          0.005280431504433705,
+          0.010368847317797093
+        ],
+        [
+          508.33809351572995,
+          1.5023126669138254,
+          0.25038544448563754,
+          3.0138988688086004,
+          14.290517405643241,
+          0.5007708889712751,
+          0.25502221197611236,
+          0.5007708889712751
+        ],
+        [
+          358.5081768275906,
+          1.0595140952654276,
+          0.17658568254423793,
+          2.1255684009954563,
+          10.078464325950764,
+          0.35317136508847585,
+          0.17985578777653863,
+          0.35317136508847585
+        ],
+        [
+          722.894333814567,
+          2.136399629268094,
+          0.35606660487801567,
+          4.285986910568707,
+          20.32217178211193,
+          0.7121332097560313,
+          0.3626604308942752,
+          0.7121332097560313
+        ],
+        [
+          42.074293293113506,
+          0.12434390531020847,
+          0.020723984218368078,
+          0.2494553655914676,
+          1.1828022103890818,
+          0.041447968436736156,
+          0.021107761703893415,
+          0.041447968436736156
+        ],
+        [
+          280.54899027328514,
+          0.8291180754573881,
+          0.1381863459095647,
+          1.6633541637262417,
+          7.886857742468118,
+          0.2763726918191294,
+          0.14074535231529736,
+          0.2763726918191294
+        ],
+        [
+          135.8177763241911,
+          0.40138791164110765,
+          0.06689798527351794,
+          0.8052535264404937,
+          3.8181405669070796,
+          0.13379597054703588,
+          0.06813683685265716,
+          0.13379597054703588
+        ],
+        [
+          15.08710480383816,
+          0.04458754703411015,
+          0.0074312578390183575,
+          0.08945032584003579,
+          0.42413216036767737,
+          0.014862515678036715,
+          0.0075688737249261055,
+          0.014862515678036715
+        ],
+        [
+          253.55712395052788,
+          0.749347892585842,
+          0.12489131543097366,
+          1.5033213894469053,
+          7.128056188115941,
+          0.24978263086194732,
+          0.1272041175685843,
+          0.24978263086194732
+        ],
+        [
+          22.175925803280403,
+          0.0655374339632849,
+          0.010922905660547483,
+          0.13147941998807156,
+          0.6234147267742101,
+          0.021845811321094966,
+          0.011125181691298364,
+          0.021845811321094966
+        ],
+        [
+          15.170387178759924,
+          0.04483367489344549,
+          0.007472279148907581,
+          0.08994410086648014,
+          0.42647341364691044,
+          0.014944558297815162,
+          0.007610654688702165,
+          0.014944558297815162
+        ],
+        [
+          12.000450474945843,
+          0.035465429380860086,
+          0.005910904896810015,
+          0.07114978116530574,
+          0.33735942392534196,
+          0.01182180979362003,
+          0.006020366098602793,
+          0.01182180979362003
+        ],
+        [
+          968.4414867014036,
+          2.8620753219065125,
+          0.4770125536510854,
+          5.741817775429731,
+          27.22504982134528,
+          0.9540251073021708,
+          0.48584611945943884,
+          0.9540251073021708
+        ],
+        [
+          156.0522324645039,
+          0.4611876397265329,
+          0.07686460662108882,
+          0.9252221167353284,
+          4.386976251966588,
+          0.15372921324217764,
+          0.0782880252622201,
+          0.15372921324217764
+        ],
+        [
+          21.58033988780603,
+          0.06377727418681729,
+          0.010629545697802882,
+          0.127948235251331,
+          0.6066714785301571,
+          0.021259091395605764,
+          0.010826389136651085,
+          0.021259091395605764
+        ],
+        [
+          45.41196264349645,
+          0.1342078580751318,
+          0.0223679763458553,
+          0.2692441597186286,
+          1.276631538850482,
+          0.0447359526917106,
+          0.022782198130037803,
+          0.0447359526917106
+        ],
+        [
+          284.7695824063002,
+          0.8415913665685316,
+          0.14026522776142192,
+          1.6883777415726713,
+          8.005507999272266,
+          0.28053045552284384,
+          0.14286273197922603,
+          0.28053045552284384
+        ],
+        [
+          31.03367917866781,
+          0.09171512016462685,
+          0.01528585336077114,
+          0.1839963830463193,
+          0.8724259269980863,
+          0.03057170672154228,
+          0.01556892471930394,
+          0.03057170672154228
+        ],
+        [
+          783.7004560124058,
+          2.316102486026155,
+          0.3860170810043592,
+          4.646501900978397,
+          22.031567475100648,
+          0.7720341620087184,
+          0.3931655454674029,
+          0.7720341620087184
+        ],
+        [
+          0.000025667309657670616,
+          7.585566558199503e-8,
+          1.2642610930332506e-8,
+          1.5217957601326165e-7,
+          7.215653127274959e-7,
+          2.528522186066501e-8,
+          1.2876733354968294e-8,
+          2.528522186066501e-8
+        ],
+        [
+          1386.3379060921307,
+          4.097101955394869,
+          0.6828503258991448,
+          8.219494663600818,
+          38.97305008187342,
+          1.3657006517982897,
+          0.6954957023046846,
+          1.3657006517982897
+        ],
+        [
+          2.837912698221403,
+          0.00838700118782595,
+          0.001397833531304325,
+          0.01682577398792243,
+          0.07978005450888759,
+          0.00279566706260865,
+          0.0014237193374395903,
+          0.00279566706260865
+        ],
+        [
+          3.1155015656109395,
+          0.009207371089261751,
+          0.0015345618482102918,
+          0.01847157780253129,
+          0.08758369659600221,
+          0.0030691236964205835,
+          0.0015629796602141862,
+          0.0030691236964205835
+        ],
+        [
+          570.0213975599275,
+          1.684607895590854,
+          0.2807679825984757,
+          3.379614605352022,
+          16.02457263645374,
+          0.5615359651969514,
+          0.28596738968363267,
+          0.5615359651969514
+        ],
+        [
+          1390.9568692634002,
+          4.110752568970207,
+          0.685125428161701,
+          8.246880153798253,
+          39.10289943693264,
+          1.370250856323402,
+          0.6978129360906214,
+          1.370250856323402
+        ],
+        [
+          3.220313192355258,
+          0.0095171252401042,
+          0.0015861875400173665,
+          0.019092998166875708,
+          0.09053018515432451,
+          0.003172375080034733,
+          0.0016155613833510214,
+          0.003172375080034733
+        ],
+        [
+          8.68521525785305,
+          0.025667777141203194,
+          0.0042779628568671985,
+          0.051493997351179245,
+          0.24416076897897607,
+          0.008555925713734397,
+          0.0043571843912536285,
+          0.008555925713734397
+        ],
+        [
+          21.125793023602572,
+          0.06243393297255577,
+          0.01040565549542596,
+          0.12525326059309028,
+          0.5938931525352372,
+          0.02081131099085192,
+          0.01059835281941533,
+          0.02081131099085192
+        ],
+        [
+          71.92553872172877,
+          0.21256452993505656,
+          0.03542742165584276,
+          0.4264411865981073,
+          2.0219872878390257,
+          0.07085484331168553,
+          0.03608348501983985,
+          0.07085484331168553
+        ],
+        [
+          25.200945997386256,
+          0.07447740169980614,
+          0.012412900283301023,
+          0.14941454044714195,
+          0.7084547902432176,
+          0.024825800566602045,
+          0.012642768807065857,
+          0.024825800566602045
+        ],
+        [
+          0.00019524655996772298,
+          5.770202626016332e-7,
+          9.617004376693885e-8,
+          0.0000011576023786761158,
+          0.000005488816201661214,
+          1.923400875338777e-7,
+          9.795097050336365e-8,
+          1.923400875338777e-7
+        ],
+        [
+          0.000060579197109101594,
+          1.7903221562453404e-7,
+          2.9838702604089006e-8,
+          3.591695683825529e-7,
+          0.0000017030163227000428,
+          5.967740520817801e-8,
+          3.039127117083139e-8,
+          5.967740520817801e-8
+        ],
+        [
+          9.034087470415814,
+          0.0266988136713252,
+          0.0044498022785542,
+          0.0535624348344487,
+          0.25396834486118597,
+          0.0088996045571084,
+          0.004532206024453351,
+          0.0088996045571084
+        ],
+        [
+          19.23149114574654,
+          0.056835624007788584,
+          0.009472604001298098,
+          0.11402208520081043,
+          0.540640102444458,
+          0.018945208002596196,
+          0.009648022593914729,
+          0.018945208002596196
+        ],
+        [
+          0.006338193308791102,
+          0.000018731525759343228,
+          0.0000031219209598905383,
+          0.00003757867822090463,
+          0.000178180748118197,
+          0.0000062438419197810766,
+          0.000003179734310999622,
+          0.0000062438419197810766
+        ],
+        [
+          12.755663189633461,
+          0.037697340862533214,
+          0.006282890143755535,
+          0.07562738136002034,
+          0.35859013746397334,
+          0.01256578028751107,
+          0.0063992399612324904,
+          0.01256578028751107
+        ],
+        [
+          0.0013038950996816152,
+          0.000003853455307728066,
+          6.42242551288011e-7,
+          0.000007730697376614947,
+          0.00003665539894573426,
+          0.000001284485102576022,
+          6.541359318674186e-7,
+          0.000001284485102576022
+        ],
+        [
+          0.006849383074842342,
+          0.00002024226609246314,
+          0.0000033737110154105232,
+          0.0000406094844447563,
+          0.00019255143239805986,
+          0.0000067474220308210465,
+          0.000003436187145325533,
+          0.0000067474220308210465
+        ],
+        [
+          34.57195180625367,
+          0.10217192412093358,
+          0.017028654020155597,
+          0.20497453913150254,
+          0.9718946609281398,
+          0.03405730804031119,
+          0.01734399946497329,
+          0.03405730804031119
+        ],
+        [
+          0.0011254268618490872,
+          0.0000033260207169357874,
+          5.543367861559646e-7,
+          0.000006672572425951425,
+          0.00003163825879504968,
+          0.0000011086735723119291,
+          5.646022821958898e-7,
+          0.0000011086735723119291
+        ],
+        [
+          9.326901740204475,
+          0.027564179836418654,
+          0.004594029972736442,
+          0.0552985089310868,
+          0.2622000069624762,
+          0.009188059945472884,
+          0.004679104601861191,
+          0.009188059945472884
+        ],
+        [
+          109.94940124158472,
+          0.3249380290633524,
+          0.0541563381772254,
+          0.651881848429565,
+          3.090922856707568,
+          0.1083126763544508,
+          0.0551592333286555,
+          0.1083126763544508
+        ],
+        [
+          0.026539457781130222,
+          0.00007843316113074824,
+          0.000013072193521791373,
+          0.0001573504775771184,
+          0.0007460833413733521,
+          0.000026144387043582746,
+          0.000013314271179602326,
+          0.000026144387043582746
+        ],
+        [
+          0.002000587886869041,
+          0.000005912420418724181,
+          9.854034031206968e-7,
+          0.000011861337259786164,
+          0.00005624098682255532,
+          0.0000019708068062413935,
+          0.0000010036516142895985,
+          0.0000019708068062413935
+        ],
+        [
+          74.40050159884359,
+          0.2198788904519239,
+          0.03664648174198732,
+          0.4411150580054029,
+          2.0915640134963875,
+          0.07329296348397464,
+          0.037325120292764864,
+          0.07329296348397464
+        ],
+        [
+          0.0013033735416417426,
+          0.0000038519139256049746,
+          6.419856542674958e-7,
+          0.0000077276050976643,
+          0.000036640736786155966,
+          0.0000012839713085349915,
+          6.538742774946717e-7,
+          0.0000012839713085349915
+        ],
+        [
+          0.14181393882030996,
+          0.0004191086195433854,
+          0.00006985143659056423,
+          0.0008408043293308658,
+          0.003986706066150351,
+          0.00013970287318112846,
+          0.00007114498171261171,
+          0.00013970287318112846
+        ],
+        [
+          0.0000024039363932183174,
+          7.104453000973574e-9,
+          1.1840755001622621e-9,
+          1.4252760650101304e-8,
+          6.758001280555727e-8,
+          2.3681510003245243e-9,
+          1.2060028242393413e-9,
+          2.3681510003245243e-9
+        ],
+        [
+          0.05225965403945164,
+          0.0001544451246787647,
+          0.00002574085411312745,
+          0.00030984361432468224,
+          0.0014691354143825705,
+          0.0000514817082262549,
+          0.000026217536596703886,
+          0.0000514817082262549
+        ],
+        [
+          34.23205423942885,
+          0.1011674107338637,
+          0.01686123512231062,
+          0.2029593116574426,
+          0.9623393823511356,
+          0.03372247024462124,
+          0.017173480217168222,
+          0.03372247024462124
+        ],
+        [
+          0.9472942135370528,
+          0.002799577907782446,
+          0.000466596317963741,
+          0.00561643716067466,
+          0.02663055281415277,
+          0.000933192635927482,
+          0.0004752369905186251,
+          0.000933192635927482
+        ],
+        [
+          64.75573714713549,
+          0.19137531775094768,
+          0.03189588629182461,
+          0.3839319646238148,
+          1.8204281768778419,
+          0.06379177258364922,
+          0.03248655085278433,
+          0.06379177258364922
+        ],
+        [
+          7.211809179654951e-9,
+          2.131335900292072e-11,
+          3.552226500486786e-12,
+          4.2758281950303906e-11,
+          2.0274003841667176e-10,
+          7.104453000973572e-12,
+          3.618008472718023e-12,
+          7.104453000973572e-12
+        ],
+        [
+          8.442624612982729e-8,
+          2.4950838939419185e-10,
+          4.158473156569864e-11,
+          5.005569540315578e-10,
+          2.373410049731171e-9,
+          8.316946313139728e-11,
+          4.2354819187285657e-11,
+          8.316946313139728e-11
+        ],
+        [
+          9.375351933551437,
+          0.027707366703796935,
+          0.004617894450632823,
+          0.055585766535395084,
+          0.2635620499416733,
+          0.009235788901265645,
+          0.00470341101453343,
+          0.009235788901265645
+        ]
+      ]
+    },
+    "aiSpendAnalysis": {
+      "totalAISpend": 2533.4983417354006,
+      "aiServices": [
+        {
+          "service": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+          "cost": 1446.5408415000004,
+          "percentage": 57.096577395394945
+        },
+        {
+          "service": "Claude Sonnet 4.6 (Amazon Bedrock Edition)",
+          "cost": 815.0178788250001,
+          "percentage": 32.169663007031126
+        },
+        {
+          "service": "Claude Haiku 4.5 (Amazon Bedrock Edition)",
+          "cost": 114.3430849,
+          "percentage": 4.513248855007225
+        },
+        {
+          "service": "SageMaker",
+          "cost": 74.79975231940001,
+          "percentage": 2.9524294958947372
+        },
+        {
+          "service": "Claude Sonnet 5 (Amazon Bedrock Edition)",
+          "cost": 35.9534802,
+          "percentage": 1.419123889197911
+        },
+        {
+          "service": "Claude 3 Haiku (Amazon Bedrock Edition)",
+          "cost": 20,
+          "percentage": 0.7894222652737306
+        },
+        {
+          "service": "Bedrock",
+          "cost": 13.265391739999998,
+          "percentage": 0.5235997798567117
+        },
+        {
+          "service": "Kiro",
+          "cost": 9.0322848,
+          "percentage": 0.3565143363706742
+        },
+        {
+          "service": "Textract",
+          "cost": 3.349,
+          "percentage": 0.1321887583200862
+        },
+        {
+          "service": "Claude Sonnet 4.5 (Amazon Bedrock Edition)",
+          "cost": 0.985149,
+          "percentage": 0.03888492776060753
+        },
+        {
+          "service": "Claude Haiku 5.5 (Amazon Bedrock Edition)",
+          "cost": 0.14748096,
+          "percentage": 0.005821237676397223
+        },
+        {
+          "service": "Claude Sonnet 4 (Amazon Bedrock Edition)",
+          "cost": 0.054348,
+          "percentage": 0.0021451760636548357
+        },
+        {
+          "service": "Transcribe",
+          "cost": 0.007123091,
+          "percentage": 0.00028115633164854615
+        },
+        {
+          "service": "Claude 3.7 Sonnet (Amazon Bedrock Edition)",
+          "cost": 0.001356,
+          "percentage": 0.00005352282958555894
+        },
+        {
+          "service": "Claude Opus 5.5 (Amazon Bedrock Edition)",
+          "cost": 0.0011703999999999998,
+          "percentage": 0.000046196990963818703
+        }
+      ],
+      "aiPercentageOfTotal": 27.434844523582235,
+      "topAIService": "Claude Opus 4.8 (Amazon Bedrock Edition)",
+      "monthOverMonthChange": -83.8595668062779
+    },
+    "degradedSections": []
+  },
+  "timestamp": 1791967160238,
+  "expiresAt": 1791970760238
+}
