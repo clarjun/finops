@@ -1,13 +1,17 @@
 /**
  * Email Service Framework
- * Supports multiple email providers (Resend, SendGrid, SMTP)
- * 
+ * Supports multiple email providers (Microsoft Graph/Entra ID, Resend, SendGrid, SMTP)
+ *
  * CONFIGURATION REQUIRED:
  * Set one of the following environment variables:
+ * - Microsoft Graph (Entra ID, app-only): GRAPH_TENANT_ID, GRAPH_CLIENT_ID,
+ *   GRAPH_CLIENT_SECRET, GRAPH_SENDER_ADDRESS
  * - RESEND_API_KEY: For Resend email service
  * - SENDGRID_API_KEY: For SendGrid email service
  * - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS: For generic SMTP
  */
+
+import { ClientSecretCredential } from "@azure/identity";
 
 interface EmailMessage {
   to: string | string[];
@@ -116,6 +120,67 @@ class SendGridProvider implements EmailProvider {
 }
 
 /**
+ * Microsoft Graph (Entra ID) Email Provider — app-only, uses Mail.Send
+ * Sends M365/Outlook mail as GRAPH_SENDER_ADDRESS via the client-credentials flow.
+ */
+class GraphMailProvider implements EmailProvider {
+  private credential: ClientSecretCredential;
+  private sender: string;
+  private static readonly SCOPE = "https://graph.microsoft.com/.default";
+
+  constructor(tenantId: string, clientId: string, clientSecret: string, sender: string) {
+    this.credential = new ClientSecretCredential(tenantId, clientId, clientSecret);
+    this.sender = sender;
+  }
+
+  async send(message: EmailMessage): Promise<boolean> {
+    try {
+      const token = await this.credential.getToken(GraphMailProvider.SCOPE);
+      if (!token?.token) {
+        console.error('Graph: failed to acquire access token');
+        return false;
+      }
+
+      const recipients = (Array.isArray(message.to) ? message.to : [message.to])
+        .map(address => ({ emailAddress: { address } }));
+
+      const payload = {
+        message: {
+          subject: message.subject,
+          body: { contentType: 'HTML', content: message.html },
+          toRecipients: recipients,
+        },
+        saveToSentItems: false,
+      };
+
+      // Send as the configured sender mailbox (app-only Mail.Send)
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(this.sender)}/sendMail`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token.token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      // Graph returns 202 Accepted with an empty body on success
+      if (response.status !== 202) {
+        const error = await response.text();
+        console.error(`Graph sendMail error (${response.status}):`, error);
+        return false;
+      }
+
+      console.log(`Graph: email sent from ${this.sender} to ${recipients.map(r => r.emailAddress.address).join(', ')}`);
+      return true;
+    } catch (error) {
+      console.error('Error sending email via Microsoft Graph:', error);
+      return false;
+    }
+  }
+}
+
+/**
  * Mock Email Provider (logs to console, for development/testing)
  */
 class MockProvider implements EmailProvider {
@@ -138,7 +203,21 @@ export class EmailService {
 
   constructor() {
     // Auto-configure based on available environment variables
-    if (process.env.RESEND_API_KEY) {
+    if (
+      process.env.GRAPH_TENANT_ID &&
+      process.env.GRAPH_CLIENT_ID &&
+      process.env.GRAPH_CLIENT_SECRET &&
+      process.env.GRAPH_SENDER_ADDRESS
+    ) {
+      this.provider = new GraphMailProvider(
+        process.env.GRAPH_TENANT_ID,
+        process.env.GRAPH_CLIENT_ID,
+        process.env.GRAPH_CLIENT_SECRET,
+        process.env.GRAPH_SENDER_ADDRESS,
+      );
+      this.isConfigured = true;
+      console.log(`Email service configured with Microsoft Graph (Entra ID), sender: ${process.env.GRAPH_SENDER_ADDRESS}`);
+    } else if (process.env.RESEND_API_KEY) {
       this.provider = new ResendProvider(process.env.RESEND_API_KEY);
       this.isConfigured = true;
       console.log('Email service configured with Resend');
