@@ -33,3 +33,8 @@ npm-debug.log*
 # Local env backups (may contain live credentials)
 .env.backup*
 .env.*.backup
+
+# Local report/response cache. Entries embed AWS account ids, ARNs and real
+# cost figures, and this repository is public. It was committed once by
+# accident, which is the whole reason this line exists.
+.local/
