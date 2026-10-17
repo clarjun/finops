@@ -30,6 +30,7 @@ import type { CloudProvider } from "@shared/schema";
 import { fetchAWSCostData, isAWSConfigured } from "./aws-client";
 import { fetchGCPCostData, isGCPConfigured } from "./gcp-client";
 import { currentOrgId, currentUsername } from "./tenant-context";
+import { finopsReportCacheKey } from "./reports/report-cache-key";
 
 /**
  * The agent config row for the current tenant, created on first access.
@@ -1062,7 +1063,7 @@ When answering:
 
       const startDateStr = startDate.toISOString().split('T')[0];
       const endDateStr = endDate.toISOString().split('T')[0];
-      const cacheKey = `finops-report:${provider}:${startDateStr}:${endDateStr}`;
+      const cacheKey = finopsReportCacheKey(currentOrgId(), provider, startDateStr, endDateStr);
 
       const { persistentCache } = await import('./utils/persistent-cache');
 
@@ -1426,7 +1427,7 @@ When answering:
       send('status', { message: 'Saving to cache...', step: 11, total: 11 });
       try {
         const { persistentCache } = await import('./utils/persistent-cache');
-        const cacheKey = `finops-report:${provider}:${startDateStr}:${endDateStr}`;
+        const cacheKey = finopsReportCacheKey(currentOrgId(), provider as string, startDateStr, endDateStr);
         const builtReport = {
           provider,
           generatedAt: new Date().toISOString(),
