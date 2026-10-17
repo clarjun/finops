@@ -194,6 +194,33 @@ describe('writes are stamped with the acting tenant', () => {
   });
 });
 
+describe('report_cache is isolated', () => {
+  // The same key for both tenants on purpose: report_cache is the only report
+  // cache, so isolation has to hold even if two tenants' keys are identical.
+  const key = 'finops-report:aws:2026-10-01:2026-10-17';
+  const entry = (owner: string) => ({
+    cacheKey: key, provider: 'aws', startDate: '2026-10-01', endDate: '2026-10-17',
+    reportData: { owner }, fetchedAt: new Date(),
+  });
+
+  it('serves each tenant its own report for an identical key', async () => {
+    await runAsSystem(orgA, () => storage.upsertReportCache(entry('A')));
+    await runAsSystem(orgB, () => storage.upsertReportCache(entry('B')));
+
+    const a = await runAsSystem(orgA, () => storage.getReportCache(key));
+    const b = await runAsSystem(orgB, () => storage.getReportCache(key));
+    expect((a?.reportData as any).owner).toBe('A');
+    expect((b?.reportData as any).owner).toBe('B');
+  });
+
+  it('does not let one tenant overwrite another tenant’s report', async () => {
+    await runAsSystem(orgB, () => storage.upsertReportCache(entry('B-again')));
+
+    const a = await runAsSystem(orgA, () => storage.getReportCache(key));
+    expect((a?.reportData as any).owner).toBe('A');
+  });
+});
+
 describe('deleting a tenant', () => {
   it('cascades its data but leaves the other tenant untouched', async () => {
     const temp = await createOrg('itest-tenant-temp');

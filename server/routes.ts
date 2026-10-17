@@ -1065,8 +1065,6 @@ When answering:
       const endDateStr = endDate.toISOString().split('T')[0];
       const cacheKey = finopsReportCacheKey(currentOrgId(), provider, startDateStr, endDateStr);
 
-      const { persistentCache } = await import('./utils/persistent-cache');
-
       // Only trigger background refresh if data is older than this threshold
       const REFRESH_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -1081,7 +1079,7 @@ When answering:
       const shouldRefresh = (fetchedAtMs: number, report?: any) =>
         isDegraded(report) || Date.now() - fetchedAtMs > REFRESH_THRESHOLD_MS;
 
-      // Fetches fresh data from APIs, saves to memory cache + DB
+      // Rebuilds the report from the fact store and saves it to report_cache
       const fetchAndRefresh = async (): Promise<any> => {
         console.log(`[FinOps Report] Fetching fresh data from APIs for ${provider} (${startDateStr} to ${endDateStr})`);
         const { generateFinOpsReport } = await import('./reports/report-engine');
@@ -1130,10 +1128,8 @@ When answering:
           accountId
         );
 
-        // Save to memory cache (1 hour TTL)
-        persistentCache.set(cacheKey, report, 60 * 60 * 1000);
-
-        // Save to DB — survives server restarts, works even after days without visits
+        // report_cache is the only report cache: one row per organization and
+        // key, shared by every replica and kept across deploys and restarts.
         await storage.upsertReportCache({
           cacheKey,
           provider: provider as string,
@@ -1150,31 +1146,9 @@ When answering:
         return applyReconciledTotals(report as Record<string, any>, totals);
       }
 
-      // 1. Memory cache — fastest path
-      const memCached = persistentCache.get(cacheKey);
-      if (memCached) {
-        const cachedAt = persistentCache.getTimestamp(cacheKey) ?? 0;
-        if (shouldRefresh(cachedAt, memCached)) {
-          console.log(`[FinOps Report] Memory cache hit (stale ${Math.round((Date.now() - cachedAt) / 60000)}min) — triggering background refresh`);
-          setImmediate(() => fetchAndRefresh().catch(err => console.error('[FinOps Report] Background refresh error:', err)));
-        } else {
-          console.log(`[FinOps Report] Memory cache hit (fresh ${Math.round((Date.now() - cachedAt) / 60000)}min) — skipping refresh`);
-        }
-        // Headline cost recomputed from the fact store even on a cache hit, so
-        // the report never disagrees with the dashboard about the same month.
-        const totals = await reconcileTotals(provider as CloudProvider, startDate, endDate);
-        return res.json({
-          success: true,
-          report: applyReconciledTotals(memCached, totals),
-          cached: true,
-          source: 'memory',
-        });
-      }
-
-      // 2. DB cache — works after restarts or days without visits
+      // 1. report_cache — a stale copy is served at once and rebuilt behind it
       const dbCached = await storage.getReportCache(cacheKey);
       if (dbCached) {
-        persistentCache.set(cacheKey, dbCached.reportData, 60 * 60 * 1000);
         const fetchedAtMs = dbCached.fetchedAt ? new Date(dbCached.fetchedAt).getTime() : 0;
         if (shouldRefresh(fetchedAtMs, dbCached.reportData)) {
           console.log(`[FinOps Report] DB cache hit (stale ${Math.round((Date.now() - fetchedAtMs) / 60000)}min) — triggering background refresh`);
@@ -1182,6 +1156,8 @@ When answering:
         } else {
           console.log(`[FinOps Report] DB cache hit (fresh ${Math.round((Date.now() - fetchedAtMs) / 60000)}min) — skipping refresh`);
         }
+        // Headline cost recomputed from the fact store even on a cache hit, so
+        // the report never disagrees with the dashboard about the same month.
         const totals = await reconcileTotals(provider as CloudProvider, startDate, endDate);
         return res.json({
           success: true,
@@ -1191,7 +1167,7 @@ When answering:
         });
       }
 
-      // 3. No cache — tell frontend to use the stream endpoint instead
+      // 2. No cache — tell frontend to use the stream endpoint instead
       console.log(`[FinOps Report] No cache — client should use /stream`);
       res.json({ success: true, report: null, cached: false, source: 'none' });
 
@@ -1422,11 +1398,10 @@ When answering:
         send('aiSpendAnalysis', _aiSpendAnalysis);
       } catch (e: any) { sendError('aiSpendAnalysis', e.message); }
 
-      // Assemble full report from already-computed sections and save to cache+DB
+      // Assemble full report from already-computed sections and save to report_cache
       // Do this BEFORE sending 'done' so next visit is instant — no re-running anything
       send('status', { message: 'Saving to cache...', step: 11, total: 11 });
       try {
-        const { persistentCache } = await import('./utils/persistent-cache');
         const cacheKey = finopsReportCacheKey(currentOrgId(), provider as string, startDateStr, endDateStr);
         const builtReport = {
           provider,
@@ -1447,13 +1422,12 @@ When answering:
           // it is never mistaken for a fresh, complete one on a later visit.
           degradedSections,
         };
-        persistentCache.set(cacheKey, builtReport, 60 * 60 * 1000);
         await storage.upsertReportCache({
           cacheKey, provider: provider as string,
           startDate: startDateStr, endDate: endDateStr,
           reportData: builtReport, fetchedAt: new Date(),
         });
-        console.log(`[FinOps Stream] Report saved to cache+DB`);
+        console.log(`[FinOps Stream] Report saved to report_cache`);
       } catch (e: any) {
         console.error('[FinOps Stream] Failed to save to cache:', e.message);
       }
