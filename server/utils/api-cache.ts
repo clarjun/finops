@@ -193,16 +193,21 @@ setInterval(() => {
 }, 5 * 60 * 1000);
 
 /**
- * Helper to create cache key for cost data
+ * Helper to create cache key for cost data.
+ *
+ * The cache is one Map per process, shared by every tenant, so the
+ * organization leads the key; otherwise two tenants querying the same provider
+ * and dates would read each other's cost data.
  */
 export function createCostCacheKey(
+  orgId: number,
   provider: string,
   startDate: string,
   endDate: string,
   serviceName?: string,
   accountId?: string
 ): string {
-  const parts = [provider, startDate, endDate];
+  const parts = [`org-${orgId}`, provider, startDate, endDate];
   if (serviceName) parts.push(serviceName);
   if (accountId) parts.push(accountId);
   return `cost:${parts.join(':')}`;
