@@ -1,5 +1,6 @@
 import type { AzureConfig, AzureQueryBody, AzureCostResponse } from "@shared/schema";
 import { getProviderCredentials } from "./cloud-config-manager";
+import { currentOrgId } from "./tenant-context";
 
 interface AzureTokenResponse {
   access_token: string;
@@ -273,7 +274,7 @@ export async function fetchAzureCostData(
   const { cachedAPICall, createCostCacheKey } = await import('./utils/api-cache');
   
   // Create cache key
-  const cacheKey = createCostCacheKey('azure', startDate, endDate);
+  const cacheKey = createCostCacheKey(currentOrgId(), 'azure', startDate, endDate);
   
   // Use cached API call with 2-minute TTL
   return cachedAPICall(
