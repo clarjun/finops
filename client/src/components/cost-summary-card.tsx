@@ -13,6 +13,8 @@ interface CostSummaryCardProps {
   };
   loading?: boolean;
   variant?: 'blue' | 'green' | 'purple' | 'orange';
+  /** For a text value such as a service name: smaller type, up to three lines. */
+  textValue?: boolean;
 }
 
 const cardVariants = {
@@ -38,7 +40,7 @@ const cardVariants = {
   },
 };
 
-export function CostSummaryCard({ title, value, icon: Icon, trend, loading, variant = 'blue' }: CostSummaryCardProps) {
+export function CostSummaryCard({ title, value, icon: Icon, trend, loading, variant = 'blue', textValue = false }: CostSummaryCardProps) {
   const variantStyles = cardVariants[variant];
 
   if (loading) {
@@ -57,16 +59,29 @@ export function CostSummaryCard({ title, value, icon: Icon, trend, loading, vari
 
   return (
     <Card className={cn("p-6 hover-elevate", variantStyles.light)} data-testid={`card-${title.toLowerCase().replace(/\s+/g, '-')}`}>
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
+      <div className="flex items-start justify-between gap-4">
+        {/* min-w-0 lets this column shrink; without it a wide value pushes the icon out of the card.
+            It is also the size container the value's font scales against. */}
+        <div className="flex-1 min-w-0 [container-type:inline-size]">
           <p className="text-sm font-medium text-muted-foreground mb-1">{title}</p>
-          <div className="flex items-baseline gap-3">
-            <h3 className="text-3xl font-bold tracking-tight tabular-nums" data-testid={`value-${title.toLowerCase().replace(/\s+/g, '-')}`}>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            {/* A figure shrinks with the card (20–30px) rather than breaking between digits.
+                A name is clamped to three lines; the full text stays in the hover title. */}
+            <h3
+              className={cn(
+                "font-bold tracking-tight",
+                textValue
+                  ? "text-xl leading-snug line-clamp-3 [overflow-wrap:anywhere]"
+                  : "text-[clamp(1.25rem,13cqw,1.875rem)] leading-tight tabular-nums whitespace-nowrap",
+              )}
+              title={value}
+              data-testid={`value-${title.toLowerCase().replace(/\s+/g, '-')}`}
+            >
               {value}
             </h3>
             {trend && (
               <span
-                className={`text-xs font-medium tabular-nums ${
+                className={`text-xs font-medium tabular-nums whitespace-nowrap ${
                   trend.isPositive ? "text-chart-2" : "text-destructive"
                 }`}
                 data-testid={`trend-${title.toLowerCase().replace(/\s+/g, '-')}`}
@@ -76,7 +91,7 @@ export function CostSummaryCard({ title, value, icon: Icon, trend, loading, vari
             )}
           </div>
         </div>
-        <div className={cn("flex h-12 w-12 items-center justify-center rounded-lg", variantStyles.iconBg)}>
+        <div className={cn("flex h-12 w-12 shrink-0 items-center justify-center rounded-lg", variantStyles.iconBg)}>
           <Icon className={cn("h-6 w-6", variantStyles.iconColor)} />
         </div>
       </div>

@@ -168,6 +168,9 @@ export function SubscriptionChart({ data, loading }: SubscriptionChartProps) {
                   borderRadius: '0.5rem',
                   color: 'hsl(var(--popover-foreground))'
                 }}
+                // contentStyle's colour does not reach the item rows: Recharts
+                // colours each row from its series, and pie slices have none.
+                itemStyle={{ color: 'hsl(var(--popover-foreground))' }}
                 formatter={(value: number) => `$${value.toFixed(2)}`}
               />
             </PieChart>
