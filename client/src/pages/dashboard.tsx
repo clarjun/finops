@@ -442,7 +442,8 @@ export default function Dashboard() {
 
   const renderDashboardContent = () => (
     <>
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+      {/* Four across only from xl: at lg the sidebar leaves each card too narrow for a figure and its icon. */}
+      <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-4">
         <CostSummaryCard
           title="Total Cost"
           value={costData ? `$${costData.totalCost.toFixed(2)}` : "$0.00"}
@@ -474,6 +475,7 @@ export default function Dashboard() {
           icon={Server}
           loading={costLoading}
           variant="orange"
+          textValue
           data-testid={`card-top-service-${selectedProvider}`}
         />
         <CostSummaryCard

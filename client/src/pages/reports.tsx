@@ -677,9 +677,9 @@ function AnomaliesCard({ anomalies }: { anomalies: any[] }) {
           <div className={`space-y-3 ${anomalies.length > 4 ? 'max-h-[400px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-700 scrollbar-track-transparent hover:scrollbar-thumb-gray-400 dark:hover:scrollbar-thumb-gray-600' : ''}`}>
             {anomalies.map((anomaly, idx) => (
               <div key={idx} className="p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors">
-                <div className="flex items-start justify-between mb-2">
-                  <div>
-                    <div className="font-medium">{anomaly.service}</div>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="min-w-0">
+                    <div className="font-medium [overflow-wrap:anywhere]">{anomaly.service}</div>
                     <div className="text-xs text-muted-foreground">
                       {anomaly.date}
                       {/* A run of elevated days is one event. Showing only the
@@ -689,7 +689,7 @@ function AnomaliesCard({ anomalies }: { anomalies: any[] }) {
                       {anomaly.sustainedDays > 1 && ` (${anomaly.sustainedDays} days)`}
                     </div>
                   </div>
-                  <Badge variant={getSeverityColor(anomaly.severity)}>
+                  <Badge variant={getSeverityColor(anomaly.severity)} className="shrink-0">
                     {anomaly.severity}
                   </Badge>
                 </div>
@@ -912,11 +912,11 @@ function OptimizationCard({ opportunities }: { opportunities: any[] }) {
           {opportunities.map((opp, idx) => (
             <div key={idx} className="p-4 rounded-lg bg-card border hover:shadow-md transition-shadow">
               <div className="flex items-start justify-between mb-2">
-                <div className="flex-1">
+                <div className="flex-1 min-w-0">
                   <div className="font-semibold">{opp.category}</div>
-                  <div className="text-sm text-muted-foreground mt-1">{opp.description}</div>
+                  <div className="text-sm text-muted-foreground mt-1 [overflow-wrap:anywhere]">{opp.description}</div>
                 </div>
-                <div className="text-right ml-4">
+                <div className="text-right ml-4 shrink-0">
                   <div className="text-2xl font-bold text-green-600 dark:text-green-400">
                     ${opp.monthlySavings.toLocaleString('en-US', { useGrouping: false })}
                   </div>
@@ -992,6 +992,9 @@ function DepartmentAllocationCard({ allocation }: { allocation: any[] }) {
                 border: '1px solid hsl(var(--border))',
                 borderRadius: '8px'
               }}
+              // Pie entries carry no series colour, so Recharts falls back to
+              // black text, which is unreadable on the dark-theme background.
+              itemStyle={{ color: 'hsl(var(--foreground))' }}
               formatter={(value: any) => `$${value.toLocaleString('en-US', { useGrouping: false })}`}
             />
           </PieChart>
@@ -1299,6 +1302,7 @@ function AISpendCard({ aiSpend }: { aiSpend: any }) {
                       border: '1px solid hsl(var(--border))',
                       borderRadius: '8px'
                     }}
+                    itemStyle={{ color: 'hsl(var(--foreground))' }}
                     formatter={(value: any, name: string, props: any) => {
                       return [`$${value.toLocaleString('en-US', { useGrouping: false })} (${props.payload.percentage.toFixed(1)}%)`, props.payload.name];
                     }}
