@@ -435,18 +435,11 @@ jobs:
             "PORT=5173"
           )
 
-          # Secret values, used ONLY when creating an app that does not exist
-          # yet. A new app has no Key Vault references, so it would crash on
-          # startup before the binding step below could add them. Every
-          # subsequent deployment leaves these untouched and the app reads them
-          # from the vault instead.
-          BOOTSTRAP_ENV=(
-            "DATABASE_URL=${{ secrets.DATABASE_URL }}"
-            "SESSION_SECRET=${{ secrets.SESSION_SECRET }}"
-            "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
-            "RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}"
-            "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}"
-          )
+          # No secret values appear here at all. A new app is created with its
+          # non-secret settings only; the binding step that follows attaches the
+          # Key Vault references and replaces that first revision. Holding
+          # bootstrap copies in GitHub would mean two sources of truth for one
+          # value, and a rotation that updated only one of them.
 
           if az containerapp show --name "$APP" \
                --resource-group ${{ secrets.RESOURCE_GROUP }} --only-show-errors &>/dev/null; then
@@ -483,19 +476,44 @@ jobs:
               --ingress external \
               --min-replicas ${{ inputs.min_replicas }} \
               --max-replicas ${{ inputs.max_replicas }} \
-              --env-vars "${PLAIN_ENV[@]}" "${BOOTSTRAP_ENV[@]}" \
+              --env-vars "${PLAIN_ENV[@]}" \
               --tags creator=arjun.rathod@cirruslabs.io environment=${{ inputs.environment }} \
               --only-show-errors
           fi
 
+      # Required, not optional: nothing else supplies the application's secrets.
       - name: Bind secrets from Key Vault
-        if: steps.gate.outputs.configured == 'true' && vars.KEYVAULT_NAME != ''
+        if: steps.gate.outputs.configured == 'true'
         run: |
           APP="${{ secrets.CONTAINER_APP_NAME }}"
           RG="${{ secrets.RESOURCE_GROUP }}"
           KV="${{ vars.KEYVAULT_NAME }}"
           ENVN="${{ inputs.environment }}"
           URI="https://$KV.vault.azure.net/secrets"
+
+          if [ -z "$KV" ]; then
+            echo "::error::KEYVAULT_NAME is not set. The application reads every secret from"
+            echo "Key Vault, so without it this deployment has no database URL, session key"
+            echo "or encryption key to give the container."
+            echo "Set it as a repository VARIABLE (not a secret) on the Variables tab."
+            exit 1
+          fi
+
+          # Checked before anything is rewired. Attaching a reference to a
+          # secret that does not exist produces a container that starts and then
+          # fails to read its own configuration, which is far harder to diagnose
+          # than refusing here.
+          MISSING=""
+          for N in database-url session-secret encryption-key openai-api-key resend-api-key; do
+            az keyvault secret show --vault-name "$KV" --name "$ENVN-$N" \
+              --only-show-errors -o none 2>/dev/null || MISSING="$MISSING $ENVN-$N"
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::$KV is missing secrets for '$ENVN':$MISSING"
+            echo "Each environment reads <environment>-<name>, so add them before deploying."
+            exit 1
+          fi
 
           # Every step here is idempotent, so this runs on each deployment and
           # converges rather than needing a one-time setup nobody remembers.
