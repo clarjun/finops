@@ -427,15 +427,25 @@ jobs:
           APP="${{ secrets.CONTAINER_APP_NAME }}"
           echo "Deploying $IMAGE to $APP (${{ inputs.environment }})"
 
-          ENV_VARS=(
+          # Non-secret settings. These are the only variables an ordinary
+          # deployment writes.
+          PLAIN_ENV=(
+            "NODE_ENV=production"
+            "APP_ENVIRONMENT=${{ inputs.environment }}"
+            "PORT=5173"
+          )
+
+          # Secret values, used ONLY when creating an app that does not exist
+          # yet. A new app has no Key Vault references, so it would crash on
+          # startup before the binding step below could add them. Every
+          # subsequent deployment leaves these untouched and the app reads them
+          # from the vault instead.
+          BOOTSTRAP_ENV=(
             "DATABASE_URL=${{ secrets.DATABASE_URL }}"
             "SESSION_SECRET=${{ secrets.SESSION_SECRET }}"
             "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}"
             "RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}"
             "ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}"
-            "NODE_ENV=production"
-            "APP_ENVIRONMENT=${{ inputs.environment }}"
-            "PORT=5173"
           )
 
           if az containerapp show --name "$APP" \
@@ -444,7 +454,7 @@ jobs:
               --name "$APP" \
               --resource-group ${{ secrets.RESOURCE_GROUP }} \
               --image "$IMAGE" \
-              --set-env-vars "${ENV_VARS[@]}" \
+              --set-env-vars "${PLAIN_ENV[@]}" \
               --only-show-errors
           else
             # Registry credentials are passed only on the secret path. Under
@@ -473,10 +483,49 @@ jobs:
               --ingress external \
               --min-replicas ${{ inputs.min_replicas }} \
               --max-replicas ${{ inputs.max_replicas }} \
-              --env-vars "${ENV_VARS[@]}" \
+              --env-vars "${PLAIN_ENV[@]}" "${BOOTSTRAP_ENV[@]}" \
               --tags creator=arjun.rathod@cirruslabs.io environment=${{ inputs.environment }} \
               --only-show-errors
           fi
+
+      - name: Bind secrets from Key Vault
+        if: steps.gate.outputs.configured == 'true' && vars.KEYVAULT_NAME != ''
+        run: |
+          APP="${{ secrets.CONTAINER_APP_NAME }}"
+          RG="${{ secrets.RESOURCE_GROUP }}"
+          KV="${{ vars.KEYVAULT_NAME }}"
+          ENVN="${{ inputs.environment }}"
+          URI="https://$KV.vault.azure.net/secrets"
+
+          # Every step here is idempotent, so this runs on each deployment and
+          # converges rather than needing a one-time setup nobody remembers.
+
+          # The app reads the vault as itself. No credential is stored for this.
+          PRINCIPAL=$(az containerapp identity assign -n "$APP" -g "$RG" \
+            --system-assigned --query principalId -o tsv --only-show-errors)
+
+          # get and list only: the app can read its own secrets and nothing
+          # else, and cannot write or delete any of them.
+          az keyvault set-policy -n "$KV" --object-id "$PRINCIPAL" \
+            --secret-permissions get list --only-show-errors -o none
+
+          az containerapp secret set -n "$APP" -g "$RG" --secrets \
+            "database-url=keyvaultref:$URI/$ENVN-database-url,identityref:system" \
+            "session-secret=keyvaultref:$URI/$ENVN-session-secret,identityref:system" \
+            "encryption-key=keyvaultref:$URI/$ENVN-encryption-key,identityref:system" \
+            "openai-api-key=keyvaultref:$URI/$ENVN-openai-api-key,identityref:system" \
+            "resend-api-key=keyvaultref:$URI/$ENVN-resend-api-key,identityref:system" \
+            --only-show-errors -o none
+
+          az containerapp update -n "$APP" -g "$RG" --set-env-vars \
+            "DATABASE_URL=secretref:database-url" \
+            "SESSION_SECRET=secretref:session-secret" \
+            "ENCRYPTION_KEY=secretref:encryption-key" \
+            "OPENAI_API_KEY=secretref:openai-api-key" \
+            "RESEND_API_KEY=secretref:resend-api-key" \
+            --only-show-errors -o none
+
+          echo "$ENVN reads its secrets from $KV. No secret value was written to the container."
 
       - name: Resolve the public URL
         id: url
