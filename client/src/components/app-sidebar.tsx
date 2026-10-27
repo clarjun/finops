@@ -16,15 +16,10 @@ const menuItems = [
   { title: "Dashboard",      url: "/",              icon: LayoutDashboard },
   { title: "Reports",        url: "/reports",       icon: FileText },
   { title: "AI Query",       url: "/ai-query",      icon: MessageSquare },
-  { title: "Cost Estimator", url: "/cost-estimator",icon: Calculator },
   { title: "Forecast",       url: "/forecast",      icon: TrendingUp },
   { title: "Budgets",        url: "/budgets",       icon: DollarSign },
   { title: "Optimization",   url: "/optimization",  icon: Lightbulb },
-  { title: "Deploy Agent",   url: "/infra-agent",   icon: Rocket },
-  { title: "Deployments",    url: "/deployments",   icon: Server },
-  { title: "Deploy Library", url: "/infra-library", icon: Library },
   { title: "AI Agent",       url: "/agent",         icon: Brain },
-  { title: "Configuration",  url: "/configuration", icon: Cloud },
 ];
 
 /**
@@ -34,6 +29,20 @@ const menuItems = [
  */
 const permissionedMenuItems: Array<{ title: string; url: string; icon: typeof Users; permission: Permission }> = [
   { title: "Governance", url: "/governance", icon: ShieldCheck, permission: 'governance:read' },
+
+  // Provisioning. agent:execute is the permission that turns a plan into real
+  // infrastructure, and ADMIN is the first role to hold it, so these appear for
+  // administrators and owners only. The estimator sits with them because it
+  // prices the infrastructure these screens create, not existing spend.
+  { title: "Cost Estimator", url: "/cost-estimator", icon: Calculator, permission: 'agent:execute' },
+  { title: "Deploy Agent", url: "/infra-agent", icon: Rocket, permission: 'agent:execute' },
+  { title: "Deployments", url: "/deployments", icon: Server, permission: 'agent:execute' },
+  { title: "Deploy Library", url: "/infra-library", icon: Library, permission: 'agent:execute' },
+
+  // Configuration holds cloud credentials, which is exactly what account:write
+  // governs on the API behind it.
+  { title: "Configuration", url: "/configuration", icon: Cloud, permission: 'account:write' },
+
   { title: "User Management", url: "/users", icon: Users, permission: 'user:manage' },
   { title: "Audit Log", url: "/audit", icon: ScrollText, permission: 'audit:read' },
 ];
