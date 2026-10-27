@@ -47,16 +47,26 @@ function ProtectedRouter() {
       <Route path="/" component={Dashboard} />
       <Route path="/reports" component={Reports} />
       <Route path="/ai-query" component={AiQuery} />
-      <Route path="/cost-estimator" component={CostEstimator} />
+      <Route path="/cost-estimator">
+        {can('agent:execute') ? <CostEstimator /> : <Redirect to="/" />}
+      </Route>
       <Route path="/forecast" component={Forecast} />
       <Route path="/budgets" component={Budgets} />
       <Route path="/alerts" component={Alerts} />
       <Route path="/optimization" component={Optimization} />
       <Route path="/agent" component={AgentDashboard} />
-      <Route path="/infra-agent" component={InfraAgentPage} />
-      <Route path="/infra-library" component={InfraLibraryPage} />
-      <Route path="/deployments" component={DeploymentsPage} />
-      <Route path="/configuration" component={Configuration} />
+      <Route path="/infra-agent">
+        {can('agent:execute') ? <InfraAgentPage /> : <Redirect to="/" />}
+      </Route>
+      <Route path="/infra-library">
+        {can('agent:execute') ? <InfraLibraryPage /> : <Redirect to="/" />}
+      </Route>
+      <Route path="/deployments">
+        {can('agent:execute') ? <DeploymentsPage /> : <Redirect to="/" />}
+      </Route>
+      <Route path="/configuration">
+        {can('account:write') ? <Configuration /> : <Redirect to="/" />}
+      </Route>
       <Route path="/settings" component={Settings} />
       {/* Permission-gated routes. The API enforces these independently; this
           only avoids rendering a page that would 403 on every request. */}
