@@ -499,20 +499,41 @@ jobs:
             exit 1
           fi
 
-          # Checked before anything is rewired. Attaching a reference to a
-          # secret that does not exist produces a container that starts and then
-          # fails to read its own configuration, which is far harder to diagnose
-          # than refusing here.
+          # Checked before anything is rewired, because attaching a reference to
+          # a secret that does not exist produces a container that starts and
+          # then cannot read its own configuration.
+          #
+          # Only a genuine "not found" counts. A vault restricted to its private
+          # endpoint refuses a GitHub runner outright, and treating that refusal
+          # as absence reported every secret missing while the running app was
+          # reading those same secrets without trouble.
           MISSING=""
+          UNVERIFIED=""
           for N in database-url session-secret encryption-key openai-api-key resend-api-key; do
-            az keyvault secret show --vault-name "$KV" --name "$ENVN-$N" \
-              --only-show-errors -o none 2>/dev/null || MISSING="$MISSING $ENVN-$N"
+            if ERR=$(az keyvault secret show --vault-name "$KV" --name "$ENVN-$N" \
+                       --only-show-errors -o none 2>&1); then
+              continue
+            fi
+            case "$ERR" in
+              *SecretNotFound*|*"was not found"*) MISSING="$MISSING $ENVN-$N" ;;
+              *)                                  UNVERIFIED="$UNVERIFIED $ENVN-$N" ;;
+            esac
           done
 
           if [ -n "$MISSING" ]; then
-            echo "::error::$KV is missing secrets for '$ENVN':$MISSING"
+            echo "::error::$KV has no secret named:$MISSING"
             echo "Each environment reads <environment>-<name>, so add them before deploying."
             exit 1
+          fi
+
+          if [ -n "$UNVERIFIED" ]; then
+            # Not fatal. The app reads the vault through the private endpoint,
+            # which this runner has no route to; the deployment can still
+            # succeed and the revision check that follows is what proves it.
+            echo "::warning::Could not read $KV from this runner, so these were not" \
+                 "verified:$UNVERIFIED"
+            echo "Expected when the vault is limited to its private endpoint."
+            echo "A wrong or missing secret will surface as a failed revision below."
           fi
 
           # Every step here is idempotent, so this runs on each deployment and
