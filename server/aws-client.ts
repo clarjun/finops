@@ -1,55 +1,63 @@
 import { CostExplorerClient, GetCostAndUsageCommand, GetCostAndUsageCommandInput, GetCostForecastCommand } from "@aws-sdk/client-cost-explorer";
 import { BudgetsClient, DescribeBudgetsCommand } from "@aws-sdk/client-budgets";
+import { STSClient, GetCallerIdentityCommand } from "@aws-sdk/client-sts";
 import { getProviderCredentials, getActiveCloudAccounts } from "./cloud-config-manager";
+import { awsReadClient } from "./aws/client-factory";
 
-let costExplorerClient: CostExplorerClient | null = null;
-const budgetsClient: BudgetsClient | null = null;
-let currentCredentials: any = null;
+/**
+ * Every AWS client in this module is built by the client factory, which
+ * assumes the customer's read-only role and returns temporary credentials.
+ *
+ * It used to read accessKeyId and secretAccessKey off the stored connection
+ * and refuse to work without them. Ingestion, inventory and governance had
+ * already moved to role assumption, so a connection switched to a role would
+ * ingest costs correctly and still fail everywhere this module is used: the
+ * live cost fetcher, the reports spend calculator, the expensive-resources
+ * fetcher and several routes. Half the application on each authentication
+ * model is worse than either.
+ *
+ * The factory serves both. An assume_role connection gets temporary
+ * credentials; a legacy access_keys one keeps working unchanged. Nothing here
+ * knows which, and nothing here handles a secret.
+ *
+ * The old module-level credential cache is gone with it: it compared
+ * accessKeyId to decide whether to rebuild the client, which says nothing
+ * about credentials that rotate hourly by design. The provider caches them and
+ * refreshes before expiry.
+ */
+async function readConnection(): Promise<{ id: number; name: string; region: string } | null> {
+  const account = await getProviderCredentials('aws');
+  if (!account) {
+    console.log("[AWS] No AWS connection configured for this organization.");
+    return null;
+  }
+  return {
+    id: account.id,
+    name: account.accountName,
+    // Cost Explorer and Budgets are global, served from us-east-1; a
+    // connection's own region only overrides that when it is set.
+    region: account.credentials?.region || "us-east-1",
+  };
+}
 
 export async function initializeAWSClient() {
-  // Get credentials from database or environment
-  // test
-  const accountConfig = await getProviderCredentials('aws');
-  
-  if (!accountConfig) {
-    console.log("[AWS] No credentials configured in database.");
+  const conn = await readConnection();
+  if (!conn) return null;
+
+  try {
+    // Read-only tier: a cost query is issued with credentials that physically
+    // cannot change infrastructure, because AWS refuses rather than because
+    // this code remembered to be careful.
+    return await awsReadClient(CostExplorerClient, {
+      connectionId: conn.id,
+      region: conn.region,
+    });
+  } catch (error: any) {
+    // Already translated by the provider; it never carries the External ID or
+    // the role ARN.
+    console.error(`[AWS] Could not obtain credentials for "${conn.name}":`, error?.message ?? error);
     return null;
   }
-
-  const credentials = accountConfig.credentials;
-  
-  console.log(`[AWS] Initializing client for account: ${accountConfig.accountName}`);
-  //console.log(`[AWS] Credentials keys present:`, Object.keys(credentials));
-  
-  if (!credentials.accessKeyId || !credentials.secretAccessKey) {
-    console.error('[AWS] Missing required credentials: accessKeyId or secretAccessKey');
-    return null;
-  }
-  
-  // Check if credentials have changed
-  const credentialsChanged = !currentCredentials || 
-    currentCredentials.accessKeyId !== credentials.accessKeyId ||
-    currentCredentials.secretAccessKey !== credentials.secretAccessKey;
-
-  if (credentialsChanged || !costExplorerClient) {
-    try {
-      costExplorerClient = new CostExplorerClient({
-        region: credentials.region || "us-east-1",
-        credentials: {
-          accessKeyId: credentials.accessKeyId,
-          secretAccessKey: credentials.secretAccessKey,
-        },
-      });
-      currentCredentials = credentials;
-      console.log(`[AWS] Cost Explorer client initialized successfully for: ${accountConfig.accountName}`);
-      return costExplorerClient;
-    } catch (error) {
-      console.error("[AWS] Failed to initialize Cost Explorer client:", error);
-      return null;
-    }
-  }
-
-  return costExplorerClient;
 }
 
 export interface AWSCostData {
@@ -71,8 +79,6 @@ export async function fetchAWSCostData(
   if (!client) {
     throw new Error("AWS Cost Explorer client not configured");
   }
-  costExplorerClient = client;
-
   try {
     const params: GetCostAndUsageCommandInput = {
       TimePeriod: {
@@ -90,14 +96,14 @@ export async function fetchAWSCostData(
     };
 
     const command = new GetCostAndUsageCommand(params);
-    const response = await costExplorerClient.send(command);
+    const response = await client.send(command);
 
     const costData: AWSCostData[] = [];
 
     if (response.ResultsByTime) {
       for (const result of response.ResultsByTime) {
         const date = result.TimePeriod?.Start || "";
-        
+
         if (result.Groups) {
           for (const group of result.Groups) {
             const service = group.Keys?.[0] || "Unknown";
@@ -136,24 +142,22 @@ export async function fetchAWSCostData(
  * singleton) so multiple accounts can be queried independently.
  */
 export async function fetchAWSCostDataForAccount(
-  credentials: any,
+  connectionId: number,
   accountName: string,
   accountId: string,
   startDate: string,
   endDate: string
 ): Promise<AWSCostData[]> {
-  if (!credentials?.accessKeyId || !credentials?.secretAccessKey) {
-    console.error(`[AWS] Account "${accountName}" missing accessKeyId/secretAccessKey`);
+  // Named by connection rather than handed a credentials object: a tenant may
+  // hold several AWS connections, and naming the one to use is what stops the
+  // wrong account being read. The caller never touches a secret either.
+  let client: CostExplorerClient;
+  try {
+    client = await awsReadClient(CostExplorerClient, { connectionId });
+  } catch (error: any) {
+    console.error(`[AWS] Could not obtain credentials for "${accountName}":`, error?.message ?? error);
     return [];
   }
-
-  const client = new CostExplorerClient({
-    region: credentials.region || "us-east-1",
-    credentials: {
-      accessKeyId: credentials.accessKeyId,
-      secretAccessKey: credentials.secretAccessKey,
-    },
-  });
 
   const params: GetCostAndUsageCommandInput = {
     TimePeriod: { Start: startDate, End: endDate },
@@ -195,7 +199,7 @@ export async function fetchAllAWSAccountsCostData(
 
   const perAccount = await Promise.all(
     accounts.map(acc =>
-      fetchAWSCostDataForAccount(acc.credentials, acc.accountName, acc.accountId, startDate, endDate)
+      fetchAWSCostDataForAccount(acc.id, acc.accountName, acc.accountId, startDate, endDate)
         .catch(err => {
           console.error(`[AWS] Failed to fetch costs for account "${acc.accountName}":`, err?.message || err);
           return [] as AWSCostData[];
@@ -209,7 +213,7 @@ export async function fetchAllAWSAccountsCostData(
 export async function isAWSConfigured(): Promise<boolean> {
   // Check if credentials exist in database or environment
   const accountConfig = await getProviderCredentials('aws');
-  
+
   if (!accountConfig) {
     return false;
   }
@@ -219,10 +223,10 @@ export async function isAWSConfigured(): Promise<boolean> {
     if (!client) {
       return false;
     }
-    
+
     const endDate = new Date().toISOString().split('T')[0];
     const startDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
+
     const params: GetCostAndUsageCommandInput = {
       TimePeriod: {
         Start: startDate,
@@ -234,7 +238,7 @@ export async function isAWSConfigured(): Promise<boolean> {
 
     const command = new GetCostAndUsageCommand(params);
     await client.send(command);
-    
+
     return true;
   } catch (error) {
     console.error("AWS Cost Explorer API test failed:", error);
@@ -273,16 +277,9 @@ export async function fetchAWSBudgets(): Promise<AwsBudgetLookup> {
       return { status: 'unavailable', reason: 'AWS is not connected' };
     }
 
-    // Get account ID from STS
-    const { STSClient, GetCallerIdentityCommand } = await import("@aws-sdk/client-sts");
-    const stsClient = new STSClient({
-      region: "us-east-1",
-      credentials: {
-        accessKeyId: currentCredentials.accessKeyId,
-        secretAccessKey: currentCredentials.secretAccessKey,
-      },
-    });
-
+    // The account id comes from STS rather than stored configuration, so it
+    // always describes the identity actually in use.
+    const stsClient = await awsReadClient(STSClient, { region: "us-east-1" });
     const identity = await stsClient.send(new GetCallerIdentityCommand({}));
     const accountId = identity.Account;
 
@@ -290,13 +287,7 @@ export async function fetchAWSBudgets(): Promise<AwsBudgetLookup> {
       return { status: 'unavailable', reason: 'Could not determine the AWS account ID' };
     }
 
-    const budgetsClient = new BudgetsClient({
-      region: "us-east-1",
-      credentials: {
-        accessKeyId: currentCredentials.accessKeyId,
-        secretAccessKey: currentCredentials.secretAccessKey,
-      },
-    });
+    const budgetsClient = await awsReadClient(BudgetsClient, { region: "us-east-1" });
 
     const response = await budgetsClient.send(new DescribeBudgetsCommand({ AccountId: accountId }));
 
@@ -353,23 +344,18 @@ export async function fetchAWSBudgetForRange(
   endDate: string
 ): Promise<{ amount: number; monthsCovered: number; basis: string } | null> {
   try {
-    const { BudgetsClient, DescribeBudgetsCommand, DescribeBudgetPerformanceHistoryCommand } = await import("@aws-sdk/client-budgets");
-    const { STSClient, GetCallerIdentityCommand } = await import("@aws-sdk/client-sts");
+    const { DescribeBudgetPerformanceHistoryCommand } = await import("@aws-sdk/client-budgets");
 
     const client = await initializeAWSClient();
-    if (!client || !currentCredentials) {
-      throw new Error("AWS client not configured");
+    if (!client) {
+      throw new Error("AWS is not connected for this organization");
     }
-    const credentials = {
-      accessKeyId: currentCredentials.accessKeyId,
-      secretAccessKey: currentCredentials.secretAccessKey,
-    };
 
-    const sts = new STSClient({ region: "us-east-1", credentials });
+    const sts = await awsReadClient(STSClient, { region: "us-east-1" });
     const accountId = (await sts.send(new GetCallerIdentityCommand({}))).Account;
     if (!accountId) throw new Error("Could not determine AWS account ID");
 
-    const budgetsClient = new BudgetsClient({ region: "us-east-1", credentials });
+    const budgetsClient = await awsReadClient(BudgetsClient, { region: "us-east-1" });
     const budgetsResp = await budgetsClient.send(new DescribeBudgetsCommand({ AccountId: accountId }));
     const budgets = budgetsResp.Budgets || [];
     if (budgets.length === 0) return null;
@@ -444,7 +430,7 @@ export async function fetchAWSBudgetForRange(
 export async function fetchAWSCostForecast(startDate: string, endDate: string): Promise<number> {
   try {
     const { GetCostForecastCommand } = await import("@aws-sdk/client-cost-explorer");
-    
+
     const client = await initializeAWSClient();
     if (!client) {
       throw new Error("AWS Cost Explorer client not configured");
@@ -459,8 +445,8 @@ export async function fetchAWSCostForecast(startDate: string, endDate: string): 
       Granularity: "MONTHLY",
     });
 
-    const response = await costExplorerClient!.send(command);
-    
+    const response = await client.send(command);
+
     if (!response.Total?.Amount) {
       console.log("[AWS Forecast] No forecast data available");
       return 0;
